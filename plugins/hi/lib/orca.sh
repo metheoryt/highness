@@ -395,6 +395,23 @@ terminals() {
     | [.handle, (.agentIdentity // ""), ((.title // "") | gsub("[\t\n]"; " "))] | @tsv'
 }
 
+# orphaned: one POSIX worktree path per line where Orca holds a terminal that came back from a
+# restart orphaned (orphaned:true, no agent identity) and no live agent terminal at all. The
+# session there still exists, but nothing can type into it until the tab is reopened. One
+# `terminal list` call covers every workspace.
+orphaned() {
+  local js
+  have_orca || return 1
+  js=$("$ORCA" terminal list --json 2>/dev/null) || return 1
+  [ "$(printf '%s' "$js" | jq -r '.ok // false' 2>/dev/null)" = "true" ] || return 1
+  printf '%s' "$js" | jq -r "$JQ_POSIX"'
+    [ (.result.terminals // [])[] | select((.worktreePath // "") != "") | . + {p: (.worktreePath | posix)} ]
+    | group_by(.p)[]
+    | select(any(.orphaned == true)
+             and all((((.connected // false) and (.writable // false)) and ((.agentIdentity // "") != "")) | not))
+    | .[0].p'
+}
+
 # send <handle> <prompt-file>: type the prompt into that terminal and press Enter. It
 # writes into another live session, so it is gated like a confirmed write.
 send_prompt() {
@@ -417,8 +434,9 @@ case "${1:-}" in
   candidates)  shift; candidates "$@" ;;
   land-branch) shift; land_branch_cmd "$@" ;;
   terminals)   shift; terminals "$@" ;;
+  orphaned)    orphaned ;;
   send)        shift; send_prompt "$@" ;;
   *)
-    echo 'usage: orca.sh available|current|siblings <repo-path>|find-branch <repo-path> <branch>|repo-selector <repo-path>|posix <path>|resolve|create-cmd --repo <path|selector> --name <n> --base <ref> (--parent <sel>|--no-parent) [--comment <t>] | candidates --repo <p> --key <K> | land-branch <wt> (--branch <b>|--adopt <b>) --key <K> | terminals <worktree-path> | send <handle> <prompt-file>  (exit: 1 no Orca/failed, 2 usage, 3 send unconfirmed, 4 candidates cannot list origin)' >&2
+    echo 'usage: orca.sh available|current|siblings <repo-path>|find-branch <repo-path> <branch>|repo-selector <repo-path>|posix <path>|resolve|create-cmd --repo <path|selector> --name <n> --base <ref> (--parent <sel>|--no-parent) [--comment <t>] | candidates --repo <p> --key <K> | land-branch <wt> (--branch <b>|--adopt <b>) --key <K> | terminals <worktree-path> | orphaned | send <handle> <prompt-file>  (exit: 1 no Orca/failed, 2 usage, 3 send unconfirmed, 4 candidates cannot list origin)' >&2
     exit 2 ;;
 esac

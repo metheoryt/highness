@@ -263,5 +263,25 @@ out=$(run bogus 2>&1); rc=$?
 assert_status   "unknown subcommand exits 2" 2 "$rc"
 assert_contains "usage names every subcommand" "$out" 'available|current|siblings'
 
+# --- orphaned ---------------------------------------------------
+# /w/a: orphaned only → listed. /w/b: orphaned plus a live agent → not. /w/c: a live shell
+# with no agent and no orphan → not. A UNC path is compared as POSIX.
+TL='{"ok":true,"result":{"terminals":[
+  {"handle":"t1","worktreePath":"/w/a","connected":true,"writable":true,"agentIdentity":null,"orphaned":true},
+  {"handle":"t2","worktreePath":"/w/b","connected":true,"writable":true,"agentIdentity":null,"orphaned":true},
+  {"handle":"t3","worktreePath":"/w/b","connected":true,"writable":true,"agentIdentity":"claude","orphaned":false},
+  {"handle":"t4","worktreePath":"/w/c","connected":true,"writable":true,"agentIdentity":null,"orphaned":false},
+  {"handle":"t5","worktreePath":"\\\\wsl.localhost\\Ubuntu\\w\\d","connected":true,"writable":true,"agentIdentity":null,"orphaned":true}
+]}}'
+printf '%s' "$TL" > "$stub/tl.json"
+mkstub "case \"\$*\" in 'status --json') echo '$READY' ;; 'terminal list --json') cat '$stub/tl.json' ;; esac"
+out=$(run orphaned); rc=$?
+assert_status "orphaned: exits 0" 0 "$rc"
+assert_eq "orphaned: only the workspaces with an orphan and no live agent" "/w/a
+/w/d" "$out"
+mkstub 'exit 1'
+run orphaned >/dev/null 2>&1; assert_status "orphaned: no Orca exits 1" 1 "$?"
+
+
 rm -rf "$stub"
 assert_summary
