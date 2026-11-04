@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# highness — the hi plugin's stable entry point for callers outside Claude Code: an Orca hook
+# (a repo's orca.yaml), a shell, a script. The plugin's install path changes with every version;
+# ${HIGHNESS_BIN_DIR:-$HOME/.local/bin}/highness, which lib/install-launcher.sh rewrites at each
+# session start, execs this file in the current one.
+#
+#   highness worktree-setup      lib/worktree-setup.sh in the cwd's worktree; always exits 0
+#   highness worktree-teardown   lib/worktree-teardown.sh; always exits 0
+#   highness wt <args…>          lib/wt.sh (its own usage and exit codes)
+#   highness root                the plugin root (lib/, reference/ live under it)
+#   highness version             the plugin version
+set -u
+ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P) || exit 1
+
+usage() {
+  echo 'usage: highness worktree-setup | worktree-teardown | wt <args…> | root | version' >&2
+  exit 2
+}
+
+cmd="${1:-}"; [ $# -gt 0 ] && shift
+case "$cmd" in
+  worktree-setup)    bash "$ROOT/lib/worktree-setup.sh" "$@"; exit 0 ;;
+  worktree-teardown) bash "$ROOT/lib/worktree-teardown.sh" "$@"; exit 0 ;;
+  wt)                exec bash "$ROOT/lib/wt.sh" "$@" ;;
+  root)              printf '%s\n' "$ROOT" ;;
+  version)
+    v=$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$ROOT/.claude-plugin/plugin.json" 2>/dev/null | head -1)
+    [ -n "$v" ] || { echo 'highness: no version in .claude-plugin/plugin.json' >&2; exit 1; }
+    printf '%s\n' "$v" ;;
+  -h|--help|help|'') usage ;;
+  *) echo "highness: unknown command [$cmd]" >&2; usage ;;
+esac

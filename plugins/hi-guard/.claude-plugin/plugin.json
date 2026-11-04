@@ -1,0 +1,4 @@
+{
+  "name": "hi-guard",
+  "description": "A PreToolUse Bash hook that denies sudo, configured deny patterns and whatever your own guard.checks reject."
+}

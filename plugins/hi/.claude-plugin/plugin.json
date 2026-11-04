@@ -1,0 +1,6 @@
+{
+  "name": "hi",
+  "version": "0.1.0",
+  "description": "Workspaces over Orca or git worktrees, set up per tree (gortex when installed), and repo setup for them.",
+  "license": "MIT"
+}

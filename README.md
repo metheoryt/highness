@@ -1,0 +1,57 @@
+# highness
+
+A harness for Claude Code agents, as a plugin marketplace. Each plugin is enabled on its own.
+
+| plugin | what it gives |
+|---|---|
+| `hi` | `/hi:worktrees` — one workspace per piece of work, over Orca worktrees or plain git worktrees, with lineage, a removal check and a per-tree setup (gortex tracking when gortex is installed, local config links, the repo's own setup script). `/hi:repo-setup` — check and wire a repo for that. |
+| `hi-guard` | A PreToolUse hook on Bash: denies `sudo` from an agent session (quote-aware, through `bash -c`, `ssh`, `eval`…) and any configured deny pattern. Other tools can add checks. |
+| `hi-docs` | `/hi-docs:write-doc` and `/hi-docs:reader-test` — documents that read in short sittings, tested on a reader with no context. |
+
+## Install
+
+```
+/plugin marketplace add metheoryt/highness
+/plugin install hi@highness
+```
+
+For a team, add the marketplace and the plugins to the repo's `.claude/settings.json`
+(`extraKnownMarketplaces` and `enabledPlugins`).
+
+## Configuration
+
+Optional JSON, read by every plugin: `~/.config/highness/config.json` (or `$HIGHNESS_CONFIG`) for one
+person, `.claude/highness.json` in a repo for a team. A repo key wins; lists from both add up.
+`guard.exempt_commands` and `guard.checks` are read from the personal file only: a repo's file comes
+with every clone, so it may add deny patterns but never switch the guard off or run a program.
+
+```json
+{
+  "guard": { "deny_patterns": ["terraform apply"], "exempt_commands": [], "checks": [] },
+  "repo_setup": { "mode": "local" },
+  "docs": { "conventions": "docs/writing.md" }
+}
+```
+
+## Orca
+
+`hi` writes a small launcher, `~/.local/bin/highness`, at session start, so Orca (outside Claude
+Code) can reach the plugin. To set up every new worktree of a repo for the whole team, commit an
+`orca.yaml` at its root (each person approves its commands once in Orca):
+
+```yaml
+scripts:
+  setup: '"$HOME/.local/bin/highness" worktree-setup || true'
+  archive: '"$HOME/.local/bin/highness" worktree-teardown || true'
+```
+
+A personal hook set in Orca's repo settings takes precedence over `orca.yaml` unless the repo's
+command source policy says otherwise; `/hi:repo-setup` shows which one Orca will run.
+
+## Requirements
+
+bash 3.2+, git, jq. Optional: [Orca](https://github.com/stablyai/orca), gortex.
+
+## Tests
+
+`bash tests/run.sh </dev/null`
