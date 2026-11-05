@@ -1,10 +1,31 @@
 {
   "name": "highness",
-  "owner": { "name": "metheoryt" },
-  "metadata": { "description": "A harness for Claude Code agents: isolated workspaces, a Bash guard, writing skills." },
+  "owner": {
+    "name": "metheoryt"
+  },
+  "metadata": {
+    "description": "A harness for Claude Code agents: isolated workspaces, a Bash guard, writing skills."
+  },
   "plugins": [
-    { "name": "hi", "source": "./plugins/hi", "description": "Workspaces over Orca or git worktrees, set up per tree (gortex when installed), repo setup." },
-    { "name": "hi-guard", "source": "./plugins/hi-guard", "description": "A Bash PreToolUse guard: sudo and configured deny patterns, with checks other plugins can add." },
-    { "name": "hi-docs", "source": "./plugins/hi-docs", "description": "Write documents teammates read in short sittings, and test them on a fresh reader." }
+    {
+      "name": "hi",
+      "source": "./plugins/hi",
+      "description": "Workspaces over Orca or git worktrees, set up per tree (gortex when installed), repo setup."
+    },
+    {
+      "name": "hi-guard",
+      "source": "./plugins/hi-guard",
+      "description": "A Bash PreToolUse guard: sudo and configured deny patterns, with checks other plugins can add."
+    },
+    {
+      "name": "hi-docs",
+      "source": "./plugins/hi-docs",
+      "description": "Write documents teammates read in short sittings, and test them on a fresh reader."
+    },
+    {
+      "name": "hi-crew",
+      "source": "./plugins/hi-crew",
+      "description": "Ticket workers on Orca: start a worker on a ticket in its own workspace, and a digest of what the workers wait on you for."
+    }
   ]
 }
