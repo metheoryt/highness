@@ -23,8 +23,10 @@ Then load the team's writing conventions, if the team set any:
 bash "${CLAUDE_PLUGIN_ROOT}/lib/config.sh" get .docs.conventions
 ```
 
-Exit 1 or empty output → none, go on. Otherwise it prints a file path; a relative path resolves
-against the git toplevel (`git rev-parse --show-toplevel`). If that file is readable, Read it in
+Exit 1 or empty output → none, go on. Otherwise it prints a file path; `~/` is the home
+directory, and a relative path resolves against the git toplevel (`git rev-parse --show-toplevel`).
+The key may come from the repo's own `.claude/highness.json` or from the user's config, per repo
+(`repos.<owner>` overlays, for a team repo that cannot carry the file). If that file is readable, Read it in
 full; if not, say so in one line and go on. A team convention there for a kind of document (a
 decision-record skeleton, say) wins for the team's documents of that kind; the user's calls and
 this skill still govern everything else.
@@ -158,10 +160,16 @@ the person who will fix it — never in the claim sentence.
 1. Run the checklist: overview fits one screen; every ID is glossed at first use; every item opens
    with its claim; no page over ~15 minutes; emphasis budget respected; the fact diff closes against
    the cut file; every claim about code checked in the final text.
-2. Run `/hi-docs:reader-test` on the overview and each sub-page, last.
-3. Report to the user: page links, reading time per page, the cut file's path, claims the code
-   contradicted or left unverified, what the reader-test found and what was fixed, what is still
-   open.
+2. **The team's own check.** When the conventions of section 0 name a check to run on this kind
+   of document before review (a skill or script that compares a design doc with the code, say),
+   run it the way they say, before the reader-test. Fix or list each thing it finds. When they
+   name a check that is not available in this session, or that needs something missing yet (a
+   PR), skip it and say so in one line. A full rewrite such a check proposes is a proposal: merge
+   it through this skill's rules, never adopt it wholesale.
+3. Run `/hi-docs:reader-test` on the overview and each sub-page, last.
+4. Report to the user: page links, reading time per page, the cut file's path, claims the code
+   contradicted or left unverified, what the team's check and the reader-test found and what was
+   fixed, what is still open.
 
 Sources this skill was synthesised from: anthropics/skills `doc-coauthoring` (reader testing);
 riekelt/technical-writer `technical-writing`, `documenting-legacy-codebases`,

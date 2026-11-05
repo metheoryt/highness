@@ -34,6 +34,11 @@ with every clone, so it may add deny patterns but never switch the guard off or 
 }
 ```
 
+For a team repo that cannot carry `.claude/highness.json`, the personal file can set keys per repo,
+by `origin`'s owner or owner/repo (host ignored): `"repos": {"acme": {"docs": {"conventions":
+"~/acme/writing.md"}}}`. The repo's own file still wins, then `owner/repo`, then `owner`, then the
+top level. Keys read from the personal file only ignore these overlays.
+
 ## Orca
 
 `hi` writes a small launcher, `~/.local/bin/highness`, at session start, so Orca (outside Claude
