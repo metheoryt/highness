@@ -20,7 +20,10 @@
 #                                     dispatch id, created_at, outcome, subject
 #   crew.sh spec --key K --title T [--brief-file F]
 #                                     the worker spec for a ticket, from reference/worker-spec.md and
-#                                     the config keys crew.process and crew.marker
+#                                     the config keys crew.process and crew.marker. In crew.process,
+#                                     {{ROOT}} becomes the git root of the coordinator's working
+#                                     directory: a worker runs in another tree, so the team's files
+#                                     must be named by absolute path
 #   crew.sh orca                      the Orca executable this host should use
 #
 # State dir: ${HIGHNESS_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/highness}/crew
@@ -133,7 +136,7 @@ cmd_reports() {
 }
 
 cmd_spec() {
-  local key='' title='' brief_file='' brief='' process marker
+  local key='' title='' brief_file='' brief='' process marker root
   while [ $# -gt 0 ]; do
     case "$1" in
       --key) key=${2:-}; shift 2 ;;
@@ -149,10 +152,11 @@ cmd_spec() {
     [ -f "$brief_file" ] || die "no brief file: $brief_file"
     brief=$(cat "$brief_file")
   fi
+  root=$(git rev-parse --show-toplevel 2>/dev/null) || root=$(pwd)
   process=$(bash "$CONFIG" get '.crew.process') || process='(none configured: use the tracker and forge tools you have, and say in the PR how you checked the work)'
   marker=$(bash "$CONFIG" get '.crew.marker') || marker='(agent)'
   # Placeholders are replaced in a fixed order by awk with literal strings (no regex, no &).
-  KEY=$key TITLE=$title BRIEF=$brief PROCESS=$process MARKER=$marker awk '
+  KEY=$key TITLE=$title BRIEF=$brief PROCESS=$process MARKER=$marker ROOT=$root awk '
     function rep(s, ph, val,   out, i) {
       out = ""
       while ((i = index(s, ph)) > 0) { out = out substr(s, 1, i - 1) val; s = substr(s, i + length(ph)) }
@@ -163,7 +167,7 @@ cmd_spec() {
       line = rep(line, "{{TITLE}}", ENVIRON["TITLE"])
       line = rep(line, "{{MARKER}}", ENVIRON["MARKER"])
       if (line == "{{BRIEF}}") { print ENVIRON["BRIEF"]; next }
-      if (line == "{{PROCESS}}") { print ENVIRON["PROCESS"]; next }
+      if (line == "{{PROCESS}}") { print rep(ENVIRON["PROCESS"], "{{ROOT}}", ENVIRON["ROOT"]); next }
       print line }' "$TEMPLATE"
 }
 

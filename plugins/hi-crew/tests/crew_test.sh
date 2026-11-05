@@ -61,10 +61,13 @@ case "$out" in *'Line & two with {{KEY}} literal.'*) ok 'brief copied verbatim' 
 case "$out" in *'start with `ABC-9: `'*) ok 'key in commit rule' ;; *) no 'key in commit rule' ;; esac
 case "$out" in *'`(agent)`, so people'*) ok 'default marker' ;; *) no 'default marker' ;; esac
 case "$out" in *'(none configured'*) ok 'default process' ;; *) no 'default process' ;; esac
-printf '{"crew":{"process":"Use the team-task skill.\\nThen the team-pr skill.","marker":"[bot]"}}' >"$HIGHNESS_CONFIG"
+printf '{"crew":{"process":"Use the team-task skill.\\nThen the team-pr skill at {{ROOT}}/pr.py.","marker":"[bot]"}}' >"$HIGHNESS_CONFIG"
 out=$(cd "$T" && bash "$C" spec --key ABC-9 --title 'T' --brief-file "$T/brief")
-case "$out" in *'Use the team-task skill.'*'Then the team-pr skill.'*) ok 'process from config' ;; *) no 'process from config' ;; esac
+case "$out" in *'Use the team-task skill.'*'Then the team-pr skill at '*) ok 'process from config' ;; *) no 'process from config' ;; esac
 case "$out" in *'`[bot]`, so people'*) ok 'marker from config' ;; *) no 'marker from config' ;; esac
+mkdir -p "$T/repo" && git -C "$T/repo" init -q && R=$(cd "$T/repo" && git rev-parse --show-toplevel)
+out=$(cd "$T/repo" && bash "$C" spec --key ABC-9 --title 'T')
+case "$out" in *"team-pr skill at $R/pr.py."*) ok '{{ROOT}} in process is the coordinator git root' ;; *) no '{{ROOT}} in process is the coordinator git root' ;; esac
 left=$(printf '%s\n' "$out" | grep -v 'literal\.$' | grep -c '{{')
 check 'no placeholder left' "$left" 0
 if bash "$C" spec --key ABC-9 2>/dev/null; then no 'spec needs a title'; else ok 'spec needs a title'; fi

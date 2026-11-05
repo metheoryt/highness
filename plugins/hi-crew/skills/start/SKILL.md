@@ -31,7 +31,7 @@ Below, `$O` stands for that executable.
 
   | key | what | when unset |
   |---|---|---|
-  | `crew.process` | the team's process text appended to every spec: how to take and comment a ticket, open a PR, run the review loop | a generic line |
+  | `crew.process` | the team's process text appended to every spec: how to take and comment a ticket, open a PR, run the review loop. `{{ROOT}}` in it becomes the absolute path of this session's git root: the worker runs in another tree, where the team's skills may not be loaded, so name its scripts by that path | a generic line |
   | `crew.agent` | Orca agent id for workers | `claude` |
   | `crew.model` | provider model id for workers | say so to the user once; Orca then uses the agent's own default, which differs per person |
   | `crew.marker` | the prefix workers put on everything they post under the person's account | `(agent)` |
