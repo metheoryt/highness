@@ -25,16 +25,14 @@ if bash "$C" get ABC-1 >/dev/null; then no 'closed facts not readable as open'; 
 if bash "$C" record '../evil' '{}' 2>/dev/null; then no 'bad key refused'; else ok 'bad key refused'; fi
 if bash "$C" record ABC-3 '[1]' 2>/dev/null; then no 'non-object refused'; else ok 'non-object refused'; fi
 
-# --- run id
-if bash "$C" run >/dev/null; then no 'no run at first'; else ok 'no run at first'; fi
-bash "$C" run run_abc123
-check 'run stored' "$(bash "$C" run)" 'run_abc123'
-if bash "$C" run notarun 2>/dev/null; then no 'bad run id refused'; else ok 'bad run id refused'; fi
-
-# --- open questions: a fake orca prints a fixed inbox
+# --- a fake orca: run-current answers $FAKE_CURRENT, inbox prints a fixed inbox
 mkdir -p "$T/bin"
 cat >"$T/bin/fakeorca" <<'EOF'
 #!/bin/sh
+if [ "$2" = run-current ]; then
+  [ -n "${FAKE_CURRENT:-}" ] || { echo '{"ok":false}'; exit 1; }
+  printf '{"ok":true,"result":{"runId":"%s"}}\n' "$FAKE_CURRENT"; exit 0
+fi
 cat <<'JSON'
 {"ok":true,"result":{"messages":[
  {"id":"msg_q1","run_id":"run_abc123","type":"question","thread_id":"msg_q1","created_at":"2026-01-01T10:00:00Z","body":"Answered one?\nmore","payload":"{\"dispatchId\":\"ctx_a\"}"},
@@ -45,13 +43,31 @@ cat <<'JSON'
  {"id":"msg_e2","run_id":"run_abc123","type":"escalation","thread_id":null,"created_at":"2026-01-01T09:00:00Z","body":"Stopped early","payload":"{\"dispatchId\":\"ctx_a\"}"},
  {"id":"msg_d1","run_id":"run_abc123","type":"worker_done","thread_id":null,"created_at":"2026-01-01T09:30:00Z","subject":"Done A","body":"x","payload":"{\"dispatchId\":\"ctx_a\",\"outcome\":\"succeeded\"}"},
  {"id":"msg_d0","run_id":"run_abc123","type":"worker_done","thread_id":null,"created_at":"2026-01-01T08:00:00Z","subject":"Older A","body":"x","payload":"{\"dispatchId\":\"ctx_a\",\"outcome\":\"failed\"}"},
- {"id":"msg_g1","run_id":"run_abc123","type":"decision_gate","thread_id":"msg_g1","created_at":"2026-01-01T14:00:00Z","body":"Deploy to prod?","payload":"{\"dispatchId\":\"ctx_d\"}"}
+ {"id":"msg_g1","run_id":"run_def456","type":"decision_gate","thread_id":"msg_g1","created_at":"2026-01-01T14:00:00Z","body":"Deploy to prod?","payload":"{\"dispatchId\":\"ctx_d\"}"}
 ]}}
 JSON
 EOF
 chmod +x "$T/bin/fakeorca"
-check 'asks: open question, live escalation and gate of this Run only' "$(ORCA_CLI_COMMAND="$T/bin/fakeorca" bash "$C" asks)" "$(printf 'msg_q2\tquestion\tctx_b\t2026-01-01T11:00:00Z\tOpen one?\nmsg_e1\tescalation\tctx_c\t2026-01-01T13:00:00Z\tStopped: no token\nmsg_g1\tdecision_gate\tctx_d\t2026-01-01T14:00:00Z\tDeploy to prod?')"
-check 'reports: latest worker_done per dispatch' "$(ORCA_CLI_COMMAND="$T/bin/fakeorca" bash "$C" reports)" "$(printf 'ctx_a\t2026-01-01T09:30:00Z\tsucceeded\tDone A')"
+export ORCA_CLI_COMMAND="$T/bin/fakeorca"
+
+# --- this session's Run
+if bash "$C" run >/dev/null; then no 'no run when Orca binds none'; else ok 'no run when Orca binds none'; fi
+if FAKE_CURRENT=run_abc123 bash "$C" run >/dev/null; then no 'a Run hi-crew did not make is not ours'; else ok 'a Run hi-crew did not make is not ours'; fi
+bash "$C" run run_abc123; bash "$C" run run_def456; bash "$C" run run_abc123
+check 'registry keeps each Run once' "$(wc -l <"$HIGHNESS_STATE/crew/run" | tr -d ' ')" 2
+check 'run: the Run bound to this session' "$(FAKE_CURRENT=run_def456 bash "$C" run)" 'run_def456'
+if bash "$C" run notarun 2>/dev/null; then no 'bad run id refused'; else ok 'bad run id refused'; fi
+
+# --- asks and reports across the open tickets' Runs
+check 'asks: nothing without open tickets in a Run' "$(bash "$C" asks)" ''
+bash "$C" record ABC-2 '{"run":"run_abc123"}'
+bash "$C" record ABC-4 '{"run":"run_def456"}'
+check 'runs: the open tickets'"'"' Runs' "$(bash "$C" runs | tr '\n' ' ')" 'run_abc123 run_def456 '
+check 'asks: open question, live escalation and gate of the open tickets'"'"' Runs only' "$(bash "$C" asks)" "$(printf 'msg_q2\tquestion\trun_abc123\tctx_b\t2026-01-01T11:00:00Z\tOpen one?\nmsg_e1\tescalation\trun_abc123\tctx_c\t2026-01-01T13:00:00Z\tStopped: no token\nmsg_g1\tdecision_gate\trun_def456\tctx_d\t2026-01-01T14:00:00Z\tDeploy to prod?')"
+check 'reports: latest worker_done per dispatch' "$(bash "$C" reports)" "$(printf 'run_abc123\tctx_a\t2026-01-01T09:30:00Z\tsucceeded\tDone A')"
+bash "$C" close ABC-4
+check 'asks: a closed ticket'"'"'s Run drops out' "$(bash "$C" asks | cut -f1 | tr '\n' ' ')" 'msg_q2 msg_e1 '
+unset ORCA_CLI_COMMAND
 
 # --- spec
 printf 'Line one of the brief.\nLine & two with {{KEY}} literal.\n' >"$T/brief"

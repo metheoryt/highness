@@ -9,6 +9,10 @@ One ticket, one worker, one Orca workspace, one branch. The worker carries the t
 reviewed pull request on its own and stops only for a person's decision; this session is its
 coordinator and relays those decisions. Merging stays a person's call.
 
+Each coordinator session has its own Run, and Orca wakes a session only for the workers of its
+Run. So several sessions can each coordinate their own tickets, and `hi-crew:agenda` reads them
+all.
+
 ```bash
 C="${CLAUDE_PLUGIN_ROOT}/lib/crew.sh"     # facts, asks, spec
 O=$(bash "$C" orca)                       # the Orca executable for this host
@@ -48,12 +52,10 @@ Below, `$O` stands for that executable.
    the whole ticket: the worker reads it itself.
 3. **Pick the repo** the work belongs to. Ask the user only when the ticket does not say. It must be
    an Orca project: `$O repo list --json`; add a missing clone with `$O repo add --path <path> --json`.
-4. **Take the Run.** All of this person's hi-crew workers share one Run, so one digest sees them
-   all:
-   - `bash "$C" run` prints it: `$O orchestration run-use --id <run>`. This session becomes the one
-     Orca wakes for every hi-crew worker; say so in one line.
-   - None yet: `$O orchestration run-create --objective "hi-crew" --json`, then
-     `bash "$C" run <run_id>`.
+4. **This session's Run.** `bash "$C" run` prints it when this session already has one; use it.
+   None yet: `$O orchestration run-create --objective "hi-crew" --json`, then
+   `bash "$C" run <run_id>` to register it. Never `run-use` another session's Run to start a
+   ticket: Orca would stop waking that session for its workers.
 5. **Spec:** write the brief to a file in the scratchpad, then
    `bash "$C" spec --key <KEY> --title '<title>' --brief-file <file> > <spec-file>`. Read it once
    before starting.
@@ -75,7 +77,7 @@ Several tickets: run steps 1–7 for each, then end the turn once.
 
 ## When Orca wakes you
 
-`$O orchestration check --run <run>` and handle the whole batch.
+`$O orchestration check --run "$(bash "$C" run)"` and handle the whole batch.
 
 - **A question** (`ask`) or a **decision gate**: the worker stops for a person's decision. Never answer it yourself, even
   when the answer looks obvious: show it to the user in plain words, point by point, with your own

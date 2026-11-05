@@ -10,14 +10,19 @@
 #   crew.sh get <KEY>                 <KEY>'s facts; exit 1 when there are none
 #   crew.sh list                      one JSON object per line, every open ticket
 #   crew.sh close <KEY>               move <KEY>'s facts to closed/ (the ticket is settled)
-#   crew.sh run [<run_id>]            print the person's hi-crew Orca Run id (exit 1: none); with an id, store it
-#   crew.sh asks                      what blocks a worker in that Run, TSV: message id, type
-#                                     (question | decision_gate | escalation), dispatch id,
+#   crew.sh run                       this session's hi-crew Orca Run: the Run Orca has bound to
+#                                     this terminal, when it is one hi-crew made (exit 1: none)
+#   crew.sh run <run_id>              register a Run hi-crew made
+#   crew.sh runs                      the Runs of the open tickets, one per line. Each coordinator
+#                                     session has its own Run, so Orca wakes each for its own
+#                                     workers; the digest reads them all
+#   crew.sh asks                      what blocks a worker in those Runs, TSV: message id, type
+#                                     (question | decision_gate | escalation), run id, dispatch id,
 #                                     created_at, first line. A question or gate is open while no
 #                                     message carries its id as thread_id; an escalation, while its
 #                                     dispatch has sent no later worker_done.
-#   crew.sh reports                   the latest worker_done per dispatch in that Run, TSV:
-#                                     dispatch id, created_at, outcome, subject
+#   crew.sh reports                   the latest worker_done per dispatch in those Runs, TSV:
+#                                     run id, dispatch id, created_at, outcome, subject
 #   crew.sh spec --key K --title T [--brief-file F]
 #                                     the worker spec for a ticket, from reference/worker-spec.md and
 #                                     the config keys crew.process and crew.marker. In crew.process,
@@ -93,22 +98,32 @@ cmd_close() {
   mv "$f" "$DIR/closed/$1.$(date -u +%Y%m%dT%H%M%SZ).json"
 }
 
+# $DIR/run lists every Run hi-crew made, one per line (it once held a single shared Run).
 cmd_run() {
   if [ $# -eq 1 ]; then
     case "$1" in run_*) ;; *) die "not a Run id: '$1'" ;; esac
-    mkdir -p "$DIR" && printf '%s\n' "$1" >"$DIR/run"
+    mkdir -p "$DIR"
+    grep -qxF "$1" "$DIR/run" 2>/dev/null || printf '%s\n' "$1" >>"$DIR/run"
     return
   fi
-  [ -s "$DIR/run" ] || return 1
-  head -n 1 "$DIR/run"
+  need_jq
+  local cur
+  cur=$("$(orca_cmd)" orchestration run-current --json 2>/dev/null | jq -r '.result.runId // empty') || return 1
+  [ -n "$cur" ] && grep -qxF "$cur" "$DIR/run" 2>/dev/null || return 1
+  printf '%s\n' "$cur"
+}
+
+cmd_runs() {
+  need_jq
+  cmd_list | jq -r '.run // empty' | sort -u
 }
 
 inbox() {
-  local run orca
-  run=$(cmd_run) || die 'no hi-crew Run yet (start a ticket first)'
-  orca=$(orca_cmd)
-  "$orca" orchestration inbox --limit 500 --json --full 2>/dev/null \
-    | jq -c --arg run "$run" '(.result.messages // []) | map(select(.run_id == $run))
+  local runs
+  runs=$(cmd_runs | jq -Rsc 'split("\n") | map(select(. != ""))')
+  [ "$runs" != '[]' ] || { echo '[]'; return; }
+  "$(orca_cmd)" orchestration inbox --limit 500 --json --full 2>/dev/null \
+    | jq -c --argjson runs "$runs" '(.result.messages // []) | map(select(.run_id as $r | $runs | index($r)))
         | map(. + {dispatch: ((.payload // "{}" | fromjson? // {}) .dispatchId // "")})'
 }
 
@@ -124,7 +139,7 @@ cmd_asks() {
     | select(.type != "escalation" or
         (. as $e | [ $m[] | select(.type == "worker_done" and .dispatch == $e.dispatch
                                    and .created_at > $e.created_at) ] | length == 0))
-    | [ .id, .type, .dispatch, .created_at, ((.body // .subject // "") | split("\n")[0]) ] | @tsv'
+    | [ .id, .type, .run_id, .dispatch, .created_at, ((.body // .subject // "") | split("\n")[0]) ] | @tsv'
 }
 
 cmd_reports() {
@@ -132,7 +147,7 @@ cmd_reports() {
   local m; m=$(inbox) || exit $?
   printf '%s' "$m" | jq -r '
     [ .[] | select(.type == "worker_done") ] | group_by(.dispatch)[] | max_by(.created_at)
-    | [ .dispatch, .created_at, ((.payload // "{}" | fromjson? // {}) .outcome // ""), (.subject // "") ] | @tsv'
+    | [ .run_id, .dispatch, .created_at, ((.payload // "{}" | fromjson? // {}) .outcome // ""), (.subject // "") ] | @tsv'
 }
 
 cmd_spec() {
@@ -179,9 +194,10 @@ case "$sub" in
   list) cmd_list ;;
   close) cmd_close "$@" ;;
   run) cmd_run "$@" ;;
+  runs) cmd_runs ;;
   asks) cmd_asks ;;
   reports) cmd_reports ;;
   spec) cmd_spec "$@" ;;
   orca) orca_cmd ;;
-  *) sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; [ -z "$sub" ] || exit 2 ;;
+  *) sed -n '2,34p' "$0" | sed 's/^# \{0,1\}//'; [ -z "$sub" ] || exit 2 ;;
 esac
