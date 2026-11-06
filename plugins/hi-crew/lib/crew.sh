@@ -232,9 +232,9 @@ gh_state() {
                elif any($c[]; . == "FAILURE" or . == "ERROR" or . == "CANCELLED" or . == "TIMED_OUT") then "failure"
                elif all($c[]; . == "SUCCESS" or . == "NEUTRAL" or . == "SKIPPED") then "success"
                else "pending" end),
-        people_at: ([.comments[]?, (.reviews[]? | select((.body // "") != ""))] | map(select(mine | not))
+        people_at: ([.comments[]?, (.reviews[]? | select((.body // "") != "" and .state != "PENDING"))] | map(select(mine | not))
                     | map(.updatedAt // .submittedAt // .createdAt // "") | max // ""),
-        people: ([.comments[]?, (.reviews[]? | select((.body // "") != ""))] | map(select(mine | not)) | length) }'
+        people: ([.comments[]?, (.reviews[]? | select((.body // "") != "" and .state != "PENDING"))] | map(select(mine | not)) | length) }'
 }
 
 # What a person should hear about, between two PR states.
