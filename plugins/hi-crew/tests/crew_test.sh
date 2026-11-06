@@ -122,10 +122,30 @@ bash "$C" watch
 check 'merge is an event' "$(bash "$C" events | cut -f5)" 'PR merged'
 mv "$WR/state-7.json" "$WR/gone"; bash "$C" watch
 check 'a failing state command changes nothing' "$(bash "$C" events | wc -l | tr -d ' ')" 1
-mkdir "$W/state/crew/watch/lock"; mv "$WR/gone" "$WR/state-7.json"
+echo '{"state":"open","ci":"failure","people":3,"people_at":"2026-01-01T10:00:00Z"}' >"$WR/gone"; mv "$WR/gone" "$WR/state-7.json"
+bash "$C" watch
+check 'people_at appearing is not an event' "$(bash "$C" events | wc -l | tr -d ' ')" 1
+echo '{"state":"open","ci":"failure","people":3,"people_at":"2026-01-01T11:00:00Z"}' >"$WR/state-7.json"; bash "$C" watch
+check 'a replaced or edited comment is an event' "$(bash "$C" events | tail -1 | cut -f5)" 'a comment from people was written or edited'
+mkdir "$W/state/crew/watch/lock"
 echo '{"state":"closed"}' >"$WR/state-7.json"; bash "$C" watch
-check 'a running watch is not doubled' "$(bash "$C" events | wc -l | tr -d ' ')" 1
+check 'a running watch is not doubled' "$(bash "$C" events | wc -l | tr -d ' ')" 2
 rmdir "$W/state/crew/watch/lock"
+# --- gh_state: the default for github.com, with the same marker rule
+cat >"$W/bin/gh" <<'EOF'
+#!/bin/sh
+cat <<'JSON'
+{"state":"OPEN","isDraft":false,"headRefOid":"abc","statusCheckRollup":[{"conclusion":"SUCCESS"},{"conclusion":"FAILURE"}],
+ "comments":[{"author":{"login":"me"},"body":"(agent, per the user) done","updatedAt":"2026-01-03T00:00:00Z"},
+             {"author":{"login":"me"},"body":"(agents disagree here","updatedAt":"2026-01-02T00:00:00Z"},
+             {"author":{"login":"ci[bot]"},"body":"coverage","updatedAt":"2026-01-04T00:00:00Z"}],
+ "reviews":[{"author":{"login":"rev"},"body":"> (agent) x\n\nwhy?","submittedAt":"2026-01-01T00:00:00Z"},{"author":{"login":"rev"},"body":""}]}
+JSON
+EOF
+chmod +x "$W/bin/gh"
+GS=$(PATH="$W/bin:$PATH" bash -c 'source <(sed -n "/^gh_state()/,/^}/p" "$1"); gh_state x "(agent)"' _ "$C")
+check 'gh_state' "$GS" '{"state":"open","draft":false,"head":"abc","ci":"failure","people_at":"2026-01-02T00:00:00Z","people":2}'
+
 QR=$(bash -c 'source /dev/stdin <<<"$(sed -n "/^q()/p" "$1")"; q "it'"'"'s a b"' _ "$C")
 check 'q quotes one shell word' "$(eval "printf %s $QR")" "it's a b"
 unset ORCA_CLI_COMMAND

@@ -44,9 +44,10 @@
 # PR state comes from the config key crew.pr_state, read at the ticket's `root` (the coordinator's
 # git root, recorded at start): a command that prints one JSON object for a PR,
 #   {"state": "open|merged|closed", "draft": bool, "head": sha, "ci": "success|failure|pending|",
-#    "people": <count of comments by people>}
+#    "people": <count of comments by people>, "people_at": <latest time one was written or edited>}
 # with {{PR}}, {{ROOT}} and {{MARKER}} replaced by the shell-quoted PR url, root and crew.marker.
-# A comment is a person's when it is not the review bot's and not the workers' own. Unset, a
+# A comment is a person's when it is not the review bot's and not the workers' own: it does not
+# start with the marker, or with the marker extended inside its brackets ("(agent, ...) ..."). Unset, a
 # github.com PR is read with gh. The command runs from an automation, outside any terminal, so
 # it must find its own credentials; the precheck runs it in a login interactive shell.
 #
@@ -222,13 +223,17 @@ q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 gh_state() {
   gh pr view "$1" --json state,isDraft,headRefOid,statusCheckRollup,comments,reviews 2>/dev/null \
     | jq -c --arg m "$2" '
-      def mine: (.author.login // "" | test("\\[bot\\]$|^github-actions$")) or ((.body // "") | startswith($m | rtrimstr(")")));
+      def mine: (.author.login // "" | test("\\[bot\\]$|^github-actions$"))
+        or ((.body // "") as $b | ($b | startswith($m))
+            or (($m | endswith(")")) and ($b | startswith(($m | rtrimstr(")")) + ","))));
       { state: (.state | ascii_downcase), draft: .isDraft, head: .headRefOid,
         ci: ([.statusCheckRollup[]? | (.conclusion // .state // "" | ascii_upcase)] as $c
              | if ($c | length) == 0 then ""
                elif any($c[]; . == "FAILURE" or . == "ERROR" or . == "CANCELLED" or . == "TIMED_OUT") then "failure"
                elif all($c[]; . == "SUCCESS" or . == "NEUTRAL" or . == "SKIPPED") then "success"
                else "pending" end),
+        people_at: ([.comments[]?, (.reviews[]? | select((.body // "") != ""))] | map(select(mine | not))
+                    | map(.updatedAt // .submittedAt // .createdAt // "") | max // ""),
         people: ([.comments[]?, (.reviews[]? | select((.body // "") != ""))] | map(select(mine | not)) | length) }'
 }
 
@@ -240,7 +245,9 @@ changes() {
     if ($b.ci // "") != ($a.ci // "") and ($b.ci // "") == "failure"
       then "CI failed on \(($b.head // "")[0:8])" else empty end,
     if ($b.people // 0) > ($a.people // 0)
-      then "\(($b.people // 0) - ($a.people // 0)) new comment(s) from people" else empty end'
+      then "\(($b.people // 0) - ($a.people // 0)) new comment(s) from people"
+    elif ($a | has("people_at")) and ($b.people_at // "") > $a.people_at
+      then "a comment from people was written or edited" else empty end'
 }
 
 pr_state() { # <facts json>
