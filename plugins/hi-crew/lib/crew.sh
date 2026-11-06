@@ -39,6 +39,11 @@
 #   crew.sh watch-install [<cron>]    create or update that automation (default every 10 minutes)
 #   crew.sh events [--ack]            watch events no one has seen, TSV: time, key, run, pr, what;
 #                                     --ack marks them seen
+#   crew.sh prompts                   the open tickets whose worker sits on a permission dialog,
+#                                     TSV: key, run, since, tool. The plugin's Notification hook marks
+#                                     a session on a dialog (prompt-mark.sh); a worker's is the one
+#                                     whose cwd is in the ticket's `workspace`. The watch wakes the
+#                                     coordinator once per dialog
 #   crew.sh orca                      the Orca executable this host should use
 #
 # PR state comes from the config key crew.pr_state, read at the ticket's `root` (the coordinator's
@@ -272,7 +277,7 @@ pr_state() { # <facts json>
 
 cmd_watch() {
   need_jq
-  local w="$DIR/watch" lock="$DIR/watch/lock" t key pr run now snap what handle
+  local w="$DIR/watch" lock="$DIR/watch/lock" t key pr run now snap what hit since tool
   mkdir -p "$w"
   if ! mkdir "$lock" 2>/dev/null; then
     [ -n "$(find "$lock" -maxdepth 0 -mmin +30 2>/dev/null)" ] || return 0  # another watch runs
@@ -282,20 +287,53 @@ cmd_watch() {
   cmd_list | while IFS= read -r t; do
     key=$(printf '%s' "$t" | jq -r .key); pr=$(printf '%s' "$t" | jq -r '.pr // empty')
     run=$(printf '%s' "$t" | jq -r '.run // empty')
+    # A dialog is told once: its `since` is kept until the next one.
+    if hit=$(on_prompt "$t"); then
+      since=$(printf '%s' "$hit" | cut -f1); tool=$(printf '%s' "$hit" | cut -f2)
+      if [ "$(cat "$w/$key.prompt" 2>/dev/null)" != "$since" ]; then
+        printf '%s\n' "$since" >"$w/$key.prompt"
+        event "$key" "$run" "${pr:-$(printf '%s' "$t" | jq -r '.workspace')}" \
+          "waits on a permission dialog${tool:+ for $tool}"
+      fi
+    fi
     [ -n "$pr" ] || continue
     now=$(pr_state "$t") && printf '%s' "$now" | jq -e 'type == "object"' >/dev/null 2>&1 || continue
     snap="$w/$key.json"
     if [ -f "$snap" ]; then
-      changes "$(cat "$snap")" "$now" | while IFS= read -r what; do
-        printf '%s\t%s\t%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$key" "$run" "$pr" "$what" >>"$w/events"
-        handle=$(cat "$DIR/handles/$run" 2>/dev/null) || handle=''
-        [ -n "$run" ] && [ -n "$handle" ] || continue
-        "$(orca_cmd)" orchestration send --to "run:$run" --from "$handle" --type status \
-          --subject "$key: $what" --body "hi-crew watch: $what on $pr" >/dev/null 2>&1 || :
-      done
+      changes "$(cat "$snap")" "$now" | while IFS= read -r what; do event "$key" "$run" "$pr" "$what"; done
     fi
     printf '%s\n' "$now" >"$snap"
   done
+}
+
+PROMPT_MARK="$HERE/prompt-mark.sh"
+
+# since<TAB>tool when the worker of these facts sits on a permission dialog; exit 1 otherwise.
+on_prompt() { # <facts json>
+  local ws
+  ws=$(printf '%s' "$1" | jq -r '.workspace // empty')
+  [ -n "$ws" ] && [ -d "$ws" ] || return 1
+  bash "$PROMPT_MARK" check "$ws"
+}
+
+cmd_prompts() {
+  need_jq
+  local t hit
+  cmd_list | while IFS= read -r t; do
+    hit=$(on_prompt "$t") || continue
+    printf '%s\t%s\t%s\n' "$(printf '%s' "$t" | jq -r .key)" "$(printf '%s' "$t" | jq -r '.run // ""')" "$hit"
+  done
+  return 0
+}
+
+# Append one watch event and wake the ticket's coordinator with it.
+event() { # <key> <run> <pr or workspace> <what>
+  local w="$DIR/watch" handle
+  printf '%s\t%s\t%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" "$3" "$4" >>"$w/events"
+  handle=$(cat "$DIR/handles/$2" 2>/dev/null) || handle=''
+  [ -n "$2" ] && [ -n "$handle" ] || return 0
+  "$(orca_cmd)" orchestration send --to "run:$2" --from "$handle" --type status \
+    --subject "$1: $4" --body "hi-crew watch: $4 on $3" >/dev/null 2>&1 || :
 }
 
 cmd_events() {
@@ -358,6 +396,7 @@ case "$sub" in
   watch) cmd_watch ;;
   watch-install) cmd_watch_install "$@" ;;
   events) cmd_events "$@" ;;
+  prompts) cmd_prompts ;;
   orca) orca_cmd ;;
-  *) sed -n '2,53p' "$0" | sed 's/^# \{0,1\}//'; [ -z "$sub" ] || exit 2 ;;
+  *) sed -n '2,59p' "$0" | sed 's/^# \{0,1\}//'; [ -z "$sub" ] || exit 2 ;;
 esac

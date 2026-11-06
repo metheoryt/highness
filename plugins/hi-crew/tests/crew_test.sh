@@ -131,6 +131,29 @@ mkdir "$W/state/crew/watch/lock"
 echo '{"state":"closed"}' >"$WR/state-7.json"; bash "$C" watch
 check 'a running watch is not doubled' "$(bash "$C" events | wc -l | tr -d ' ')" 2
 rmdir "$W/state/crew/watch/lock"
+# --- a worker on a permission dialog: prompts lists it, the watch tells the coordinator once
+mkdir -p "$W/ws2/sub"; WS2=$(cd "$W/ws2" && pwd -P)
+bash "$C" record W-2 "{\"workspace\":\"$WS2\"}"
+bash "$C" watch; bash "$C" events --ack; : >"$SENT"  # settle the closed PR above
+PTR="$W/p.jsonl"
+printf '%s\n' '{"type":"assistant","timestamp":"2020-01-01T00:00:01.000Z","message":{"content":[{"type":"tool_use","id":"tu_9","name":"Bash"}]}}' >"$PTR"
+pnotify() { jq -n -c --arg c "$WS2/sub" --arg tr "$PTR" '{hook_event_name:"Notification",notification_type:"permission_prompt",session_id:"sw2",cwd:$c,transcript_path:$tr}' \
+  | bash "$HERE/../lib/prompt-mark.sh" hook; }
+check 'prompts: none before the dialog' "$(bash "$C" prompts)" ''
+pnotify
+check 'prompts: key, run, tool' "$(bash "$C" prompts | cut -f1,2,4)" "$(printf 'W-2\trun_w1\tBash')"
+bash "$C" watch
+check 'watch: a dialog is an event' "$(bash "$C" events | cut -f2,4,5)" "$(printf 'W-2\t%s\twaits on a permission dialog for Bash' "$WS2")"
+case "$(cat "$SENT")" in *'--subject W-2: waits on a permission dialog for Bash'*) ok 'watch: wakes the coordinator about the dialog' ;; *) no "dialog send: $(cat "$SENT")" ;; esac
+bash "$C" watch
+check 'watch: the same dialog is told once' "$(bash "$C" events | wc -l | tr -d ' ')" 1
+printf '%s\n' '{"type":"user","timestamp":"2999-01-01T00:00:00.000Z","message":{"content":[{"type":"tool_result","tool_use_id":"tu_9"}]}}' >>"$PTR"
+check 'prompts: answered, gone' "$(bash "$C" prompts)" ''
+printf '%s\n' '{"type":"assistant","timestamp":"2999-01-01T00:00:01.000Z","message":{"content":[{"type":"tool_use","id":"tu_10","name":"Edit"}]}}' >"$PTR"
+sleep 1; pnotify; bash "$C" watch
+check 'watch: a new dialog is told again' "$(bash "$C" events | wc -l | tr -d ' ')" 2
+bash "$C" events --ack
+
 # --- gh_state: the default for github.com, with the same marker rule
 cat >"$W/bin/gh" <<'EOF'
 #!/bin/sh
