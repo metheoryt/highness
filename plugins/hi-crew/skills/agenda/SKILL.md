@@ -24,9 +24,12 @@ this skill" printed above, two levels up.
    Run. `$O orchestration inbox --limit 100 --full --json` gives the full text.
 3. **Last reports**: `bash "$C" reports` — the latest `worker_done` per dispatch. A report no
    session handled lands here; record what it names (`pr`, `head`).
-4. **Workers**: `$O orchestration worker-list --run <run> --json` for each of `bash "$C" runs` —
+4. **What the watch saw**: `bash "$C" events` — PRs merged or closed, CI failures, people's
+   new comments since anyone last looked (TSV: time, key, run, pr, what). When it is empty and
+   `$O automations list --json` has no "hi-crew watch", offer `bash "$C" watch-install` once.
+5. **Workers**: `$O orchestration worker-list --run <run> --json` for each of `bash "$C" runs` —
    which are working, idle, finished.
-5. **Each ticket's PR** (`pr` in the facts; when missing, find it by the `branch` on the forge, and record it): read its state with the team's forge tool (the `crew.process` text
+6. **Each ticket's PR** (`pr` in the facts; when missing, find it by the `branch` on the forge, and record it): read its state with the team's forge tool (the `crew.process` text
    says which): open, draft or ready, merged or closed; review rounds; CI; and comments from people
    since the worker's last report. A comment is a person's when it is not the review bot's and does
    not start with the workers' marker (`crew.marker`, default `(agent)`): workers post under the
@@ -41,7 +44,7 @@ One short list, most urgent first, each item with its next step in words:
 2. **Running** — what each worker is doing, from its last report.
 3. **Done since last time** — merged or closed; propose closing the facts.
 
-Then propose where to start, and go one topic at a time.
+Then `bash "$C" events --ack`, propose where to start, and go one topic at a time.
 
 ## 3. Work through it
 

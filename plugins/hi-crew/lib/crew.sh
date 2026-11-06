@@ -29,7 +29,26 @@
 #                                     {{ROOT}} becomes the git root of the coordinator's working
 #                                     directory: a worker runs in another tree, so the team's files
 #                                     must be named by absolute path
+#   crew.sh watch                     look at the PR of every open ticket and, when something a
+#                                     person should see changed since the last look (merged or
+#                                     closed, CI failed, new comments from people), append it to the
+#                                     watch events and wake the ticket's coordinator with a status
+#                                     message to its Run. The first look at a ticket only records it.
+#                                     Run by the Orca automation below, from its precheck, which then
+#                                     exits 1 so no agent ever starts
+#   crew.sh watch-install [<cron>]    create or update that automation (default every 10 minutes)
+#   crew.sh events [--ack]            watch events no one has seen, TSV: time, key, run, pr, what;
+#                                     --ack marks them seen
 #   crew.sh orca                      the Orca executable this host should use
+#
+# PR state comes from the config key crew.pr_state, read at the ticket's `root` (the coordinator's
+# git root, recorded at start): a command that prints one JSON object for a PR,
+#   {"state": "open|merged|closed", "draft": bool, "head": sha, "ci": "success|failure|pending|",
+#    "people": <count of comments by people>}
+# with {{PR}}, {{ROOT}} and {{MARKER}} replaced by the shell-quoted PR url, root and crew.marker.
+# A comment is a person's when it is not the review bot's and not the workers' own. Unset, a
+# github.com PR is read with gh. The command runs from an automation, outside any terminal, so
+# it must find its own credentials; the precheck runs it in a login interactive shell.
 #
 # State dir: ${HIGHNESS_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/highness}/crew
 set -uo pipefail
@@ -99,17 +118,27 @@ cmd_close() {
 }
 
 # $DIR/run lists every Run hi-crew made, one per line (it once held a single shared Run).
+# The watch has no terminal of its own, and Orca sends only from one; it sends from the terminal
+# of the Run's coordinator, kept fresh in $DIR/handles/<run> each time the coordinator asks for its
+# Run here.
+keep_handle() {
+  [ -n "${ORCA_TERMINAL_HANDLE:-}" ] || return 0
+  mkdir -p "$DIR/handles" && printf '%s\n' "$ORCA_TERMINAL_HANDLE" >"$DIR/handles/$1"
+}
+
 cmd_run() {
   if [ $# -eq 1 ]; then
     case "$1" in run_*) ;; *) die "not a Run id: '$1'" ;; esac
     mkdir -p "$DIR"
     grep -qxF "$1" "$DIR/run" 2>/dev/null || printf '%s\n' "$1" >>"$DIR/run"
+    keep_handle "$1"
     return
   fi
   need_jq
   local cur
   cur=$("$(orca_cmd)" orchestration run-current --json 2>/dev/null | jq -r '.result.runId // empty') || return 1
   [ -n "$cur" ] && grep -qxF "$cur" "$DIR/run" 2>/dev/null || return 1
+  keep_handle "$cur"
   printf '%s\n' "$cur"
 }
 
@@ -186,6 +215,127 @@ cmd_spec() {
       print line }' "$TEMPLATE"
 }
 
+# One shell word: 'it''s' -> 'it'\''s'.
+q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
+
+# The PR state of a github.com PR when the team set no crew.pr_state.
+gh_state() {
+  gh pr view "$1" --json state,isDraft,headRefOid,statusCheckRollup,comments,reviews 2>/dev/null \
+    | jq -c --arg m "$2" '
+      def mine: (.author.login // "" | test("\\[bot\\]$|^github-actions$")) or ((.body // "") | startswith($m | rtrimstr(")")));
+      { state: (.state | ascii_downcase), draft: .isDraft, head: .headRefOid,
+        ci: ([.statusCheckRollup[]? | (.conclusion // .state // "" | ascii_upcase)] as $c
+             | if ($c | length) == 0 then ""
+               elif any($c[]; . == "FAILURE" or . == "ERROR" or . == "CANCELLED" or . == "TIMED_OUT") then "failure"
+               elif all($c[]; . == "SUCCESS" or . == "NEUTRAL" or . == "SKIPPED") then "success"
+               else "pending" end),
+        people: ([.comments[]?, (.reviews[]? | select((.body // "") != ""))] | map(select(mine | not)) | length) }'
+}
+
+# What a person should hear about, between two PR states.
+changes() {
+  jq -rn --argjson a "$1" --argjson b "$2" '
+    if ($b.state // "") != ($a.state // "") and (($b.state // "") | test("^(merged|closed)$"))
+      then "PR \($b.state)" else empty end,
+    if ($b.ci // "") != ($a.ci // "") and ($b.ci // "") == "failure"
+      then "CI failed on \(($b.head // "")[0:8])" else empty end,
+    if ($b.people // 0) > ($a.people // 0)
+      then "\(($b.people // 0) - ($a.people // 0)) new comment(s) from people" else empty end'
+}
+
+pr_state() { # <facts json>
+  local pr root cmd marker line
+  pr=$(printf '%s' "$1" | jq -r '.pr // empty')
+  root=$(printf '%s' "$1" | jq -r '.root // empty')
+  [ -n "$root" ] && [ -d "$root" ] || root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+  cmd=$(cd "$root" && bash "$CONFIG" get '.crew.pr_state') || cmd=''
+  marker=$(cd "$root" && bash "$CONFIG" get '.crew.marker') || marker='(agent)'
+  if [ -z "$cmd" ]; then
+    case "$pr" in https://github.com/*) gh_state "$pr" "$marker"; return ;; *) return 1 ;; esac
+  fi
+  line=$(PR=$(q "$pr") ROOT=$(q "$root") MARKER=$(q "$marker") awk '
+    function rep(s, ph, val,   out, i) {
+      out = ""
+      while ((i = index(s, ph)) > 0) { out = out substr(s, 1, i - 1) val; s = substr(s, i + length(ph)) }
+      return out s
+    }
+    { print rep(rep(rep($0, "{{PR}}", ENVIRON["PR"]), "{{ROOT}}", ENVIRON["ROOT"]), "{{MARKER}}", ENVIRON["MARKER"]) }' <<<"$cmd")
+  (cd "$root" && sh -c "$line") 2>/dev/null
+}
+
+cmd_watch() {
+  need_jq
+  local w="$DIR/watch" lock="$DIR/watch/lock" t key pr run now snap what handle
+  mkdir -p "$w"
+  if ! mkdir "$lock" 2>/dev/null; then
+    [ -n "$(find "$lock" -maxdepth 0 -mmin +30 2>/dev/null)" ] || return 0  # another watch runs
+    rm -rf "$lock"; mkdir "$lock" || return 0
+  fi
+  trap "rmdir '$lock' 2>/dev/null" EXIT
+  cmd_list | while IFS= read -r t; do
+    key=$(printf '%s' "$t" | jq -r .key); pr=$(printf '%s' "$t" | jq -r '.pr // empty')
+    run=$(printf '%s' "$t" | jq -r '.run // empty')
+    [ -n "$pr" ] || continue
+    now=$(pr_state "$t") && printf '%s' "$now" | jq -e 'type == "object"' >/dev/null 2>&1 || continue
+    snap="$w/$key.json"
+    if [ -f "$snap" ]; then
+      changes "$(cat "$snap")" "$now" | while IFS= read -r what; do
+        printf '%s\t%s\t%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$key" "$run" "$pr" "$what" >>"$w/events"
+        handle=$(cat "$DIR/handles/$run" 2>/dev/null) || handle=''
+        [ -n "$run" ] && [ -n "$handle" ] || continue
+        "$(orca_cmd)" orchestration send --to "run:$run" --from "$handle" --type status \
+          --subject "$key: $what" --body "hi-crew watch: $what on $pr" >/dev/null 2>&1 || :
+      done
+    fi
+    printf '%s\n' "$now" >"$snap"
+  done
+}
+
+cmd_events() {
+  local w="$DIR/watch" seen total
+  seen=$(cat "$w/seen" 2>/dev/null) || seen=0
+  total=0; [ -f "$w/events" ] && total=$(wc -l <"$w/events" | tr -d ' ')
+  if [ "${1:-}" = --ack ]; then mkdir -p "$w" && printf '%s\n' "$total" >"$w/seen"; return; fi
+  [ "$total" -gt "$seen" ] && tail -n "$((total - seen))" "$w/events"
+  return 0
+}
+
+# The plugin cache path carries the version and moves with each update; the marketplace clone
+# beside it does not, so the automation names that copy when there is one.
+stable_self() {
+  case "$HERE" in
+    */plugins/cache/*/lib)
+      local base=${HERE%%/plugins/cache/*} rest=${HERE#*/plugins/cache/} s
+      s="$base/plugins/marketplaces/${rest%%/*}/plugins/hi-crew/lib/crew.sh"
+      [ -f "$s" ] && { printf '%s\n' "$s"; return; } ;;
+  esac
+  printf '%s\n' "$HERE/crew.sh"
+}
+
+WATCH_NAME='hi-crew watch'
+
+cmd_watch_install() {
+  need_jq
+  local every=${1:-'*/10 * * * *'} O self pre agent id
+  O=$(orca_cmd); self=$(stable_self)
+  case "$self" in *\'*|*\"*) die "cannot quote the path $self" ;; esac
+  pre="${SHELL:-/bin/sh} -lic 'bash \"$self\" watch' </dev/null >/dev/null 2>&1; exit 1"
+  agent=$(bash "$CONFIG" get '.crew.agent') || agent=claude
+  id=$("$O" automations list --json 2>/dev/null \
+    | jq -r --arg n "$WATCH_NAME" '[.result.automations[]? | select(.name == $n) | .id][0] // empty')
+  if [ -n "$id" ]; then
+    "$O" automations edit "$id" --trigger "$every" --precheck "$pre" --precheck-timeout 300 --enabled --json >/dev/null \
+      || die 'could not update the watch automation'
+    echo "updated: $WATCH_NAME ($id), $every"
+  else
+    "$O" automations create --name "$WATCH_NAME" --trigger "$every" --provider "$agent" \
+      --prompt 'Nothing to do: hi-crew watch runs in the precheck, which never lets a run start. Stop.' \
+      --precheck "$pre" --precheck-timeout 300 --enabled --json >/dev/null \
+      || die 'could not create the watch automation'
+    echo "created: $WATCH_NAME, $every"
+  fi
+}
+
 sub=${1:-}; [ $# -gt 0 ] && shift
 case "$sub" in
   dir) printf '%s\n' "$DIR" ;;
@@ -198,6 +348,9 @@ case "$sub" in
   asks) cmd_asks ;;
   reports) cmd_reports ;;
   spec) cmd_spec "$@" ;;
+  watch) cmd_watch ;;
+  watch-install) cmd_watch_install "$@" ;;
+  events) cmd_events "$@" ;;
   orca) orca_cmd ;;
-  *) sed -n '2,34p' "$0" | sed 's/^# \{0,1\}//'; [ -z "$sub" ] || exit 2 ;;
+  *) sed -n '2,53p' "$0" | sed 's/^# \{0,1\}//'; [ -z "$sub" ] || exit 2 ;;
 esac

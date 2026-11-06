@@ -88,4 +88,46 @@ left=$(printf '%s\n' "$out" | grep -v 'literal\.$' | grep -c '{{')
 check 'no placeholder left' "$left" 0
 if bash "$C" spec --key ABC-9 2>/dev/null; then no 'spec needs a title'; else ok 'spec needs a title'; fi
 
+# --- watch: a fake PR state command and an orca that records what it sends
+W="$T/w"; mkdir -p "$W/bin" "$W/root"; git -C "$W/root" init -q
+WR=$(cd "$W/root" && git rev-parse --show-toplevel)
+export HIGHNESS_STATE="$W/state"
+cat >"$W/bin/orca" <<'EOF'
+#!/bin/sh
+if [ "$2" = run-current ]; then printf '{"ok":true,"result":{"runId":"run_w1"}}\n'; exit 0; fi
+printf '%s\n' "$*" >>"$SENT"
+EOF
+chmod +x "$W/bin/orca"
+export ORCA_CLI_COMMAND="$W/bin/orca" SENT="$W/sent"; : >"$SENT"
+printf '{"crew":{"pr_state":"cat {{ROOT}}/state-$(basename {{PR}}).json","marker":"[bot]"}}' >"$W/root/.claude-tmp"
+mkdir -p "$W/root/.claude" && mv "$W/root/.claude-tmp" "$W/root/.claude/highness.json"
+ORCA_TERMINAL_HANDLE=term_coord bash "$C" run run_w1
+check 'run keeps the coordinator terminal' "$(cat "$W/state/crew/handles/run_w1")" term_coord
+bash "$C" record W-1 "{\"pr\":\"https://forge/pr/7\",\"run\":\"run_w1\",\"root\":\"$WR\"}"
+bash "$C" record W-2 "{\"run\":\"run_w1\",\"root\":\"$WR\"}"
+echo '{"state":"open","ci":"pending","people":1,"head":"aaaaaaaaaa"}' >"$WR/state-7.json"
+bash "$C" watch
+check 'first look only records' "$(bash "$C" events)$(cat "$SENT")" ''
+bash "$C" watch
+check 'no change, no event' "$(bash "$C" events)" ''
+echo '{"state":"open","ci":"failure","people":3,"head":"bbbbbbbbbb"}' >"$WR/state-7.json"
+bash "$C" watch
+check 'events: CI failure and new comments' "$(bash "$C" events | cut -f2,3,4,5)" "$(printf 'W-1\trun_w1\thttps://forge/pr/7\tCI failed on bbbbbbbb\nW-1\trun_w1\thttps://forge/pr/7\t2 new comment(s) from people')"
+case "$(cat "$SENT")" in *'send --to run:run_w1 --from term_coord --type status --subject W-1: CI failed on bbbbbbbb'*) ok 'wakes the coordinator from its terminal' ;; *) no "wakes the coordinator: $(cat "$SENT")" ;; esac
+check 'one message per event' "$(wc -l <"$SENT" | tr -d ' ')" 2
+bash "$C" events --ack
+check 'ack hides seen events' "$(bash "$C" events)" ''
+echo '{"state":"merged","ci":"failure","people":3}' >"$WR/state-7.json"
+bash "$C" watch
+check 'merge is an event' "$(bash "$C" events | cut -f5)" 'PR merged'
+mv "$WR/state-7.json" "$WR/gone"; bash "$C" watch
+check 'a failing state command changes nothing' "$(bash "$C" events | wc -l | tr -d ' ')" 1
+mkdir "$W/state/crew/watch/lock"; mv "$WR/gone" "$WR/state-7.json"
+echo '{"state":"closed"}' >"$WR/state-7.json"; bash "$C" watch
+check 'a running watch is not doubled' "$(bash "$C" events | wc -l | tr -d ' ')" 1
+rmdir "$W/state/crew/watch/lock"
+QR=$(bash -c 'source /dev/stdin <<<"$(sed -n "/^q()/p" "$1")"; q "it'"'"'s a b"' _ "$C")
+check 'q quotes one shell word' "$(eval "printf %s $QR")" "it's a b"
+unset ORCA_CLI_COMMAND
+
 exit $fail
