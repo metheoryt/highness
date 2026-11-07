@@ -14,7 +14,7 @@ LIB="$HERE/../lib"
 . "$HERE/_sandbox.sh"
 O="$LIB/orca.sh"
 
-READY='{"ok":true,"result":{"app":{"running":true},"runtime":{"state":"ready","reachable":true}}}'
+READY='{"ok":true,"result":{"app":{"running":true},"runtime":{"state":"ready","reachable":true,"appVersion":"1.4.252"}}}'
 
 # The success-path assertions below build a PATH from scratch and drive `available`
 # all the way through its jq parsing, so jq has to be on that PATH. It is not always

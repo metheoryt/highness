@@ -46,13 +46,11 @@ assert_contains "candidates: …including git's own message" "$(cat "$SANDBOX/ca
 
 # --- land-branch -----------------------------------------------------------------
 git -C "$SANDBOX/repo" worktree add -q "$SANDBOX/wt1" -b dev/AB-7
-bash "$O" land-branch "$SANDBOX/wt1" --branch task/x/AB-8-z --key AB-7 2>/dev/null
+bash "$O" land-branch "$SANDBOX/wt1" --adopt task/x/AB-8-z --key AB-7 2>/dev/null
 assert_status "land-branch: key/branch disagreement refused" 2 "$?"
 assert_eq "…and HEAD unchanged" "dev/AB-7" "$(git -C "$SANDBOX/wt1" rev-parse --abbrev-ref HEAD)"
-bash "$O" land-branch "$SANDBOX/wt1" --branch a/AB-7 --adopt b/AB-7 --key AB-7 2>/dev/null
-assert_status "land-branch: --branch and --adopt exclusive" 2 "$?"
-bash "$O" land-branch "$SANDBOX/wt1" --branch task/x/AB-7-slug --key AB-7; assert_status "land-branch: rename" 0 "$?"
-assert_eq "renamed onto the convention name" "task/x/AB-7-slug" "$(git -C "$SANDBOX/wt1" rev-parse --abbrev-ref HEAD)"
+bash "$O" land-branch "$SANDBOX/wt1" --branch task/x/AB-7-slug --key AB-7 2>/dev/null
+assert_status "land-branch: --branch is gone (Orca names a new branch itself)" 2 "$?"
 
 git -C "$SANDBOX/repo" worktree add -q "$SANDBOX/wt2" -b dev/AB-101
 bash "$O" land-branch "$SANDBOX/wt2" --adopt task/x/AB-101-a --key AB-101; assert_status "land-branch: adopt" 0 "$?"

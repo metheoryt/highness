@@ -234,7 +234,10 @@ _backend() {
     orca|'') ;;
     *) say 'HI_WT_BACKEND must be git or orca'; exit 2 ;;
   esac
-  if bash "$ORCA_SH" available >/dev/null 2>&1; then
+  local why
+  why=$(bash "$ORCA_SH" available 2>/dev/null)
+  case "$why" in outdated:*) say "${why#outdated: } (using plain git worktrees until then)" ;; esac
+  if [ "$why" = ok ]; then
     REPO_SEL=$(bash "$ORCA_SH" repo-selector "$MAIN" 2>/dev/null) || REPO_SEL=''
     ORCA=$(bash "$ORCA_SH" resolve 2>/dev/null) || ORCA=''
     if [ -n "$REPO_SEL" ] && [ -n "$ORCA" ]; then BACKEND=orca; else REPO_SEL=''; ORCA=''; fi
@@ -414,24 +417,22 @@ _create_git() {
   fi || { say "git worktree add failed: $out"; WT=''; return 1; }
 }
 
-# _land_orca: moves a fresh Orca tree onto the branch (or detached head) the kind wants. Reads
-# _create_orca's locals (kind key branch adopt detach slug target WT MAIN auto). 1 on failure.
+# _land_orca: checks a fresh Orca tree is where the kind wants it, or moves it there. A new
+# ticket or work branch is named at creation (`--branch`, _create_orca); an existing branch
+# and an adopted origin branch are switched to here, and a review is detached. Reads
+# _create_orca's locals (kind key branch adopt detach slug target WT MAIN auto named). 1 on failure.
 _land_orca() {
+  if [ -n "$named" ]; then
+    [ "$auto" = "$branch" ] && return 0
+    say "create: Orca put the tree on [$auto], not $branch"; return 1
+  fi
   case "$kind" in
     ticket)
       if [ -n "$adopt" ]; then
         bash "$ORCA_SH" land-branch "$WT" --adopt "$adopt" --key "$key" || return 1
-      elif git -C "$MAIN" show-ref --verify --quiet "refs/heads/$branch"; then
+      else
         git -C "$WT" switch --quiet "$branch" || return 1
         [ -n "$auto" ] && git -C "$MAIN" branch -d "$auto" >/dev/null 2>&1
-      else
-        bash "$ORCA_SH" land-branch "$WT" --branch "$branch" --key "$key" || return 1
-      fi ;;
-    work)
-      if [ "$auto" != "$branch" ]; then
-        git -C "$MAIN" show-ref --verify --quiet "refs/heads/$branch" && {
-          say "create: $branch already exists; the workspace stays on $auto"; return 1; }
-        git -C "$WT" branch -m "$branch" || return 1
       fi ;;
     review)
       git -C "$WT" switch --detach --quiet "$detach" || return 1
@@ -447,10 +448,20 @@ _land_orca() {
 # Orca backend. `--setup skip`: wt.sh runs the setup itself on both backends.
 # Reads the caller's locals; sets WT (POSIX) and SEL (Orca id, verbatim).
 _create_orca() {
-  local target js rc err errf code line auto
+  local target js rc err errf code line auto named=''
   target=$base; [ "$kind" = review ] && target=$detach
+  # A branch that does not exist yet is named at creation. An existing one is switched to
+  # after (_land_orca): Orca reuses it only when it sits at the base, and otherwise cuts
+  # `<name>-2` beside it (measured on Orca 1.4.252).
+  case "$kind" in ticket|work)
+    [ -z "$adopt" ] && ! git -C "$MAIN" show-ref --verify --quiet "refs/heads/$branch" && named=$branch ;;
+  esac
+  if [ "$kind" = work ] && [ -z "$named" ]; then
+    say "create: $branch already exists; pick another --branch"; return 1
+  fi
   set -- worktree create --repo "$REPO_SEL" --name "$slug" --base-branch "$target" \
          --setup skip --comment "hi:$kind $key" --json
+  [ -n "$named" ] && set -- "$@" --branch "$named"
   # Always an explicit parent (cmd_create guarantees psel): with no lineage flag Orca guesses from
   # the caller's worktree, and --no-parent is what left trees orphaned in the sidebar.
   set -- "$@" --parent-worktree "$(_osel "$psel" "$parent")"
@@ -485,7 +496,7 @@ _create_orca() {
   fi
   "$ORCA" worktree set --worktree "$(_osel "$SEL" "$WT")" --display-name "$name" --json >/dev/null 2>&1 ||
     say 'could not set the Orca display name (non-fatal)'
-  # Orca always cuts `<handle>/<name>`. Land the tree where the kind wants it. A failure here
+  # Land the tree where the kind wants it. A failure here
   # leaves a fresh tree on Orca's auto branch that holds no work: remove it, or a later create
   # would find it and hand it back on the wrong branch.
   auto=$(git -C "$WT" symbolic-ref --quiet --short HEAD 2>/dev/null) || auto=''
@@ -1072,12 +1083,10 @@ _do_remove() {
     out=$(git -C "$MAIN" worktree remove --force "$p" 2>&1) || say "git worktree remove: $out"
   fi
   # The filesystem decides, never `ok`: Orca has answered ok:false for a removal that
-  # happened, and root-owned files a container wrote survive both git and Orca. Orca also
-  # answers before it is done ("removing": true; the tree goes ~1 s later), so wait for it.
-  # Orca answers before it is done and has taken longer than 15 s to finish: 60 s there.
-  # `git worktree remove` is synchronous, so 15 s on git. The wait ends once the tree is gone.
-  wait=15; [ -n "$sel" ] && [ -n "$ORCA" ] && wait=60
-  wait=${HI_WT_RM_WAIT:-$wait}
+  # happened, and root-owned files a container wrote survive both git and Orca. Both
+  # backends answer once the tree is gone (Orca 1.4.245+, measured ~2.5 s on 1.4.252); the
+  # short wait only covers a slow filesystem and ends as soon as the tree is gone.
+  wait=${HI_WT_RM_WAIT:-15}
   _gone "$p" "$wait"
   if [ -d "$p" ]; then
     if _is_wt "$p"; then
@@ -1095,9 +1104,8 @@ _do_remove() {
   [ "$(_rec_get "$kind" "$key" workspace 2>/dev/null)" = "$p" ] &&
     _rec_set "$kind" "$key" workspace '' >/dev/null 2>&1
   # A branch whose work is proven in — its head is in origin/<trunk>, or its PR merged at that
-  # head — is deleted: nothing is lost. Any other branch is kept on both backends. Orca's rm also
-  # deletes the checked-out branch when it believes it merged (its --help), and it has deleted
-  # one whose head was on no branch anywhere: an unproven one is put back at the same sha.
+  # head — is deleted: nothing is lost. Any other branch is kept: both backends leave it alone
+  # (Orca keeps the branch on rm since 1.4.246 unless given --delete-branch, never passed here).
   bnote=''
   if [ -n "$b" ] && { _in_trunk "$h" || _merged_at "$kind" "$key" "$b" "$h"; }; then
     if git -C "$MAIN" show-ref --verify --quiet "refs/heads/$b" &&
@@ -1108,8 +1116,7 @@ _do_remove() {
     fi
   elif [ -n "$b" ]; then
     if git -C "$MAIN" show-ref --verify --quiet "refs/heads/$b"; then bnote=" — branch $b kept"
-    elif git -C "$MAIN" branch "$b" "$h" >/dev/null 2>&1; then bnote=" — branch $b kept (restored after Orca deleted it)"
-    else bnote=" — Orca deleted branch $b and it could not be restored: git branch $b $h"; fi
+    else bnote=" — branch $b is gone; it was at $h: git branch $b $h"; fi
   fi
   say "removed \"$name\" ($p)$bnote${session:+ — resume the chat: claude --resume $session}"
   return "$rc"

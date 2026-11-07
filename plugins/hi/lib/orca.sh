@@ -111,6 +111,25 @@ q() {
   esac
 }
 
+# The oldest Orca hi drives. Orca nags for updates and the team keeps it current, so hi follows
+# the current CLI and keeps no path for an older one: worktree create --branch (1.4.244), rm
+# that waits for the real outcome (1.4.245) and keeps the branch (1.4.246).
+MIN_VERSION=1.4.246
+
+# version_ok <x.y.z>: exit 0 when the version is at least MIN_VERSION. An empty or unparsable
+# version fails: the runtime always reports one.
+version_ok() {
+  local v="${1:-}" i a b
+  case "$v" in ''|*[!0-9.]*) return 1 ;; esac
+  for i in 1 2 3; do
+    a=$(printf '%s' "$v" | cut -d. -f"$i"); b=$(printf '%s' "$MIN_VERSION" | cut -d. -f"$i")
+    a=${a:-0}
+    [ "$a" -gt "$b" ] && return 0
+    [ "$a" -lt "$b" ] && return 1
+  done
+  return 0
+}
+
 # `ok` + runtime reachable is enough to drive the CLI. Deliberately NOT gated on
 # .result.app.running — the desktop app matters for --activate, not for creation.
 available() {
@@ -127,6 +146,10 @@ available() {
   [ "$reachable" = "true" ] || { printf 'unavailable: orca runtime not reachable\n'; return 1; }
   [ "$state" = "ready" ] || {
     printf 'degraded: orca runtime state is "%s", not ready\n' "$state"; return 1; }
+  local ver
+  ver=$(printf '%s' "$js" | jq -r '.result.runtime.appVersion // ""' 2>/dev/null)
+  version_ok "$ver" || {
+    printf 'outdated: Orca %s is older than %s — update Orca\n' "${ver:-(unknown)}" "$MIN_VERSION"; return 1; }
   printf 'ok\n'
 }
 
@@ -321,61 +344,46 @@ EOF
   return 0
 }
 
-# land_branch <wt> <branch> <adopt>: put a fresh worktree on the ticket's branch. Orca has
-# no branch-name flag: it cuts `<handle>/<name>` off --base-branch and reads the live branch
-# back from git, so renaming (or switching to the ticket's existing origin branch) right
-# after creation is safe and shows in the app. Runs once, before anyone commits there.
+# land_branch <wt> <adopt>: put a fresh worktree on the ticket's existing origin branch. A new
+# branch is named when Orca creates the tree (`worktree create --branch`); this is for a branch
+# that already lives on origin. Runs once, before anyone commits there.
 land_branch() {
-  local wt="$1" branch="$2" adopt="$3" auto out
+  local wt="$1" adopt="$2" auto out
   [ -n "$wt" ] || { echo 'orca.sh land-branch: refusing an empty worktree path' >&2; return 1; }
   auto=$(git -C "$wt" rev-parse --abbrev-ref HEAD 2>/dev/null) || {
     echo "orca.sh land-branch: cannot read HEAD in $wt" >&2; return 1; }
-  if [ -n "$adopt" ]; then
-    out=$(git -C "$wt" fetch --quiet origin "$adopt" 2>&1) || {
-      printf 'orca.sh land-branch: git fetch origin %s failed in %s: %s\n' "$adopt" "$wt" "$out" >&2; return 1; }
-    if git -C "$wt" show-ref --verify --quiet "refs/heads/$adopt"; then
-      out=$(git -C "$wt" switch "$adopt" 2>&1) || {
-        printf 'orca.sh land-branch: git switch %s failed in %s: %s\n' "$adopt" "$wt" "$out" >&2; return 1; }
-    else
-      out=$(git -C "$wt" switch -c "$adopt" --track "origin/$adopt" 2>&1) || {
-        printf 'orca.sh land-branch: git switch -c %s failed in %s: %s\n' "$adopt" "$wt" "$out" >&2; return 1; }
-    fi
-    # Drop the leftover auto-branch only when git agrees it holds nothing unique (-d, never -D).
-    [ "$auto" != "$adopt" ] && git -C "$wt" branch -d "$auto" >/dev/null 2>&1
-    return 0
+  out=$(git -C "$wt" fetch --quiet origin "$adopt" 2>&1) || {
+    printf 'orca.sh land-branch: git fetch origin %s failed in %s: %s\n' "$adopt" "$wt" "$out" >&2; return 1; }
+  if git -C "$wt" show-ref --verify --quiet "refs/heads/$adopt"; then
+    out=$(git -C "$wt" switch "$adopt" 2>&1) || {
+      printf 'orca.sh land-branch: git switch %s failed in %s: %s\n' "$adopt" "$wt" "$out" >&2; return 1; }
+  else
+    out=$(git -C "$wt" switch -c "$adopt" --track "origin/$adopt" 2>&1) || {
+      printf 'orca.sh land-branch: git switch -c %s failed in %s: %s\n' "$adopt" "$wt" "$out" >&2; return 1; }
   fi
-  if [ -n "$branch" ]; then
-    [ "$auto" = "$branch" ] && return 0
-    if git -C "$wt" show-ref --verify --quiet "refs/heads/$branch"; then
-      printf 'orca.sh land-branch: %s already exists locally; not renaming %s over it\n' "$branch" "$auto" >&2
-      return 1
-    fi
-    out=$(git -C "$wt" branch -m "$branch" 2>&1) || {
-      printf 'orca.sh land-branch: git branch -m %s failed in %s: %s\n' "$branch" "$wt" "$out" >&2; return 1; }
-  fi
+  # Drop the leftover auto-branch only when git agrees it holds nothing unique (-d, never -D).
+  [ "$auto" != "$adopt" ] && git -C "$wt" branch -d "$auto" >/dev/null 2>&1
   return 0
 }
 
-# land-branch <wt> (--branch <name> | --adopt <origin-branch>) --key <KEY>
+# land-branch <wt> --adopt <origin-branch> --key <KEY>
 land_branch_cmd() {
-  local wt="${1:-}" branch='' adopt='' key=''
+  local wt="${1:-}" adopt='' key=''
   shift || true
   while [ $# -gt 0 ]; do
     case "$1" in
-      --branch) branch="${2:-}"; shift 2 ;;
       --adopt)  adopt="${2:-}";  shift 2 ;;
       --key)    key="${2:-}";    shift 2 ;;
       *) echo "orca.sh land-branch: unknown flag $1" >&2; return 2 ;;
     esac
   done
   [ -n "$wt" ] && [ -d "$wt" ] || { echo 'orca.sh land-branch: <worktree> must be an existing directory' >&2; return 2; }
-  if [ -n "$branch" ] && [ -n "$adopt" ]; then echo 'orca.sh land-branch: --branch and --adopt are mutually exclusive' >&2; return 2; fi
-  [ -n "$branch$adopt" ] || { echo 'orca.sh land-branch: one of --branch / --adopt is required' >&2; return 2; }
+  [ -n "$adopt" ] || { echo 'orca.sh land-branch: --adopt is required' >&2; return 2; }
   [ -n "$key" ] || { echo 'orca.sh land-branch: --key is required' >&2; return 2; }
-  branch_carries_key "${branch:-$adopt}" "$key" || {
-    printf 'orca.sh land-branch: %s does not carry %s; refusing to land one ticket on another ticket branch\n' "${branch:-$adopt}" "$key" >&2
+  branch_carries_key "$adopt" "$key" || {
+    printf 'orca.sh land-branch: %s does not carry %s; refusing to land one ticket on another ticket branch\n' "$adopt" "$key" >&2
     return 2; }
-  land_branch "$wt" "$branch" "$adopt"
+  land_branch "$wt" "$adopt"
 }
 
 # terminals <worktree-path>: one TSV line per live, writable Orca terminal in that
@@ -437,6 +445,6 @@ case "${1:-}" in
   orphaned)    orphaned ;;
   send)        shift; send_prompt "$@" ;;
   *)
-    echo 'usage: orca.sh available|current|siblings <repo-path>|find-branch <repo-path> <branch>|repo-selector <repo-path>|posix <path>|resolve|create-cmd --repo <path|selector> --name <n> --base <ref> (--parent <sel>|--no-parent) [--comment <t>] | candidates --repo <p> --key <K> | land-branch <wt> (--branch <b>|--adopt <b>) --key <K> | terminals <worktree-path> | orphaned | send <handle> <prompt-file>  (exit: 1 no Orca/failed, 2 usage, 3 send unconfirmed, 4 candidates cannot list origin)' >&2
+    echo 'usage: orca.sh available|current|siblings <repo-path>|find-branch <repo-path> <branch>|repo-selector <repo-path>|posix <path>|resolve|create-cmd --repo <path|selector> --name <n> --base <ref> (--parent <sel>|--no-parent) [--comment <t>] | candidates --repo <p> --key <K> | land-branch <wt> --adopt <b> --key <K> | terminals <worktree-path> | orphaned | send <handle> <prompt-file>  (exit: 1 no Orca/failed, 2 usage, 3 send unconfirmed, 4 candidates cannot list origin)' >&2
     exit 2 ;;
 esac

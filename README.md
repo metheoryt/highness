@@ -56,7 +56,7 @@ command source policy says otherwise; `/hi:repo-setup` shows which one Orca will
 
 ## Requirements
 
-bash 3.2+, git, jq. Optional: [Orca](https://github.com/stablyai/orca), gortex.
+bash 3.2+, git, jq. Optional: [Orca](https://github.com/stablyai/orca) 1.4.246 or newer, gortex. hi follows the current Orca and keeps no path for an older one: with an older Orca, `wt.sh` says to update it and makes plain git worktrees meanwhile.
 
 ## Tests
 

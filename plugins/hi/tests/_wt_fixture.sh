@@ -28,16 +28,25 @@ case "$1 $2" in
         jq -n --arg u "$(unc "$p")" '{path:$u, id:("R::"+$u), branch:""}'
       done | jq -s '{ok:true,result:{worktrees:.}}' ;;
   'worktree create')
-    rc=$(cat "$FX/create.rc" 2>/dev/null || echo 0)
-    if [ -s "$FX/create.json" ]; then cat "$FX/create.json"; exit "$rc"; fi
-    name=''; base=''
+    # --branch names the branch (Orca 1.4.244+); without it Orca cuts `dev/<name>`. A taken
+    # name gets `-2`, as Orca does for a branch that does not sit at the base.
+    name=''; base=''; br=''
     while [ $# -gt 0 ]; do
-      case "$1" in --name) name=$2; shift 2 ;; --base-branch) base=$2; shift 2 ;; *) shift ;; esac
+      case "$1" in --name) name=$2; shift 2 ;; --base-branch) base=$2; shift 2 ;; --branch) br=$2; shift 2 ;; *) shift ;; esac
     done
+    br=${br:-dev/$name}
+    rc=$(cat "$FX/create.rc" 2>/dev/null || echo 0)
+    if [ -s "$FX/create.json" ]; then
+      # FX_CREATE_LANDS: the tree is made before the canned answer (a create that landed
+      # before the runtime dropped).
+      [ -n "${FX_CREATE_LANDS:-}" ] && git -C "$FX_REPO" worktree add -q -b "$br" "$FX_ORCA_ROOT/$name" "$base" >/dev/null 2>&1
+      cat "$FX/create.json"; exit "$rc"
+    fi
+    git -C "$FX_REPO" show-ref --verify --quiet "refs/heads/$br" && br="$br-2"
     p="$FX_ORCA_ROOT/$name"
-    git -C "$FX_REPO" worktree add -q -b "dev/$name" "$p" "$base" >/dev/null 2>&1 ||
+    git -C "$FX_REPO" worktree add -q -b "$br" "$p" "$base" >/dev/null 2>&1 ||
       { echo '{"ok":false,"error":{"code":"git_failed"}}'; exit 1; }
-    jq -n --arg u "$(unc "$p")" --arg b "refs/heads/dev/$name" \
+    jq -n --arg u "$(unc "$p")" --arg b "refs/heads/$br" \
       '{ok:true,result:{worktree:{path:$u, id:("R::"+$u), branch:$b}}}' ;;
   # A board column persists per selector in $FX/board-<selector>; Orca's default is in-progress.
   # Like the real Orca, any id is taken: validating it is the caller's job.
@@ -57,16 +66,10 @@ case "$1 $2" in
   'worktree rm')
     # FX_RM_PATH: the tree this rm call really removes. FX_RM_KEEP: remove nothing (a
     # blocked archive hook). FX_RM_LEAK: deregister, then leave files behind (root-owned
-    # files a container wrote, which neither git nor Orca can unlink).
-    # FX_RM_ASYNC: answer first and remove ~1 s later, as the real Orca does ("removing": true).
-    if [ -n "${FX_RM_PATH:-}" ] && [ -n "${FX_RM_ASYNC:-}" ]; then
-      (sleep 1; git -C "$FX_REPO" worktree remove --force "$FX_RM_PATH") >/dev/null 2>&1 &
-      echo '{"ok":true,"result":{"removed":true,"removing":true}}'; exit 0
-    fi
+    # files a container wrote, which neither git nor Orca can unlink). Like Orca 1.4.246+,
+    # it answers once the tree is gone and keeps the branch.
     if [ -n "${FX_RM_PATH:-}" ] && [ -z "${FX_RM_KEEP:-}" ]; then
       git -C "$FX_REPO" worktree remove --force "$FX_RM_PATH" >/dev/null 2>&1
-      # FX_RM_DELBRANCH: the branch Orca also deletes (it does when it can prove it merged).
-      [ -n "${FX_RM_DELBRANCH:-}" ] && git -C "$FX_REPO" branch -D "$FX_RM_DELBRANCH" >/dev/null 2>&1
       [ -n "${FX_RM_LEAK:-}" ] && mkdir -p "$FX_RM_PATH" && : > "$FX_RM_PATH/root-owned.pyc"
     fi
     cat "$FX/rm.json" 2>/dev/null || echo '{"ok":true}'
@@ -122,7 +125,7 @@ export HI_ORCA="$STUB/orca" HI_TMUX="$STUB/tmux" HI_GORTEX="$STUB/gortex" HI_CLA
        HI_WT_RM_WAIT=0 HI_WT_SETUP="$STUB/setup" HI_WT_TEARDOWN="$STUB/teardown" HI_WT_ROOT="$SANDBOX/wt" \
        HI_UUID=11111111-2222-3333-4444-555555555555 PATH="$STUB:$PATH"
 
-orca_on()  { printf '%s\n' '{"ok":true,"result":{"runtime":{"state":"ready","reachable":true}}}' > "$FX/status.json"; unset HI_WT_BACKEND; }
+orca_on()  { printf '%s\n' '{"ok":true,"result":{"runtime":{"state":"ready","reachable":true,"appVersion":"1.4.252"}}}' > "$FX/status.json"; unset HI_WT_BACKEND; }
 orca_off() { rm -f "$FX/status.json"; export HI_WT_BACKEND=git; }
 orca_off
 

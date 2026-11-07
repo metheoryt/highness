@@ -11,7 +11,7 @@ stub=$(mktemp -d "$SANDBOX/tmp.XXXXXX")
 mkstub() { printf '#!/usr/bin/env bash\n%s\n' "$1" > "$stub/orca"; chmod +x "$stub/orca"; }
 run() { HI_ORCA="$stub/orca" bash "$O" "$@"; }
 
-READY='{"ok":true,"result":{"app":{"running":true},"runtime":{"state":"ready","reachable":true}}}'
+READY='{"ok":true,"result":{"app":{"running":true},"runtime":{"state":"ready","reachable":true,"appVersion":"1.4.252"}}}'
 # A repo with three worktrees: the main checkout, an epic worktree, a child.
 LIST='{"ok":true,"result":{"worktrees":[
   {"path":"/r","branch":"refs/heads/develop","id":"R::/r","isMainWorktree":true},
@@ -42,10 +42,27 @@ assert_contains "available: non-ready runtime is degraded" "$out" 'degraded: orc
 assert_status   "available: degraded exits 1"              1 "$rc"
 
 # The desktop app being closed must NOT make Orca unavailable — only --activate needs it.
-mkstub 'echo '"'"'{"ok":true,"result":{"app":{"running":false},"runtime":{"state":"ready","reachable":true}}}'"'"''
+mkstub 'echo '"'"'{"ok":true,"result":{"app":{"running":false},"runtime":{"state":"ready","reachable":true,"appVersion":"1.4.252"}}}'"'"''
 out=$(run available); rc=$?
 assert_eq     "available: closed app is still ok" "ok" "$out"
 assert_status "available: closed app exits 0"    0 "$rc"
+
+# hi follows the current Orca: an older one is reported, not driven.
+mkstub 'echo '"'"'{"ok":true,"result":{"runtime":{"state":"ready","reachable":true,"appVersion":"1.4.245"}}}'"'"''
+out=$(run available); rc=$?
+assert_contains "available: an Orca below the floor is outdated" "$out" 'outdated: Orca 1.4.245 is older than 1.4.246 — update Orca'
+assert_status   "available: outdated exits 1" 1 "$rc"
+mkstub 'echo '"'"'{"ok":true,"result":{"runtime":{"state":"ready","reachable":true}}}'"'"''
+out=$(run available); rc=$?
+assert_contains "available: no version reported is outdated" "$out" 'outdated: Orca (unknown)'
+for v in 1.4.246 1.4.300 1.5.0 2.0.0; do
+  mkstub 'echo '"'"'{"ok":true,"result":{"runtime":{"state":"ready","reachable":true,"appVersion":"'"$v"'"}}}'"'"''
+  assert_eq "available: $v passes the floor" ok "$(run available)"
+done
+for v in 1.3.999 0.9.0 1.4.24; do
+  mkstub 'echo '"'"'{"ok":true,"result":{"runtime":{"state":"ready","reachable":true,"appVersion":"'"$v"'"}}}'"'"''
+  assert_contains "available: $v is below the floor" "$(run available)" outdated
+done
 
 mkstub "echo '$READY'"
 out=$(run available); rc=$?

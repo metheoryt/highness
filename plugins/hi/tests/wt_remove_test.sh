@@ -119,21 +119,6 @@ assert_status   "leak: exit 4" 4 "$rc"
 assert_contains "leak: sudo hint" "$out" "sudo rm -rf $P"
 unset FX_RM_LEAK FX_RM_PATH; rm -rf "$P"
 
-# Orca answers before the tree is gone ("removing": true, the tree goes ~1 s
-# later). Read at once, that is a false "still a worktree" or a false LEAKED: wt.sh waits.
-P=$(mk AB-207 async); done_pr AB-207-async "$P" 27
-export FX_RM_PATH="$P" FX_RM_ASYNC=1
-out=$(bash "$WT" remove "$P" 2>&1); rc=$?
-assert_status "async rm read at once (HI_WT_RM_WAIT=0): the race is real" 1 "$rc"
-sleep 2
-P=$(mk AB-208 async); done_pr AB-208-async "$P" 28
-export FX_RM_PATH="$P"
-out=$(HI_WT_RM_WAIT=10 bash "$WT" remove-if-safe "$P" 2>&1); rc=$?
-assert_status "async rm, waited: exit 0" 0 "$rc"
-assert_contains "async rm, waited: announced removed" "$out" "removed \"AB-208 · async\""
-assert_not_contains "async rm, waited: no false failure" "$out" "removal failed"
-assert_not_contains "async rm, waited: no false leak" "$out" "LEAKED"
-unset FX_RM_ASYNC
 P=$(mk AB-209 stuck); done_pr AB-209-stuck "$P" 29
 export FX_RM_PATH="$P" FX_RM_KEEP=1
 printf '%s\n' '{"ok":false,"error":{"code":"weird","message":"boom"}}' > "$FX/rm.json"; echo 1 > "$FX/rm.rc"
@@ -143,20 +128,16 @@ assert_contains "a tree that stays: Orca's error is named" "$out" "still a workt
 rm -f "$FX/rm.json" "$FX/rm.rc"; unset FX_RM_KEEP
 bash "$WT" remove "$P" >/dev/null 2>&1; unset FX_RM_PATH
 
-# Orca's rm deletes a branch it believes merged (it deleted one whose head was on no branch
-# anywhere, 2026-09-25). wt.sh puts an unproven one back at the same sha; a merged one stays gone.
-P=$(mk AB-205 delbr); (cd "$P" && git commit -q --allow-empty -m wip)
-H205=$(git -C "$P" rev-parse HEAD)
-export FX_RM_PATH="$P" FX_RM_DELBRANCH=task/dev/AB-205-delbr
+# Orca keeps the branch on rm: an unproven one stays, a merged one is deleted by wt.sh.
+P=$(mk AB-205 keep); (cd "$P" && git commit -q --allow-empty -m wip)
+export FX_RM_PATH="$P"
 out=$(bash "$WT" remove "$P" 2>&1)
-assert_eq "orca deleted the branch: restored at its head" "$H205" "$(git rev-parse --verify -q refs/heads/task/dev/AB-205-delbr)"
-assert_contains "orca deleted the branch: announced as restored" "$out" "branch task/dev/AB-205-delbr kept (restored after Orca deleted it)"
-P=$(mk AB-206 delmerged); done_pr AB-206-delmerged "$P" 26
-export FX_RM_PATH="$P" FX_RM_DELBRANCH=task/dev/AB-206-delmerged
+assert_contains "orca rm: an unproven branch is kept" "$out" "branch task/dev/AB-205-keep kept"
+P=$(mk AB-206 merged); done_pr AB-206-merged "$P" 26
+export FX_RM_PATH="$P"
 out=$(bash "$WT" remove-if-safe "$P" 2>&1)
-assert_eq "orca deleted a merged branch: not restored" "" "$(git branch --list task/dev/AB-206-delmerged)"
-assert_contains "orca deleted a merged branch: announced deleted" "$out" "branch task/dev/AB-206-delmerged deleted"
-unset FX_RM_DELBRANCH FX_RM_PATH
+assert_eq "orca rm: a merged branch is deleted" "" "$(git branch --list task/dev/AB-206-merged)"
+unset FX_RM_PATH
 
 # an idle Orca terminal is closed before the removal
 P=$(mk AB-204 idle); done_pr AB-204-idle "$P" 24
