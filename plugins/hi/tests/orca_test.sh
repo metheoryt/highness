@@ -299,6 +299,26 @@ assert_eq "orphaned: only the workspaces with an orphan and no live agent" "/w/a
 mkstub 'exit 1'
 run orphaned >/dev/null 2>&1; assert_status "orphaned: no Orca exits 1" 1 "$?"
 
+# --- chats ------------------------------------------------------------------
+# Only `worktree ps` shows a chat agent; a terminal agent in the same list is not a chat,
+# another workspace's chat is not this one's, and a UNC path matches as POSIX.
+PS='{"ok":true,"result":{"worktrees":[
+  {"path":"\\\\wsl.localhost\\Ubuntu\\w\\a","agents":[
+    {"paneKey":"structured-agent-session-claude_1:tab1","state":"working"},
+    {"paneKey":"pty-2:tab2","state":"working"}]},
+  {"path":"/w/b","agents":[{"paneKey":"structured-agent-session-claude_3:tab3","state":"done"}]},
+  {"path":"/w/c"}
+]}}'
+printf '%s' "$PS" > "$stub/ps.json"
+mkstub "case \"\$*\" in 'status --json') echo '$READY' ;; 'worktree ps --limit 10000 --json') cat '$stub/ps.json' ;; esac"
+out=$(run chats /w/a); rc=$?
+assert_status "chats: exits 0" 0 "$rc"
+assert_eq "chats: the chat only, handle without the tab" "structured-agent-session-claude_1	working" "$out"
+assert_eq "chats: another workspace" "structured-agent-session-claude_3	done" "$(run chats /w/b)"
+assert_eq "chats: no agents" "" "$(run chats /w/c)"
+run chats >/dev/null 2>&1; assert_status "chats: no path is 2" 2 "$?"
+mkstub 'exit 1'
+run chats /w/a >/dev/null 2>&1; assert_status "chats: no Orca exits 1" 1 "$?"
 
 rm -rf "$stub"
 assert_summary

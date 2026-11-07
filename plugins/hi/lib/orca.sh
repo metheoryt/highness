@@ -403,6 +403,26 @@ terminals() {
     | [.handle, (.agentIdentity // ""), ((.title // "") | gsub("[\t\n]"; " "))] | @tsv'
 }
 
+# chats <worktree-path>: one TSV line per chat agent in that worktree: handle<TAB>state.
+# A chat (Orca's "structured" surface, the default since 1.4.246) has no terminal, so
+# `terminal list` never shows it; only `worktree ps` does, with paneKey
+# structured-agent-session-<id>:<tab>. State is Orca's: working, done, or another value.
+chats() {
+  local want="${1:-}" real js
+  [ -n "$want" ] || { echo 'orca.sh chats: <worktree-path> is required' >&2; return 2; }
+  real=$(cd "$want" 2>/dev/null && pwd -P) || real=$want
+  have_orca || return 1
+  js=$("$ORCA" worktree ps --limit 10000 --json 2>/dev/null) || return 1
+  [ "$(printf '%s' "$js" | jq -r '.ok // false' 2>/dev/null)" = "true" ] || return 1
+  printf '%s' "$js" | jq -r --arg a "$want" --arg b "$real" "$JQ_POSIX"'
+    (.result.worktrees // [])[]
+    | ((.path // "") | posix) as $p
+    | select($p != "" and ($p == $a or $p == $b))
+    | (.agents // [])[]
+    | select((.paneKey // "") | startswith("structured-agent-session-"))
+    | [(.paneKey | sub(":.*$"; "")), (.state // "")] | @tsv'
+}
+
 # orphaned: one POSIX worktree path per line where Orca holds a terminal that came back from a
 # restart orphaned (orphaned:true, no agent identity) and no live agent terminal at all. The
 # session there still exists, but nothing can type into it until the tab is reopened. One
@@ -442,9 +462,10 @@ case "${1:-}" in
   candidates)  shift; candidates "$@" ;;
   land-branch) shift; land_branch_cmd "$@" ;;
   terminals)   shift; terminals "$@" ;;
+  chats)       shift; chats "$@" ;;
   orphaned)    orphaned ;;
   send)        shift; send_prompt "$@" ;;
   *)
-    echo 'usage: orca.sh available|current|siblings <repo-path>|find-branch <repo-path> <branch>|repo-selector <repo-path>|posix <path>|resolve|create-cmd --repo <path|selector> --name <n> --base <ref> (--parent <sel>|--no-parent) [--comment <t>] | candidates --repo <p> --key <K> | land-branch <wt> --adopt <b> --key <K> | terminals <worktree-path> | orphaned | send <handle> <prompt-file>  (exit: 1 no Orca/failed, 2 usage, 3 send unconfirmed, 4 candidates cannot list origin)' >&2
+    echo 'usage: orca.sh available|current|siblings <repo-path>|find-branch <repo-path> <branch>|repo-selector <repo-path>|posix <path>|resolve|create-cmd --repo <path|selector> --name <n> --base <ref> (--parent <sel>|--no-parent) [--comment <t>] | candidates --repo <p> --key <K> | land-branch <wt> --adopt <b> --key <K> | terminals <worktree-path> | chats <worktree-path> | orphaned | send <handle> <prompt-file>  (exit: 1 no Orca/failed, 2 usage, 3 send unconfirmed, 4 candidates cannot list origin)' >&2
     exit 2 ;;
 esac

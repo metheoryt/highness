@@ -186,5 +186,19 @@ assert_not_contains "state never closes a terminal" "$(logged)" "terminal close"
 jq -n --arg p "$(unc "$P2")" '{ok:true,result:{terminals:[{handle:"h8",connected:true,writable:true,worktreePath:$p,title:"Terminal 1"}]}}' > "$FX/terms.json"
 assert_eq "plain shell, wait times out: terminal none" none "$(col "$(st AB-102-squash)" 15)"
 assert_eq "plain shell, wait times out: still safe" yes "$(col "$(st AB-102-squash)" 17)"
-rm -f "$FX/terms.json" "$FX/wait.json"; orca_off
+rm -f "$FX/terms.json" "$FX/wait.json"
+# a chat agent has no terminal: only `worktree ps` shows it, and a working one blocks removal
+chat() { jq -n --arg p "$(unc "$P2")" --arg s "$1" '{ok:true,result:{worktrees:[{path:$p,liveTerminalCount:0,agents:[
+  {paneKey:"structured-agent-session-claude_1:tab",state:$s,hasLivePty:null},
+  {paneKey:"pty-1:tab",state:"working",hasLivePty:true}]}]}}' > "$FX/ps.json"; }
+chat working
+assert_eq "orca working chat: busy" busy "$(col "$(st AB-102-squash)" 15)"
+assert_eq "orca working chat: not safe" no "$(col "$(st AB-102-squash)" 17)"
+assert_eq "orca working chat: reason busy" busy "$(col "$(st AB-102-squash)" 18)"
+chat waiting
+assert_eq "orca chat in an unknown state: busy" busy "$(col "$(st AB-102-squash)" 15)"
+chat done
+assert_eq "orca done chat: idle" idle "$(col "$(st AB-102-squash)" 15)"
+assert_eq "orca done chat: still safe" yes "$(col "$(st AB-102-squash)" 17)"
+rm -f "$FX/ps.json"; orca_off
 assert_summary

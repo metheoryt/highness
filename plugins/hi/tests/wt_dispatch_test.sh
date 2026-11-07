@@ -158,7 +158,23 @@ jq -n --arg p "$UOP" '{ok:true,result:{terminals:[{handle:"sh1",connected:true,w
 reset_log
 out=$(bash "$WT" dispatch "$OP" --brief "$SANDBOX/brief.md" 2>/dev/null)
 assert_eq "shell only: a new session" "$U	orca	h1" "$out"
-rm -f "$FX/terms.json"; orca_off
+rm -f "$FX/terms.json"
+# a chat agent: no terminal to type into, so no send and never a second session
+chatps() { jq -n --arg p "$UOP" --arg s "$1" '{ok:true,result:{worktrees:[{path:$p,agents:[
+  {paneKey:"structured-agent-session-claude_1:tab",state:$s}]}]}}' > "$FX/ps.json"; }
+chatps done; reset_log
+out=$(bash "$WT" dispatch "$OP" --brief "$SANDBOX/brief.md" 2>"$SANDBOX/err"); rc=$?
+assert_status "idle chat: refused with 3" 3 "$rc"
+assert_eq "idle chat: stdout names the recorded session" "$U	chat	" "$out"
+assert_not_contains "idle chat: nothing sent" "$(logged)" "terminal send"
+assert_not_contains "idle chat: no new terminal" "$(logged)" "terminal create"
+assert_contains "idle chat: says what to paste" "$(cat "$SANDBOX/err")" "Read $OB and follow it."
+chatps working; reset_log
+out=$(bash "$WT" dispatch "$OP" --brief "$SANDBOX/brief.md" 2>"$SANDBOX/err"); rc=$?
+assert_status "working chat: refused with 3" 3 "$rc"
+assert_eq "working chat: busy" busy "$(col "$out" 2)"
+assert_not_contains "working chat: no new terminal" "$(logged)" "terminal create"
+rm -f "$FX/ps.json"; orca_off
 
 # the plugin root defaults to the hi plugin directory wt.sh runs from, physical
 out=$(HI_PLUGIN_DIR= HI_TMUX=none bash "$WT" dispatch "$P" --brief "$SANDBOX/brief.md" 2>/dev/null)

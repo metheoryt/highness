@@ -693,22 +693,30 @@ _track_wrap() {
   return 0
 }
 
-# _live_agent <wt> <sel>: the handle of an idle agent terminal in that workspace (exit 0), or
-# `busy` (exit 3) when agent terminals run there but none is idle, or nothing (exit 1). Only
-# Orca reports agents; a bare shell never counts (see _terminal).
+# _live_agent <wt> <sel>: the handle of an idle agent terminal in that workspace (exit 0),
+# `busy` (exit 3) when an agent runs there but none is idle, `chat` (exit 4) when the only
+# idle agent is a chat — Orca's CLI cannot type into a chat — or nothing (exit 1). Only Orca
+# reports agents; a bare shell never counts (see _terminal).
 _live_agent() {
-  local h hs busy=0
+  local h hs st busy=0 chat=0
   [ -n "$2" ] && [ -n "$ORCA" ] || return 1
   hs=$(bash "$ORCA_SH" terminals "$1" 2>/dev/null </dev/null | awk -F'\t' '$2 != "" { print $1 }')
-  [ -n "$hs" ] || return 1
   for h in $hs; do
     if [ "$("$ORCA" terminal wait --terminal "$h" --for tui-idle --timeout-ms 2000 --json 2>/dev/null </dev/null |
            jq -r '.ok // false' 2>/dev/null)" = true ]; then printf '%s' "$h"; return 0; fi
     busy=1
   done
+  for st in $(bash "$ORCA_SH" chats "$1" 2>/dev/null </dev/null | cut -f2); do
+    if _chat_idle "$st"; then chat=1; else busy=1; fi
+  done
   [ "$busy" = 1 ] && { printf busy; return 3; }
+  [ "$chat" = 1 ] && { printf chat; return 4; }
   return 1
 }
+
+# _chat_idle <state>: exit 0 for a chat agent that is not mid-turn. Only `done` and `idle`
+# count; any other state (working, a permission prompt, one Orca adds later) is busy.
+_chat_idle() { case "$1" in done|idle) return 0 ;; *) return 1 ;; esac; }
 
 # Extra `claude` flags for a dispatched session.
 DISPATCH_FLAGS=''
@@ -788,6 +796,11 @@ cmd_dispatch() {
     uuid=${resume:-$(_col "$row" 9)}
     printf '%s\t%s\t%s\n' "$uuid" busy ''
     say "dispatch: a session is mid-turn in $wt — not starting a second one; give it $dst when it is idle, or rerun dispatch then"
+    return 3
+  elif [ "$rc" = 4 ]; then
+    uuid=${resume:-$(_col "$row" 9)}
+    printf '%s\t%s\t%s\n' "$uuid" chat ''
+    say "dispatch: a chat session is open in $wt and Orca cannot type into a chat from the CLI — not starting a second one; paste \"Read $dst and follow it.\" into that chat, or close it and rerun dispatch"
     return 3
   fi
   handle=''
@@ -883,15 +896,19 @@ EOF
 }
 
 # _terminal <wt> <name> <sel>: none | idle | busy (Orca) | open (a tmux window of that name).
-# Only a terminal running an agent (Orca's agentIdentity) counts: a bare shell prompt never
+# Orca agents are agent terminals and chats. Only a terminal running an agent (Orca's agentIdentity) counts: a bare shell prompt never
 # reports tui-idle, so waiting on it would read an empty tab as a busy Claude.
 _terminal() {
-  local h hs st=none busy=0 T
+  local h hs c st=none busy=0 T
   if [ -n "$3" ] && [ -n "$ORCA" ]; then
     hs=$(bash "$ORCA_SH" terminals "$1" 2>/dev/null | awk -F'\t' '$2 != "" { print $1 }')
     for h in $hs; do
       if [ "$("$ORCA" terminal wait --terminal "$h" --for tui-idle --timeout-ms 2000 --json 2>/dev/null |
              jq -r '.ok // false' 2>/dev/null)" = true ]; then st=idle; else busy=1; fi
+    done
+    # A chat agent has no terminal: only `worktree ps` sees it (orca.sh chats).
+    for c in $(bash "$ORCA_SH" chats "$1" 2>/dev/null | cut -f2); do
+      if _chat_idle "$c"; then st=idle; else busy=1; fi
     done
     [ "$busy" = 1 ] && st=busy
     printf '%s\n' "$st"; return
@@ -1019,7 +1036,7 @@ _reason_text() {
     dirty)       echo 'uncommitted changes' ;;
     unpushed)    echo "HEAD $(_col "$2" 4 | cut -c1-8) is neither the PR's final head nor on any remote branch" ;;
     memory)      echo ".claude/memory has a file that is not a link to the main checkout's copy: $(_memory_bad "$(_col "$2" 1)")" ;;
-    busy)        echo 'a Claude terminal here is busy' ;;
+    busy)        echo 'an agent here is busy (a terminal or a chat)' ;;
     open-window) echo "its tmux window (hi:$(_col "$2" 7)) is still open" ;;
     work)        echo 'a work or scratch workspace: removed only when you ask, even when its branch is merged' ;;
     not-ticket)  echo "a $(_col "$2" 5) workspace: only a ticket workspace is removed unattended" ;;

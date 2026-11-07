@@ -74,6 +74,7 @@ case "$1 $2" in
     fi
     cat "$FX/rm.json" 2>/dev/null || echo '{"ok":true}'
     exit "$(cat "$FX/rm.rc" 2>/dev/null || echo 0)" ;;
+  'worktree ps') cat "$FX/ps.json" 2>/dev/null || echo '{"ok":true,"result":{"worktrees":[]}}' ;;
   'terminal create') cat "$FX/term.json" 2>/dev/null || echo '{"ok":true,"result":{"terminal":{"handle":"h1"}}}' ;;
   'terminal list') cat "$FX/terms.json" 2>/dev/null || echo '{"ok":true,"result":{"terminals":[]}}' ;;
   'terminal send') cat "$FX/send.json" 2>/dev/null || echo '{"ok":true}' ;;

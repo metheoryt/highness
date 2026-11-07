@@ -52,8 +52,8 @@ Render one table. A child (its col 8 is another row's col 1) goes right under it
   PR state unknown · `no-pr` no PR, nothing of its own in trunk yet · `pr-stale` an old PR on this
   branch, new work since · `dirty` uncommitted changes · `unpushed` HEAD not on any remote ·
   `memory` a gitignored file under `.claude/memory` is a copy, not a link to the main checkout's ·
-  `busy` Claude is busy there · `open-window` its tmux window is open. Empty: col 15 (`idle` →
-  "Claude idle").
+  `busy` an agent (an Orca terminal or chat) is busy there · `open-window` its tmux window is open.
+  Empty: col 15 (`idle` → "Claude idle").
 - Nothing else: no paths, no shas. A path is shown only when the user asks where something is.
 
 Then, only when a 🗑 or ❓ row is left, one `AskUserQuestion`: **"Remove the <N> marked?"** with
@@ -94,8 +94,9 @@ the options "Remove the <n> safe ones" (recommended, only the 🗑 rows), "Let m
 
   When the user also said what to do there, write that as a brief (Write tool, a temp file) and run
   `bash "$L/wt.sh" dispatch <path> --brief <file>` (returns at once; a live session there gets the
-  brief, `via=send`; exit 3: it is mid-turn). Stdout: `session<TAB>via<TAB>handle`; `via=print` →
-  line 2 is the command for the user to run.
+  brief, `via=send`; exit 3: it is mid-turn, `via=busy`, or an Orca chat is open there, `via=chat`:
+  Orca cannot type into a chat, so tell the user to paste the line stderr names into it). Stdout:
+  `session<TAB>via<TAB>handle`; `via=print` → line 2 is the command for the user to run.
 - **"Clean up"** → §1, with the question.
 
 ## 3. Rules
