@@ -696,27 +696,33 @@ _track_wrap() {
 # _live_agent <wt> <sel>: the handle of an idle agent terminal in that workspace (exit 0),
 # `busy` (exit 3) when an agent runs there but none is idle, `chat` (exit 4) when the only
 # idle agent is a chat — Orca's CLI cannot type into a chat — or nothing (exit 1). Only Orca
-# reports agents; a bare shell never counts (see _terminal).
+# reports agents; a bare shell never counts. Orca's status says which terminal is idle; the
+# one we would type into is confirmed with a tui-idle wait first, since typing into a
+# running turn could answer a permission prompt.
 _live_agent() {
-  local h hs st busy=0 chat=0
+  local h kind v busy=0 chat=0
   [ -n "$2" ] && [ -n "$ORCA" ] || return 1
-  hs=$(bash "$ORCA_SH" terminals "$1" 2>/dev/null </dev/null | awk -F'\t' '$2 != "" { print $1 }')
-  for h in $hs; do
-    if [ "$("$ORCA" terminal wait --terminal "$h" --for tui-idle --timeout-ms 2000 --json 2>/dev/null </dev/null |
-           jq -r '.ok // false' 2>/dev/null)" = true ]; then printf '%s' "$h"; return 0; fi
-    busy=1
-  done
-  for st in $(bash "$ORCA_SH" chats "$1" 2>/dev/null </dev/null | cut -f2); do
-    if _chat_idle "$st"; then chat=1; else busy=1; fi
-  done
+  while IFS="$(printf '\t')" read -r h kind v; do
+    [ -n "$h" ] || continue
+    case "$kind:$v" in
+      terminal:busy) busy=1 ;;
+      terminal:*) if _tui_idle "$h"; then printf '%s' "$h"; return 0; fi; busy=1 ;;
+      chat:idle) chat=1 ;;
+      *) busy=1 ;;
+    esac
+  done <<AGENTS
+$(bash "$ORCA_SH" agents "$1" 2>/dev/null </dev/null)
+AGENTS
   [ "$busy" = 1 ] && { printf busy; return 3; }
   [ "$chat" = 1 ] && { printf chat; return 4; }
   return 1
 }
 
-# _chat_idle <state>: exit 0 for a chat agent that is not mid-turn. Only `done` and `idle`
-# count; any other state (working, a permission prompt, one Orca adds later) is busy.
-_chat_idle() { case "$1" in done|idle) return 0 ;; *) return 1 ;; esac; }
+# _tui_idle <handle>: exit 0 when that agent terminal's TUI goes idle within 2 s.
+_tui_idle() {
+  [ "$("$ORCA" terminal wait --terminal "$1" --for tui-idle --timeout-ms 2000 --json 2>/dev/null </dev/null |
+       jq -r '.ok // false' 2>/dev/null)" = true ]
+}
 
 # Extra `claude` flags for a dispatched session.
 DISPATCH_FLAGS=''
@@ -804,6 +810,11 @@ cmd_dispatch() {
     return 3
   fi
   handle=''
+  # A new session is always an agent terminal, whatever the person's Chat/CLI setting
+  # (`orca agent launch` would follow it): the next dispatch must be able to type into it,
+  # and Orca's CLI cannot reach a chat — orchestration mail reaches only worker-start
+  # workers, which are supervised, not handed off — nor give one --session-id, --add-dir
+  # or the gortex wait. Measured on Orca 1.4.252 (highness#10).
   wrap=$(_track_wrap "$wt")
   # The worker's first Reads are the brief and the plugin's references (reference/*.md),
   # both outside its workspace: with blockReadsOutsideWorkingDirectories
@@ -896,20 +907,18 @@ EOF
 }
 
 # _terminal <wt> <name> <sel>: none | idle | busy (Orca) | open (a tmux window of that name).
-# Orca agents are agent terminals and chats. Only a terminal running an agent (Orca's agentIdentity) counts: a bare shell prompt never
-# reports tui-idle, so waiting on it would read an empty tab as a busy Claude.
+# Orca agents are agent terminals and chats (orca.sh agents); a bare shell never counts. A
+# terminal Orca gave no status for is waited on (tui-idle, 2 s), as before #10.
 _terminal() {
-  local h hs c st=none busy=0 T
+  local h kind v st=none busy=0 T
   if [ -n "$3" ] && [ -n "$ORCA" ]; then
-    hs=$(bash "$ORCA_SH" terminals "$1" 2>/dev/null | awk -F'\t' '$2 != "" { print $1 }')
-    for h in $hs; do
-      if [ "$("$ORCA" terminal wait --terminal "$h" --for tui-idle --timeout-ms 2000 --json 2>/dev/null |
-             jq -r '.ok // false' 2>/dev/null)" = true ]; then st=idle; else busy=1; fi
-    done
-    # A chat agent has no terminal: only `worktree ps` sees it (orca.sh chats).
-    for c in $(bash "$ORCA_SH" chats "$1" 2>/dev/null | cut -f2); do
-      if _chat_idle "$c"; then st=idle; else busy=1; fi
-    done
+    while IFS="$(printf '\t')" read -r h kind v; do
+      [ -n "$h" ] || continue
+      [ "$kind:$v" = terminal:unknown ] && { if _tui_idle "$h"; then v=idle; else v=busy; fi; }
+      if [ "$v" = idle ]; then st=idle; else busy=1; fi
+    done <<AGENTS
+$(bash "$ORCA_SH" agents "$1" 2>/dev/null </dev/null)
+AGENTS
     [ "$busy" = 1 ] && st=busy
     printf '%s\n' "$st"; return
   fi

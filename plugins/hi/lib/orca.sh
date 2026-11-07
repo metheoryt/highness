@@ -403,24 +403,37 @@ terminals() {
     | [.handle, (.agentIdentity // ""), ((.title // "") | gsub("[\t\n]"; " "))] | @tsv'
 }
 
-# chats <worktree-path>: one TSV line per chat agent in that worktree: handle<TAB>state.
-# A chat (Orca's "structured" surface, the default since 1.4.246) has no terminal, so
-# `terminal list` never shows it; only `worktree ps` does, with paneKey
-# structured-agent-session-<id>:<tab>. State is Orca's: working, done, or another value.
-chats() {
-  local want="${1:-}" real js
-  [ -n "$want" ] || { echo 'orca.sh chats: <worktree-path> is required' >&2; return 2; }
+# agents <worktree-path>: one TSV line per Orca agent in that worktree:
+# handle<TAB>kind<TAB>verdict. kind is `terminal` (an agent terminal from `terminal list`)
+# or `chat` (Orca's "structured" surface, the default since 1.4.246: no terminal, so only
+# `worktree ps` shows it, paneKey structured-agent-session-<id>:<tab>). verdict is `idle`,
+# `busy`, or `unknown` when Orca gave no status for a terminal (the caller waits on it).
+# A terminal's verdict is its `worktree ps` programStatus, found by paneKey = tabId:leafId:
+# two calls for the whole workspace instead of a tui-idle wait per terminal. A chat's is its
+# state: done or idle is idle, any other state (working, a prompt, a new one) is busy. A bare
+# shell has no agentIdentity and no ps row: never listed. Exit 1: no Orca or no terminal list.
+agents() {
+  local want="${1:-}" real tl ps
+  [ -n "$want" ] || { echo 'orca.sh agents: <worktree-path> is required' >&2; return 2; }
   real=$(cd "$want" 2>/dev/null && pwd -P) || real=$want
   have_orca || return 1
-  js=$("$ORCA" worktree ps --limit 10000 --json 2>/dev/null) || return 1
-  [ "$(printf '%s' "$js" | jq -r '.ok // false' 2>/dev/null)" = "true" ] || return 1
-  printf '%s' "$js" | jq -r --arg a "$want" --arg b "$real" "$JQ_POSIX"'
-    (.result.worktrees // [])[]
-    | ((.path // "") | posix) as $p
-    | select($p != "" and ($p == $a or $p == $b))
-    | (.agents // [])[]
-    | select((.paneKey // "") | startswith("structured-agent-session-"))
-    | [(.paneKey | sub(":.*$"; "")), (.state // "")] | @tsv'
+  tl=$("$ORCA" terminal list --json 2>/dev/null) || return 1
+  [ "$(printf '%s' "$tl" | jq -r '.ok // false' 2>/dev/null)" = "true" ] || return 1
+  ps=$("$ORCA" worktree ps --limit 10000 --json 2>/dev/null) || ps=''
+  [ "$(printf '%s' "$ps" | jq -r '.ok // false' 2>/dev/null)" = "true" ] || ps='{}'
+  printf '%s' "$tl" | jq -r --arg a "$want" --arg b "$real" --argjson ps "$ps" "$JQ_POSIX"'
+    def here: (. // "" | posix) as $p | $p != "" and ($p == $a or $p == $b);
+    [ ($ps.result.worktrees // [])[] | select(.path | here) | (.agents // [])[] ] as $ag
+    | ( (.result.terminals // [])[]
+        | select((.connected // false) and (.writable // false) and ((.agentIdentity // "") != ""))
+        | select(.worktreePath | here)
+        | "\(.tabId):\(.leafId)" as $k
+        | ([ $ag[] | select(.paneKey == $k) ][0].programStatus.state // "") as $s
+        | [.handle, "terminal", (if $s == "idle" then "idle" elif $s == "" then "unknown" else "busy" end)] ),
+      ( $ag[] | select((.paneKey // "") | startswith("structured-agent-session-"))
+        | [(.paneKey | sub(":.*$"; "")), "chat",
+           (if (.state // "") == "done" or (.state // "") == "idle" then "idle" else "busy" end)] )
+    | @tsv'
 }
 
 # orphaned: one POSIX worktree path per line where Orca holds a terminal that came back from a
@@ -462,10 +475,10 @@ case "${1:-}" in
   candidates)  shift; candidates "$@" ;;
   land-branch) shift; land_branch_cmd "$@" ;;
   terminals)   shift; terminals "$@" ;;
-  chats)       shift; chats "$@" ;;
+  agents)      shift; agents "$@" ;;
   orphaned)    orphaned ;;
   send)        shift; send_prompt "$@" ;;
   *)
-    echo 'usage: orca.sh available|current|siblings <repo-path>|find-branch <repo-path> <branch>|repo-selector <repo-path>|posix <path>|resolve|create-cmd --repo <path|selector> --name <n> --base <ref> (--parent <sel>|--no-parent) [--comment <t>] | candidates --repo <p> --key <K> | land-branch <wt> --adopt <b> --key <K> | terminals <worktree-path> | chats <worktree-path> | orphaned | send <handle> <prompt-file>  (exit: 1 no Orca/failed, 2 usage, 3 send unconfirmed, 4 candidates cannot list origin)' >&2
+    echo 'usage: orca.sh available|current|siblings <repo-path>|find-branch <repo-path> <branch>|repo-selector <repo-path>|posix <path>|resolve|create-cmd --repo <path|selector> --name <n> --base <ref> (--parent <sel>|--no-parent) [--comment <t>] | candidates --repo <p> --key <K> | land-branch <wt> --adopt <b> --key <K> | terminals <worktree-path> | agents <worktree-path> | orphaned | send <handle> <prompt-file>  (exit: 1 no Orca/failed, 2 usage, 3 send unconfirmed, 4 candidates cannot list origin)' >&2
     exit 2 ;;
 esac

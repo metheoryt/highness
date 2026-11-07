@@ -299,26 +299,41 @@ assert_eq "orphaned: only the workspaces with an orphan and no live agent" "/w/a
 mkstub 'exit 1'
 run orphaned >/dev/null 2>&1; assert_status "orphaned: no Orca exits 1" 1 "$?"
 
-# --- chats ------------------------------------------------------------------
-# Only `worktree ps` shows a chat agent; a terminal agent in the same list is not a chat,
-# another workspace's chat is not this one's, and a UNC path matches as POSIX.
+# --- agents -----------------------------------------------------------------
+# /w/a (UNC in ps): an agent terminal Orca calls idle, one it calls working, one with no ps
+# row, a bare shell, and a working chat. /w/b: a done chat. /w/c: nothing.
+TL='{"ok":true,"result":{"terminals":[
+  {"handle":"t1","worktreePath":"/w/a","connected":true,"writable":true,"agentIdentity":"claude","tabId":"A","leafId":"1"},
+  {"handle":"t2","worktreePath":"/w/a","connected":true,"writable":true,"agentIdentity":"claude","tabId":"B","leafId":"2"},
+  {"handle":"t3","worktreePath":"/w/a","connected":true,"writable":true,"agentIdentity":"codex","tabId":"C","leafId":"3"},
+  {"handle":"t4","worktreePath":"/w/a","connected":true,"writable":true,"agentIdentity":null,"tabId":"D","leafId":"4"},
+  {"handle":"t5","worktreePath":"/w/b","connected":false,"writable":true,"agentIdentity":"claude","tabId":"E","leafId":"5"}
+]}}'
 PS='{"ok":true,"result":{"worktrees":[
   {"path":"\\\\wsl.localhost\\Ubuntu\\w\\a","agents":[
-    {"paneKey":"structured-agent-session-claude_1:tab1","state":"working"},
-    {"paneKey":"pty-2:tab2","state":"working"}]},
+    {"paneKey":"A:1","state":"done","programStatus":{"state":"idle"}},
+    {"paneKey":"B:2","state":"done","programStatus":{"state":"working"}},
+    {"paneKey":"structured-agent-session-claude_1:tab1","state":"working"}]},
   {"path":"/w/b","agents":[{"paneKey":"structured-agent-session-claude_3:tab3","state":"done"}]},
   {"path":"/w/c"}
 ]}}'
-printf '%s' "$PS" > "$stub/ps.json"
-mkstub "case \"\$*\" in 'status --json') echo '$READY' ;; 'worktree ps --limit 10000 --json') cat '$stub/ps.json' ;; esac"
-out=$(run chats /w/a); rc=$?
-assert_status "chats: exits 0" 0 "$rc"
-assert_eq "chats: the chat only, handle without the tab" "structured-agent-session-claude_1	working" "$out"
-assert_eq "chats: another workspace" "structured-agent-session-claude_3	done" "$(run chats /w/b)"
-assert_eq "chats: no agents" "" "$(run chats /w/c)"
-run chats >/dev/null 2>&1; assert_status "chats: no path is 2" 2 "$?"
+printf '%s' "$TL" > "$stub/tl.json"; printf '%s' "$PS" > "$stub/ps.json"
+mkstub "case \"\$*\" in 'status --json') echo '$READY' ;; 'terminal list --json') cat '$stub/tl.json' ;; 'worktree ps --limit 10000 --json') cat '$stub/ps.json' ;; esac"
+out=$(run agents /w/a); rc=$?
+assert_status "agents: exits 0" 0 "$rc"
+assert_eq "agents: terminals by Orca's status (no row → unknown), no shell, the chat" "t1	terminal	idle
+t2	terminal	busy
+t3	terminal	unknown
+structured-agent-session-claude_1	chat	busy" "$out"
+assert_eq "agents: a done chat is idle; a disconnected terminal is not listed" "structured-agent-session-claude_3	chat	idle" "$(run agents /w/b)"
+assert_eq "agents: no agents" "" "$(run agents /w/c)"
+run agents >/dev/null 2>&1; assert_status "agents: no path is 2" 2 "$?"
+mkstub "case \"\$*\" in 'status --json') echo '$READY' ;; 'terminal list --json') cat '$stub/tl.json' ;; *) exit 1 ;; esac"
+assert_eq "agents: no worktree ps → every terminal unknown, no chats" "t1	terminal	unknown
+t2	terminal	unknown
+t3	terminal	unknown" "$(run agents /w/a)"
 mkstub 'exit 1'
-run chats /w/a >/dev/null 2>&1; assert_status "chats: no Orca exits 1" 1 "$?"
+run agents /w/a >/dev/null 2>&1; assert_status "agents: no Orca exits 1" 1 "$?"
 
 rm -rf "$stub"
 assert_summary

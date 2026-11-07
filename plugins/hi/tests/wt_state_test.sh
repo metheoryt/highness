@@ -200,5 +200,15 @@ assert_eq "orca chat in an unknown state: busy" busy "$(col "$(st AB-102-squash)
 chat done
 assert_eq "orca done chat: idle" idle "$(col "$(st AB-102-squash)" 15)"
 assert_eq "orca done chat: still safe" yes "$(col "$(st AB-102-squash)" 17)"
-rm -f "$FX/ps.json"; orca_off
+# a terminal Orca gives a status for is judged by it, with no 2 s wait
+jq -n --arg p "$(unc "$P2")" '{ok:true,result:{terminals:[{handle:"h9",connected:true,writable:true,worktreePath:$p,title:"t",agentIdentity:"claude",tabId:"T",leafId:"L"}]}}' > "$FX/terms.json"
+jq -n --arg p "$(unc "$P2")" '{ok:true,result:{worktrees:[{path:$p,agents:[{paneKey:"T:L",state:"working",programStatus:{state:"working"}}]}]}}' > "$FX/ps.json"
+echo '{"ok":true}' > "$FX/wait.json"; reset_log
+assert_eq "orca status working: busy without waiting" busy "$(col "$(st AB-102-squash)" 15)"
+assert_not_contains "orca status working: no tui-idle wait" "$(logged)" "terminal wait"
+jq -n --arg p "$(unc "$P2")" '{ok:true,result:{worktrees:[{path:$p,agents:[{paneKey:"T:L",state:"done",programStatus:{state:"idle"}}]}]}}' > "$FX/ps.json"
+echo '{"ok":false,"error":{"code":"timeout"}}' > "$FX/wait.json"; reset_log
+assert_eq "orca status idle: idle without waiting" idle "$(col "$(st AB-102-squash)" 15)"
+assert_not_contains "orca status idle: no tui-idle wait" "$(logged)" "terminal wait"
+rm -f "$FX/ps.json" "$FX/terms.json" "$FX/wait.json"; orca_off
 assert_summary

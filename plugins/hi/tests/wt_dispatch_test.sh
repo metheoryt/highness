@@ -148,6 +148,18 @@ assert_eq "busy: stdout" "99999999-2222-3333-4444-555555555555	busy	" "$out"
 assert_not_contains "busy: nothing typed into it" "$(logged)" "terminal send"
 assert_not_contains "busy: no new terminal" "$(logged)" "terminal create"
 assert_contains "busy: says why" "$(cat "$SANDBOX/err")" "mid-turn"
+# Orca's status says idle, but the terminal does not go tui-idle: never typed into
+jq -n --arg p "$UOP" '{ok:true,result:{terminals:[
+  {handle:"cl1",connected:true,writable:true,worktreePath:$p,title:"claude",agentIdentity:"claude",tabId:"T",leafId:"L"}]}}' > "$FX/terms.json"
+jq -n --arg p "$UOP" '{ok:true,result:{worktrees:[{path:$p,agents:[{paneKey:"T:L",state:"done",programStatus:{state:"idle"}}]}]}}' > "$FX/ps.json"
+reset_log
+out=$(bash "$WT" dispatch "$OP" --brief "$SANDBOX/brief.md" 2>/dev/null); rc=$?
+assert_status "status idle, wait times out: refused with 3" 3 "$rc"
+assert_not_contains "status idle, wait times out: nothing typed" "$(logged)" "terminal send"
+rm -f "$FX/ps.json"
+jq -n --arg p "$UOP" '{ok:true,result:{terminals:[
+  {handle:"sh1",connected:true,writable:true,worktreePath:$p,title:"shell",agentIdentity:""},
+  {handle:"cl1",connected:true,writable:true,worktreePath:$p,title:"claude",agentIdentity:"claude"}]}}' > "$FX/terms.json"
 rm -f "$FX/wait.json"
 printf '%s\n' '{"ok":false,"error":{"code":"terminal_gone"}}' > "$FX/send.json"; reset_log
 bash "$WT" dispatch "$OP" --brief "$SANDBOX/brief.md" >/dev/null 2>"$SANDBOX/err"
