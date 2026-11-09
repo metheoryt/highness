@@ -238,13 +238,19 @@ export FX_RM_PATH="$S10"; out=$(bash "$WT" remove-if-safe "$S10" 2>/dev/null); r
 assert_status "remove-if-safe (asked for by path): an idle agent does not block" 0 "$rc"
 rm -f "$FX/terms.json" "$FX/ps.json"; unset FX_RM_PATH
 bash "$WT" remove "$S11" >/dev/null 2>&1; orca_off
-# an unrecorded GitHub-issue ticket tree (feat/<n>-slug) whose PR merged: a ticket, so removed
-L3="$SANDBOX/gh-5"; git worktree add -q -b feat/5-slug "$L3" main
+# a <repo>#<n> ticket tree whose PR merged is removed unattended; an unrecorded one is work
+L3=$(bash "$WT" create --kind ticket --key 'app#5' --name 'app#5 · slug' --base main --branch feat/5-slug 2>/dev/null | cut -f1)
 (cd "$L3" && git commit -q --allow-empty -m w && git push -q origin HEAD)
 pr feat/5-slug MERGED 55 "$(git -C "$L3" rev-parse HEAD)"
+L4="$SANDBOX/gh-6"; git worktree add -q -b feat/6-slug "$L4" main
+(cd "$L4" && git commit -q --allow-empty -m w && git push -q origin HEAD)
+pr feat/6-slug MERGED 56 "$(git -C "$L4" rev-parse HEAD)"
 bash "$WT" remove-if-landed "$L3" 2>/dev/null; rc=$?
-assert_status "if-landed: an inferred <repo>#<n> ticket workspace is removed" 0 "$rc"
+assert_status "if-landed: a <repo>#<n> ticket workspace is removed" 0 "$rc"
 assert_eq "if-landed: the #-ticket one is gone" no "$([ -e "$L3" ] && echo yes || echo no)"
+out=$(bash "$WT" remove-if-landed "$L4" 2>/dev/null); rc=$?
+assert_status "if-landed: a bare-number branch with no record is refused" 3 "$rc"
+assert_contains "if-landed: it is work, not a ticket" "$out" "not-ticket"
 
 # remove <name>: a bare word is the folder or the record's (Orca's) name; a path is only a path
 N1=$(bash "$WT" create --kind work --key den --name 'quiet den' --base main --branch work/den 2>/dev/null | cut -f1)

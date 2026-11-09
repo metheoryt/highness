@@ -290,29 +290,32 @@ _infer() {
   last=${2##*/}
   k=$(printf '%s' "$last" | sed -n 's/^\([A-Za-z][A-Za-z0-9]*-[0-9][0-9]*\).*/\1/p' | LC_ALL=C tr '[:lower:]' '[:upper:]')
   if [ -n "$k" ]; then printf 'ticket\t%s\n' "$k"; return; fi
-  # A <repo>#<n> key rides the branch as <n>, <n>-<slug> or <n>_<slug> (_carries_key's rule).
-  k=$(printf '%s' "$last" | sed -n 's/^\([0-9][0-9]*\)\([-_].*\)\{0,1\}$/\1/p')
-  if [ -n "$k" ] && k=$(_issue_key "$k"); then printf 'ticket\t%s\n' "$k"; return; fi
+  # A <repo>#<n> key rides the branch as a bare number (<n>-<slug>), and a number alone says
+  # nothing: release/2026-notes is not issue 2026, even when that issue has a record. So such a
+  # tree is a ticket only when hi's own record ties it: the record names this path (_rows reads
+  # that before _infer), or the branch create recorded is this tree's branch (highness#12).
+  k=$(_issue_key "$2") && { printf 'ticket\t%s\n' "$k"; return; }
   printf 'work\t%s\n' "$folder"
 }
 
-# _issue_key <n>: the <repo>#<n> key of issue <n> — the one a ticket record of this repo already
-# holds (what create recorded), else origin's repo name, else the main checkout's folder.
+# _issue_key <branch>: the <repo>#<n> key whose record's `branch` is <branch>; exit 1 when none
+# or more than one is. Records written before create stored `branch` have none: their tree is a
+# ticket only while the record names its path.
 _issue_key() {
-  local f b r='' n=0
+  local f b hit='' n=0
+  [ -n "$1" ] || return 1
   while IFS= read -r f; do
+    [ -n "$f" ] || continue
     b=${f##*/}; b=${b%.md}
-    case "$b" in *"#$1") r=$b; n=$((n + 1)) ;; esac
+    case "$b" in *'#'[0-9]*) ;; *) continue ;; esac
+    _valid_id ticket "$b" || continue
+    [ "$(_rec_get ticket "$b" branch 2>/dev/null)" = "$1" ] || continue
+    hit=$b; n=$((n + 1))
   done <<EOF
 $(_rec_files)
 EOF
-  if [ "$n" -eq 1 ] && _valid_id ticket "$r"; then printf '%s' "$r"; return 0; fi
-  r=$(git -C "$MAIN" remote get-url origin 2>/dev/null) || r=''
-  r=${r%/}; r=${r%.git}; r=${r##*/}; r=${r##*:}
-  [ -n "$r" ] || r=${MAIN##*/}
-  r=$(printf '%s' "$r" | LC_ALL=C tr '[:upper:]' '[:lower:]')
-  _valid_id ticket "$r#$1" || return 1
-  printf '%s#%s' "$r" "$1"
+  [ "$n" -eq 1 ] || return 1
+  printf '%s' "$hit"
 }
 
 # _rec_owns <kind> <key> <path>: may <path>'s row read that key's record? A record is per key and
@@ -564,7 +567,7 @@ U
 }
 
 cmd_create() {
-  local col='' kind='' key='' b0='' name='' base='' branch='' adopt='' detach='' parent='' psel='' slug='' ufrom='' uhome='' \
+  local col='' kind='' key='' b0='' bn='' name='' base='' branch='' adopt='' detach='' parent='' psel='' slug='' ufrom='' uhome='' \
         tests=0 hit prev prow row WT='' SEL='' nl='
 ' tab='	'
   while [ $# -gt 0 ]; do
@@ -693,6 +696,8 @@ cmd_create() {
     [ "$ufrom" != "$uhome" ] && [ "$MAIN" != "$uhome" ] && set -- "$@" umbrella "$ufrom"
   # base: the commit the workspace started at, so `landed` can tell finished work from a fresh tree.
   b0=$(git -C "$WT" rev-parse --verify -q HEAD 2>/dev/null) && [ "$kind" != review ] && set -- "$@" base "$b0"
+  # branch: what ties a tree to a <repo>#<n> key once the record names another path (_issue_key).
+  bn=$(git -C "$WT" symbolic-ref -q --short HEAD 2>/dev/null) && [ "$kind" != review ] && set -- "$@" branch "$bn"
   _rec_set "$kind" "$key" "$@" || say 'create: the workspace exists, but its record could not be written'
   row=$(_find --path "$WT") || { say "create: made $WT but cannot list it"; return 1; }
   say "created \"$name\" → $WT ($BACKEND)"
