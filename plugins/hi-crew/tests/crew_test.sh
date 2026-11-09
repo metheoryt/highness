@@ -153,6 +153,15 @@ printf '%s\n' '{"type":"assistant","timestamp":"2999-01-01T00:00:01.000Z","messa
 sleep 1; pnotify; bash "$C" watch
 check 'watch: a new dialog is told again' "$(bash "$C" events | wc -l | tr -d ' ')" 2
 bash "$C" events --ack
+# an MCP server's input dialog is told as one
+printf '%s\n' '{"type":"assistant","timestamp":"2999-01-01T00:00:02.000Z","message":{"content":[{"type":"tool_use","id":"tu_11","name":"mcp__docs__ask"}]}}' >"$PTR"
+sleep 1
+jq -n -c --arg c "$WS2/sub" --arg tr "$PTR" '{hook_event_name:"Notification",notification_type:"elicitation_dialog",session_id:"sw2",cwd:$c,transcript_path:$tr}' \
+  | bash "$HERE/../lib/prompt-mark.sh" hook
+check 'prompts: an input dialog has kind input' "$(bash "$C" prompts | cut -f4,5)" "$(printf 'mcp__docs__ask\tinput')"
+bash "$C" watch
+check 'watch: an input dialog is said as one' "$(bash "$C" events | cut -f5)" 'waits on an MCP input dialog for mcp__docs__ask'
+bash "$C" events --ack
 
 # --- gh_state: the default for github.com, with the same marker rule
 cat >"$W/bin/gh" <<'EOF'

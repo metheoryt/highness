@@ -6,6 +6,12 @@
         "hooks": [
           { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/lib/prompt-mark.sh\" hook" }
         ]
+      },
+      {
+        "matcher": "elicitation_dialog",
+        "hooks": [
+          { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/lib/prompt-mark.sh\" hook" }
+        ]
       }
     ],
     "Stop": [

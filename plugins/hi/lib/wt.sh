@@ -764,16 +764,18 @@ _tui_idle() {
 }
 
 # _screen_echo <handle> <prompt>: read that terminal's rendered screen once and set
-# _ECHO to `<where> <count>`: where is `composer` when the prompt sits in the composer (the box between
+# _ECHO to `<where> <count> <state>`: where is `composer` when the prompt sits in the composer (the box between
 # the last two rule lines — a swallowed Enter), else `out`, or `none` when there is no rendered
-# screen or no composer box; count is how often the prompt shows outside the composer.
+# screen or no composer box; count is how often the prompt shows outside the composer; state is
+# what the screen shows the session doing — `blocked` (a dialog), `working` (a turn), `idle`, or
+# `none` with no rendered screen.
 # Whitespace is dropped before comparing, so a prompt wrapped over several rows still matches.
 # The last few non-blank rows are left in _SEND_SCREEN for the report. Globals, not stdout:
 # a command substitution would lose _SEND_SCREEN.
 _SEND_SCREEN='' _ECHO=''
 _screen_echo() {
   local js want
-  _ECHO='none 0'
+  _ECHO='none 0 none'
   want=$(printf '%s' "$2" | tr -d ' \t\n')
   js=$("$ORCA" terminal read --terminal "$1" --screen --json 2>/dev/null </dev/null) || return 0
   # Only a rendered screen counts: an accumulated stream has no composer box to tell apart.
@@ -783,33 +785,62 @@ _screen_echo() {
   _ECHO=$(printf '%s' "$js" | jq -r '.result.terminal.tail // [] | .[]' 2>/dev/null |
     awk -v want="$want" '
       { line[NR] = $0; t = $0; gsub(/[ \t]/, "", t); r = t; gsub(/─/, "", r)
-        if (t != "" && r == "") { a = b; b = NR } }
+        if (t != "" && r == "") { a = b; b = NR }
+        if (t != "") nb[++k] = NR }
       END {
-        if (!a) { print "none 0"; exit }
+        st = state()
+        if (!a) { print "none 0", st; exit }
         box = ""; rest = ""
         for (i = 1; i <= NR; i++) { t = line[i]; gsub(/[ \t]/, "", t)
           if (i > a && i < b) box = box t; else rest = rest t }
         n = 0; while ((p = index(rest, want)) > 0) { n++; rest = substr(rest, p + length(want)) }
-        print (index(box, want) ? "composer" : "out"), n
+        print (index(box, want) ? "composer" : "out"), n, st
+      }
+      # What the screen says the session is doing: blocked (a dialog waits for an answer),
+      # working (a turn runs), else idle. The rules are herdr'"'"'s Claude Code detection manifest
+      # (version 2026.10.11.1, highness#24), cut to what BSD awk can match byte by byte. A form
+      # (its "esc to cancel" footer) is read below the last rule line, or on the whole screen
+      # when there is none; a permission question and a live turn in the last 12 non-blank
+      # rows. A dialog wins over a turn, as there.
+      function state(   i, s, d, q, low, yes) {
+        d = ""; q = ""; yes = 0
+        for (i = (b ? b + 1 : 1); i <= NR; i++) d = d " " tolower(line[i])
+        for (i = (k > 12 ? k - 11 : 1); i <= k; i++) { low = tolower(line[nb[i]]); q = q " " low
+          if (low ~ /^[ \t]*(❯[ \t]*)?(1\.[ \t]*)?yes([^a-z]|$)/ || low ~ /^[ \t]*(❯[ \t]*)?[23]\.[ \t]*(yes|no)([^a-z]|$)/) yes = 1 }
+        if (index(d, "esc to cancel") && (index(d, "enter to confirm") || (index(d, "enter to select") && index(d, "to navigate")))) return "blocked"
+        if (index(d, "esc to cancel") && (index(d, "requests your input") || index(d, "run a dynamic workflow?"))) return "blocked"
+        if (index(q, "do you want to proceed?") && yes) return "blocked"
+        if (index(q, "waiting for permission") || index(q, "do you want to allow this connection?")) return "blocked"
+        for (i = (k > 12 ? k - 11 : 1); i <= k; i++) { s = line[nb[i]]
+          if (s ~ /^[ \t]*(⏸|⏵).*esc to interrupt([ \t]|·|$)/) return "working"
+          if (s ~ /^[ \t]*(\*|·|✢|✳|✶|✻|✽)[ \t]+[^ \t].*…([ \t]+\([0-9]+[smh]([ \t]|·)|[ \t]*$)/) return "working" }
+        return "idle"
       }')
 }
 
 # _send_taken <receipt-json> <handle> <prompt> <count-before>: exit 0 when the prompt typed
 # into that agent terminal was taken — Orca's receipt says the turn started, or the screen
-# shows one more copy of it outside the composer than before the send, and none inside. The
+# shows one more copy of it outside the composer than before the send, and none inside, or the
+# screen shows a turn running or a dialog open (it showed neither before the send: dispatch
+# refuses those; herdr's `agent prompt --wait` takes working or blocked as the start). The
 # count matters: every dispatch into a workspace types the same line, so an earlier one's echo
-# may still be on screen. The screen is read up to HI_SEND_READS times (default 5), a second apart.
+# may still be on screen. The screen is read up to HI_SEND_READS times (default 5), a second
+# apart. _SEND_STATE keeps the last state read (blocked: the turn opened a dialog at once).
+_SEND_STATE=''
 _send_taken() {
-  local n=0 reads=${HI_SEND_READS:-5} where count
-  _SEND_SCREEN=''
+  local n=0 reads=${HI_SEND_READS:-5} where count state
+  _SEND_SCREEN='' _SEND_STATE=''
   [ "$(printf '%s' "$1" | jq -r '(.result.send.prompt.stages // []) | index("turn_started") != null' 2>/dev/null)" = true ] && return 0
   while [ "$n" -lt "$reads" ]; do
     [ "$n" -gt 0 ] && sleep 1
     n=$((n + 1))
     _screen_echo "$2" "$3"
-    read -r where count <<EOF
+    read -r where count state <<EOF
 $_ECHO
 EOF
+    _SEND_STATE=$state
+    # a swallowed Enter leaves the brief in the composer whatever else the screen shows
+    [ "$where" != composer ] && case "$state" in working|blocked) return 0 ;; esac
     [ "$where" = out ] && [ "${count:-0}" -gt "${4:-0}" ] && return 0
   done
   return 1
@@ -858,7 +889,7 @@ _uuid() {
 }
 
 cmd_dispatch() {
-  local before path="${1:-}" brief='' name='' resume='' cfg='' env='' row wt sel kind key dst dirs uuid line via=print handle='' js T rc tmp wrap
+  local before path="${1:-}" brief='' name='' resume='' cfg='' env='' row wt sel kind key dst dirs uuid line via=print handle='' js T rc tmp wrap state
   [ -n "$path" ] || { say 'dispatch: <path> is required'; return 2; }
   shift
   while [ $# -gt 0 ]; do
@@ -896,9 +927,22 @@ cmd_dispatch() {
     tmp=$(mktemp "${TMPDIR:-/tmp}/hi-send.XXXXXX") || return 1
     printf 'Read %s and follow it.' "$dst" > "$tmp"
     _screen_echo "$handle" "Read $dst and follow it."
-    read -r _ before <<EOF
+    read -r _ before state <<EOF
 $_ECHO
 EOF
+    # Orca's idle is not the screen's: a dialog or a running turn on it means typing now could
+    # answer that dialog. Refused like a busy session (highness#24).
+    if [ "$state" = blocked ] || [ "$state" = working ]; then
+      rm -f "$tmp"
+      printf '%s\t%s\t%s\n' "$uuid" busy ''
+      if [ "$state" = blocked ]; then
+        say "dispatch: the session in $wt (terminal $handle) shows a dialog waiting for an answer — not typing into it; answer it, then rerun dispatch; brief: $dst"
+      else
+        say "dispatch: a session is mid-turn in $wt (its screen shows a turn running, terminal $handle) — not starting a second one; give it $dst when it is idle, or rerun dispatch then"
+      fi
+      [ -n "$_SEND_SCREEN" ] && say "  screen tail:" && printf '%s\n' "$_SEND_SCREEN" | sed 's/^/    /' >&2
+      return 3
+    fi
     js=$(HI_CONFIRMED=1 bash "$ORCA_SH" send "$handle" "$tmp" 2>/dev/null </dev/null)
     rm -f "$tmp"
     if [ "$(printf '%s' "$js" | jq -r 'if .ok == true and .result.send.accepted != false then "y" else "n" end' 2>/dev/null)" = y ]; then
@@ -909,6 +953,7 @@ EOF
         _rec_set "$kind" "$key" dispatched send || say 'dispatch: could not record the dispatch'
         printf '%s\t%s\t%s\n' "$uuid" send "$handle"
         say "dispatched \"$name\" into its live session (terminal $handle)${uuid:+ — resume: cd $wt && claude --resume $uuid}"
+        [ "$_SEND_STATE" = blocked ] && say "  it opened a dialog at once — look at that terminal"
         return 0
       fi
       _rec_set "$kind" "$key" dispatched unconfirmed || say 'dispatch: could not record the dispatch'

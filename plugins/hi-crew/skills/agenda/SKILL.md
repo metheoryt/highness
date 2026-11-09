@@ -22,7 +22,7 @@ this skill" printed above, two levels up.
 2. **What blocks a worker**: `bash "$C" asks` — open questions, decision gates, and escalations
    (a worker that stopped without reporting), across the Runs of all open tickets, each with its
    Run. `$O orchestration inbox --limit 100 --full --json` gives the full text.
-   **Workers on a permission dialog**: `bash "$C" prompts` (TSV: key, run, since, tool). Such a
+   **Workers on a permission dialog**: `bash "$C" prompts` (TSV: key, run, since, tool, kind — `permission`, or `input` for an MCP server's input dialog). Such a
    worker waits for someone to click in its terminal and sends no question, so nothing else shows
    it; the person answers it there (`$O terminal list`, or the worker's workspace in Orca).
 3. **Last reports**: `bash "$C" reports` — the latest `worker_done` per dispatch. A report no
