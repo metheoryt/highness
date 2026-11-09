@@ -59,12 +59,15 @@ usage: wt.sh [--repo PATH] <verb> …   (--repo: run as if from PATH, e.g. a clo
                     (a live agent session there gets the brief; else a new terminal, which
                     waits out gortex indexing itself; exit 3: that session is mid-turn;
                     exit 5: typed into it, but not seen taken — look before resending)
+       wt.sh land [<path>] [--test CMD]   (merge origin/<trunk>, test, check, fast-forward and push
+                    the trunk; loops while the trunk moves. CMD default: config land.test)
        wt.sh remove-if-safe <path> | remove-if-landed <path> | remove <path> | sweep
+                (remove* take a workspace's path, or its folder or name when that names one)
        wt.sh review-head --pr N --base-ref B | waiting
        wt.sh board <path> <column>   (Orca board column: board.sh lists them; prints one row)
        wt.sh board -                 (path<TAB>column lines on stdin; one row each, one listing)
 exit: 0 ok · 1 not found or failed · 2 usage, not in a git work tree, or create in an umbrella
-      · 3 refused (remove-if-safe; dispatch: a session is mid-turn there) · 4 removed, but the directory survived
+      · 3 refused (remove-if-safe; dispatch: a session is mid-turn there; land: a dirty main checkout, a review tree, no test command) · 4 removed, but the directory survived
       · 5 dispatch: the brief was typed into a live session, but no turn start was seen
 U
   exit 2
@@ -291,7 +294,32 @@ _infer() {
   last=${2##*/}
   k=$(printf '%s' "$last" | sed -n 's/^\([A-Za-z][A-Za-z0-9]*-[0-9][0-9]*\).*/\1/p' | LC_ALL=C tr '[:lower:]' '[:upper:]')
   if [ -n "$k" ]; then printf 'ticket\t%s\n' "$k"; return; fi
+  # A <repo>#<n> key rides the branch as a bare number (<n>-<slug>), and a number alone says
+  # nothing: release/2026-notes is not issue 2026, even when that issue has a record. So such a
+  # tree is a ticket only when hi's own record ties it: the record names this path (_rows reads
+  # that before _infer), or the branch create recorded is this tree's branch (highness#12).
+  k=$(_issue_key "$2") && { printf 'ticket\t%s\n' "$k"; return; }
   printf 'work\t%s\n' "$folder"
+}
+
+# _issue_key <branch>: the <repo>#<n> key whose record's `branch` is <branch>; exit 1 when none
+# or more than one is. Records written before create stored `branch` have none: their tree is a
+# ticket only while the record names its path.
+_issue_key() {
+  local f b hit='' n=0
+  [ -n "$1" ] || return 1
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    b=${f##*/}; b=${b%.md}
+    case "$b" in *'#'[0-9]*) ;; *) continue ;; esac
+    _valid_id ticket "$b" || continue
+    [ "$(_rec_get ticket "$b" branch 2>/dev/null)" = "$1" ] || continue
+    hit=$b; n=$((n + 1))
+  done <<EOF
+$(_rec_files)
+EOF
+  [ "$n" -eq 1 ] || return 1
+  printf '%s' "$hit"
 }
 
 # _rec_owns <kind> <key> <path>: may <path>'s row read that key's record? A record is per key and
@@ -543,7 +571,7 @@ U
 }
 
 cmd_create() {
-  local col='' kind='' key='' b0='' name='' base='' branch='' adopt='' detach='' parent='' psel='' slug='' ufrom='' uhome='' \
+  local col='' kind='' key='' b0='' bn='' name='' base='' branch='' adopt='' detach='' parent='' psel='' slug='' ufrom='' uhome='' \
         tests=0 hit prev prow row WT='' SEL='' nl='
 ' tab='	'
   while [ $# -gt 0 ]; do
@@ -672,6 +700,8 @@ cmd_create() {
     [ "$ufrom" != "$uhome" ] && [ "$MAIN" != "$uhome" ] && set -- "$@" umbrella "$ufrom"
   # base: the commit the workspace started at, so `landed` can tell finished work from a fresh tree.
   b0=$(git -C "$WT" rev-parse --verify -q HEAD 2>/dev/null) && [ "$kind" != review ] && set -- "$@" base "$b0"
+  # branch: what ties a tree to a <repo>#<n> key once the record names another path (_issue_key).
+  bn=$(git -C "$WT" symbolic-ref -q --short HEAD 2>/dev/null) && [ "$kind" != review ] && set -- "$@" branch "$bn"
   _rec_set "$kind" "$key" "$@" || say 'create: the workspace exists, but its record could not be written'
   row=$(_find --path "$WT") || { say "create: made $WT but cannot list it"; return 1; }
   say "created \"$name\" → $WT ($BACKEND)"
@@ -1152,14 +1182,31 @@ _reason_text() {
 _guard_target() {
   local p="${1:-}" pp
   [ -n "$p" ] || { say 'refusing an empty path'; return 2; }
-  TROW=$(_find --path "$p" 2>/dev/null) || {
-    say "$p is not a workspace of this repo (the main checkout, another repo, or not a worktree) — nothing removed"
+  case "$p" in
+    */*) TROW=$(_find --path "$p" 2>/dev/null) || TROW='' ;;
+    *)   TROW=$(_find_name "$p") || return 2 ;;
+  esac
+  [ -n "$TROW" ] || {
+    say "$p is not a workspace of this repo (the main checkout, another repo, or not a worktree; give its path, folder or name) — nothing removed"
     return 2; }
   pp=$(cd "$(_col "$TROW" 1)" 2>/dev/null && pwd -P)
   case "$CALLER_PWD/" in
     "$pp/"*) say "refusing to remove $(_col "$TROW" 1): this session is inside it"; return 2 ;;
   esac
   return 0
+}
+
+# _find_name <word>: the one row whose folder or record name (the name Orca shows) is <word>;
+# nothing when none is. Two or more: says which, exit 1 — a name never picks one of several.
+_find_name() {
+  local hit
+  hit=$(_rows | awk -F'\t' -v v="$1" '{ f = $1; sub(/.*\//, "", f) } f == v || $7 == v')
+  case "$(printf '%s' "$hit" | grep -c .)" in
+    0|1) printf '%s' "$hit"; return 0 ;;
+  esac
+  say "$1 names more than one workspace — give the path of one; nothing removed:"
+  printf '%s\n' "$hit" | cut -f1 | sed 's/^/  /' >&2
+  return 1
 }
 
 _close_terms() {
@@ -1336,6 +1383,87 @@ EOF
   return 0
 }
 
+# _tracked_dirty <path>: exit 0 when <path> has uncommitted changes to tracked files. Untracked
+# files do not count: a fast-forward that would overwrite one fails on its own, loudly.
+_tracked_dirty() { [ -n "$(git -C "$1" status --porcelain --untracked-files=no 2>/dev/null)" ]; }
+
+# land [<path>] [--test CMD]: lands a workspace's branch on the trunk while other agents move it.
+# Loop: fetch; merge origin/<trunk> into the branch; run the test command in the workspace; fetch
+# again; when origin/<trunk> is no longer an ancestor of HEAD (it moved during the tests), loop
+# from the merge. Then fast-forward <trunk> in the main checkout and push it; a push refused
+# because the trunk moved again loops too. HI_WT_LAND_TRIES (default 5) caps the loop.
+# The test command: --test, else `land.test` from the highness config (the workspace's
+# .claude/highness.json first): a shell string run with bash in the workspace. None: refused.
+# Stdout: path<TAB>branch<TAB>sha. Exit 1: a conflict (the merge is aborted), failing tests, the
+# loop ran out, or git failed. Exit 3 refused: a review workspace or a detached HEAD, no test
+# command, a dirty workspace, or a main checkout that is dirty or not on <trunk>.
+cmd_land() {
+  local p='' tcmd='' row b kind t tb sha n=0 max=${HI_WT_LAND_TRIES:-5}
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --test) [ $# -ge 2 ] || usage; tcmd=$2; shift 2 ;;
+      -*) usage ;;
+      *) [ -z "$p" ] || usage; p=$1; shift ;;
+    esac
+  done
+  case "$max" in ''|*[!0-9]*|0) say 'HI_WT_LAND_TRIES must be a positive number'; return 2 ;; esac
+  [ -n "$p" ] || p=$(git rev-parse --show-toplevel 2>/dev/null) || p=''
+  [ -n "$p" ] || { say 'land: no workspace given and none here'; return 2; }
+  row=$(_find --path "$p" 2>/dev/null) || {
+    say "land: $p is not a workspace of this repo (the main checkout is where it lands, not what)"; return 3; }
+  p=$(_col "$row" 1); b=$(_col "$row" 3); kind=$(_col "$row" 5)
+  if [ "$kind" = review ]; then
+    say "land: $p is a review workspace (a detached PR head): nothing of its own to land"; return 3
+  fi
+  [ -n "$b" ] || { say "land: $p has a detached HEAD: land needs a branch"; return 3; }
+  if [ -z "$tcmd" ]; then
+    tcmd=$(cd "$p" && bash "$HERE/config.sh" get .land.test 2>/dev/null) || tcmd=''
+  fi
+  [ -n "$tcmd" ] || {
+    say 'land: no test command — set land.test in .claude/highness.json (or the personal config), or pass --test CMD'
+    return 3; }
+  t=$(_trunk) || { say 'land: origin/HEAD is unset (git remote set-head origin --auto)'; return 1; }
+  tb=${t#*/}
+  if [ "$(git -C "$MAIN" symbolic-ref -q --short HEAD 2>/dev/null)" != "$tb" ]; then
+    say "land: the main checkout $MAIN is not on $tb: nothing landed"; return 3
+  fi
+  _tracked_dirty "$MAIN" && { say "land: the main checkout $MAIN has uncommitted changes: nothing landed"; return 3; }
+  _tracked_dirty "$p" && { say "land: $p has uncommitted changes: commit them first"; return 3; }
+  while :; do
+    n=$((n + 1))
+    if [ "$n" -gt "$max" ]; then
+      say "land: gave up after $max tries: $t kept moving (raise HI_WT_LAND_TRIES, or try again)"
+      [ -n "$(git -C "$MAIN" rev-list "$t..$tb" 2>/dev/null)" ] &&
+        say "land: $tb in the main checkout holds commits not on $t yet; the next land pushes them"
+      return 1
+    fi
+    git -C "$p" fetch -q origin || { say 'land: git fetch failed'; return 1; }
+    if ! git -C "$p" merge-base --is-ancestor "$t" HEAD; then
+      git -C "$p" merge -q --no-edit "$t" >&2 || {
+        git -C "$p" merge --abort >/dev/null 2>&1
+        say "land: merging $t into $b conflicts; the merge is aborted — resolve it by hand, then land again"
+        return 1; }
+    fi
+    say "land: try $n — running the tests in $p: $tcmd"
+    (cd "$p" && bash -c "$tcmd") >&2 || { say 'land: the tests failed: nothing landed'; return 1; }
+    git -C "$p" fetch -q origin || { say 'land: git fetch failed'; return 1; }
+    if ! git -C "$p" merge-base --is-ancestor "$t" HEAD; then
+      say "land: $t moved during the tests: merging it again"; continue
+    fi
+    sha=$(git -C "$p" rev-parse HEAD)
+    # The tests took a while: another session may have started editing the main checkout.
+    _tracked_dirty "$MAIN" && { say "land: the main checkout $MAIN got uncommitted changes during the tests: nothing landed"; return 3; }
+    git -C "$MAIN" merge -q --ff-only "$sha" >&2 || {
+      say "land: $tb in the main checkout cannot fast-forward to $sha (commits of its own?): nothing pushed"; return 1; }
+    git -C "$MAIN" push -q origin "$tb" >&2 && break
+    git -C "$p" fetch -q origin && ! git -C "$p" merge-base --is-ancestor "$t" "$sha" || {
+      say "land: pushing $tb failed, and not because $t moved: $tb in the main checkout is ahead of $t"; return 1; }
+    say "land: pushing $tb was refused: $t moved, merging it again"
+  done
+  printf '%s\t%s\t%s\n' "$p" "$b" "$sha"
+  say "landed $b on $tb at $(git -C "$MAIN" rev-parse --short "$sha") (try $n)"
+}
+
 # review-head --pr N --base-ref B: fetch the PR head under a PRIVATE ref (never a branch, so it
 # cannot collide with anyone's branches), forced so a force-push does not fail the review.
 # Serves fork PRs too, through the base repo. Prints BASE<TAB>HEAD.
@@ -1447,7 +1575,7 @@ if [ "${1:-}" = --repo ]; then
 fi
 verb="${1:-}"; [ $# -gt 0 ] && shift
 case "$verb" in
-  rec|list|find|create|dispatch|remove-if-safe|remove-if-landed|remove|sweep|review-head|waiting|board) ;;
+  rec|list|find|create|dispatch|land|remove-if-safe|remove-if-landed|remove|sweep|review-head|waiting|board) ;;
   *) usage ;;
 esac
 # Every command below reads /dev/null: the orca CLI (and gh) behind the verbs may drain stdin,
@@ -1485,6 +1613,7 @@ case "$verb" in
   find) _find "$@" ;;
   create) cmd_create "$@" ;;
   dispatch) cmd_dispatch "$@" ;;
+  land) cmd_land "$@" ;;
   remove) cmd_remove "$@" ;;
   remove-if-safe) cmd_remove_if_safe "$@" ;;
   remove-if-landed) cmd_remove_if_landed "$@" ;;

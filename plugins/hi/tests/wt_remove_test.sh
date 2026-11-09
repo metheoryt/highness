@@ -238,4 +238,41 @@ export FX_RM_PATH="$S10"; out=$(bash "$WT" remove-if-safe "$S10" 2>/dev/null); r
 assert_status "remove-if-safe (asked for by path): an idle agent does not block" 0 "$rc"
 rm -f "$FX/terms.json" "$FX/ps.json"; unset FX_RM_PATH
 bash "$WT" remove "$S11" >/dev/null 2>&1; orca_off
+# a <repo>#<n> ticket tree whose PR merged is removed unattended; an unrecorded one is work
+L3=$(bash "$WT" create --kind ticket --key 'app#5' --name 'app#5 · slug' --base main --branch feat/5-slug 2>/dev/null | cut -f1)
+(cd "$L3" && git commit -q --allow-empty -m w && git push -q origin HEAD)
+pr feat/5-slug MERGED 55 "$(git -C "$L3" rev-parse HEAD)"
+L4="$SANDBOX/gh-6"; git worktree add -q -b feat/6-slug "$L4" main
+(cd "$L4" && git commit -q --allow-empty -m w && git push -q origin HEAD)
+pr feat/6-slug MERGED 56 "$(git -C "$L4" rev-parse HEAD)"
+bash "$WT" remove-if-landed "$L3" 2>/dev/null; rc=$?
+assert_status "if-landed: a <repo>#<n> ticket workspace is removed" 0 "$rc"
+assert_eq "if-landed: the #-ticket one is gone" no "$([ -e "$L3" ] && echo yes || echo no)"
+out=$(bash "$WT" remove-if-landed "$L4" 2>/dev/null); rc=$?
+assert_status "if-landed: a bare-number branch with no record is refused" 3 "$rc"
+assert_contains "if-landed: it is work, not a ticket" "$out" "not-ticket"
+
+# remove <name>: a bare word is the folder or the record's (Orca's) name; a path is only a path
+N1=$(bash "$WT" create --kind work --key den --name 'quiet den' --base main --branch work/den 2>/dev/null | cut -f1)
+N2=$(bash "$WT" create --kind work --key nook --name 'reading corner' --base main --branch work/nook 2>/dev/null | cut -f1)
+D1="$SANDBOX/twin/a/twin"; D2="$SANDBOX/twin/b/twin"; mkdir -p "${D1%/*}" "${D2%/*}"
+git worktree add -q -b twin-a "$D1" main; git worktree add -q -b twin-b "$D2" main
+bash "$WT" remove "${N1##*/}" 2>/dev/null; rc=$?
+assert_status "remove <folder>: exit 0" 0 "$rc"
+assert_eq "remove <folder>: the work workspace is gone" no "$([ -e "$N1" ] && echo yes || echo no)"
+bash "$WT" remove 'reading corner' 2>/dev/null; rc=$?
+assert_status "remove <record name>: exit 0" 0 "$rc"
+assert_eq "remove <record name>: gone" no "$([ -e "$N2" ] && echo yes || echo no)"
+n=$(count_wt)
+out=$(bash "$WT" remove twin 2>&1); rc=$?
+assert_status "remove <ambiguous name>: exit 2" 2 "$rc"
+assert_contains "remove <ambiguous name>: lists one" "$out" "$D1"
+assert_contains "remove <ambiguous name>: lists the other" "$out" "$D2"
+assert_eq "remove <ambiguous name>: nothing removed" "$n" "$(count_wt)"
+out=$(bash "$WT" remove no-such-ws 2>&1); rc=$?
+assert_status "remove <unknown name>: exit 2" 2 "$rc"
+assert_contains "remove <unknown name>: says what it takes" "$out" "path, folder or name"
+out=$(bash "$WT" remove "$SANDBOX/twin" 2>&1); rc=$?
+assert_status "remove <a path>: never matched by its basename" 2 "$rc"
+assert_eq "remove <a path>: nothing removed" "$n" "$(count_wt)"
 assert_summary
