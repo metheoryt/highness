@@ -24,12 +24,15 @@ For a team, add the marketplace and the plugins to the repo's `.claude/settings.
 Optional JSON, read by every plugin: `~/.config/highness/config.json` (or `$HIGHNESS_CONFIG`) for one
 person, `.claude/highness.json` in a repo for a team. A repo key wins; lists from both add up.
 `guard.exempt_commands` and `guard.checks` are read from the personal file only: a repo's file comes
-with every clone, so it may add deny patterns but never switch the guard off or run a program.
+with every clone, so it may add deny patterns but never switch the guard off or run a program. One exception:
+`land.test`, the suite `wt.sh land` runs before it lands a branch, is read from the repo's file too —
+it runs the repo's own tests, code any clone already carries.
 
 ```json
 {
   "guard": { "deny_patterns": ["terraform apply"], "exempt_commands": [], "checks": [] },
   "repo_setup": { "mode": "local" },
+  "land": { "test": "bash tests/run.sh </dev/null" },
   "docs": { "conventions": "docs/writing.md" }
 }
 ```

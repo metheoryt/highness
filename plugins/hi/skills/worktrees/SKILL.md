@@ -1,6 +1,6 @@
 ---
 name: worktrees
-description: Show, find, create and clean up this repo's workspaces (Orca workspaces, or plain git worktrees when there is no Orca) — one table with lineage, what each is for, its PR, whether it is safe to remove, and "remove the N marked?". Use when the user asks about worktrees or workspaces ("clean up worktrees", "where is <KEY>'s workspace", "what workspaces do I have", "make me a scratch workspace for X") or wants to resume a session started in one — and whenever the agent itself needs a new tree to edit in.
+description: Show, find, create, land and clean up this repo's workspaces (Orca workspaces, or plain git worktrees when there is no Orca) — one table with lineage, what each is for, its PR, whether it is safe to remove, and "remove the N marked?". Use when the user asks about worktrees or workspaces ("clean up worktrees", "where is <KEY>'s workspace", "what workspaces do I have", "make me a scratch workspace for X") or wants to resume a session started in one, or to land a workspace's branch on the trunk ("land it") — and whenever the agent itself needs a new tree to edit in.
 ---
 
 # /hi:worktrees
@@ -97,6 +97,14 @@ the options "Remove the <n> safe ones" (recommended, only the 🗑 rows), "Let m
   brief, `via=send`; exit 3: it is mid-turn, `via=busy`, or an Orca chat is open there, `via=chat`:
   Orca cannot type into a chat, so tell the user to paste the line stderr names into it). Stdout:
   `session<TAB>via<TAB>handle`; `via=print` → line 2 is the command for the user to run.
+- **"Land it"** (a `ticket` or `work` workspace whose branch goes straight onto the trunk, no PR) →
+  `bash "$L/wt.sh" land <path>`. It merges `origin/<trunk>` into the branch, runs the test command,
+  fetches, and when the trunk moved during the tests merges and tests again; then it fast-forwards
+  the trunk in the main checkout and pushes it. The test command is `land.test` from the highness
+  config (the repo's `.claude/highness.json` first), or `--test '<cmd>'`. Exit 3 is a refusal —
+  a dirty main checkout or one off the trunk, a dirty workspace, a review workspace, no test
+  command — say why in words; exit 1 (a conflict, failing tests, the trunk kept moving): show
+  stderr's last line. Never land from a review workspace or with the tests skipped.
 - **"Clean up"** → §1, with the question.
 
 ## 3. Rules
