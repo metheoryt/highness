@@ -1047,6 +1047,7 @@ _reason_text() {
     memory)      echo ".claude/memory has a file that is not a link to the main checkout's copy: $(_memory_bad "$(_col "$2" 1)")" ;;
     busy)        echo 'an agent here is busy (a terminal or a chat)' ;;
     open-window) echo "its tmux window (hi:$(_col "$2" 7)) is still open" ;;
+    live)        echo 'an agent session is open here (idle): it may be another session'"'"'s, and removing would close it' ;;
     work)        echo 'a work or scratch workspace: removed only when you ask, even when its branch is merged' ;;
     not-ticket)  echo "a $(_col "$2" 5) workspace: only a ticket workspace is removed unattended" ;;
     not-landed)  echo "not landed: its PR is $(_col "$3" 4 | sed 's/#.*//'), not merged, and its work is not in trunk" ;;
@@ -1201,7 +1202,9 @@ _remove_unless() {
 # line; the workspace this session stands in is skipped silently; unfinished ones untouched.
 # A work (or scratch) workspace is always an `ask`: a branch equal to trunk reads as landed, but
 # it can be a long-lived workspace someone is about to use. Only ticket and review
-# workspaces are removed unasked.
+# workspaces are removed unasked. So is one with an idle agent (a terminal or a chat): safe
+# means no BUSY agent, but an idle one is a session someone may come back to, and the sweep
+# runs from another session that cannot tell whose it is (highness#13).
 cmd_sweep() {
   local rows row st reasons pr p name code texts TROW rc err
   git -C "$MAIN" worktree prune >/dev/null 2>&1
@@ -1213,6 +1216,7 @@ cmd_sweep() {
     case "$pr" in merged#*|closed#*|landed) ;; *) continue ;; esac
     case ";$reasons;" in *";cwd;"*) continue ;; esac
     [ "$(_col "$row" 5)" = work ] && reasons="${reasons:+$reasons;}work"
+    [ "$(_col "$st" 5)" = idle ] && reasons="${reasons:+$reasons;}live"
     p=$(_col "$row" 1); name=$(_col "$row" 7)
     if [ -z "$reasons" ]; then
       TROW=$row

@@ -217,5 +217,25 @@ export FX_RM_PATH="$S6" FX_RM_LEAK=1
 out=$(cd "$R" && bash "$WT" sweep 2>/dev/null)
 assert_contains "sweep: a leaked directory is a leaked row with the sudo hint" "$out" "leaked	$S6	AB-306 · leak	sudo rm -rf $S6"
 assert_not_contains "sweep: a leak is never reported removed" "$out" "removed	$S6"
-unset FX_RM_LEAK FX_RM_PATH; rm -rf "$S6"; orca_off
+unset FX_RM_LEAK FX_RM_PATH; rm -rf "$S6"
+# sweep never removes a workspace with an idle agent unasked (highness#13): another session's
+# terminal or chat would be closed under it. A busy one is an ask already.
+S10=$(mk AB-310 term); done_pr AB-310-term "$S10" 310
+S11=$(mk AB-311 chat); done_pr AB-311-chat "$S11" 311
+S12=$(mk AB-312 none); done_pr AB-312-none "$S12" 312
+jq -n --arg p "$(unc "$S10")" '{ok:true,result:{terminals:[{handle:"h10",connected:true,writable:true,worktreePath:$p,title:"t",agentIdentity:"claude",tabId:"T",leafId:"L"}]}}' > "$FX/terms.json"
+jq -n --arg a "$(unc "$S10")" --arg b "$(unc "$S11")" '{ok:true,result:{worktrees:[
+  {path:$a,agents:[{paneKey:"T:L",state:"done",programStatus:{state:"idle"}}]},
+  {path:$b,liveTerminalCount:0,agents:[{paneKey:"structured-agent-session-claude_1:tab",state:"done",hasLivePty:null}]}]}}' > "$FX/ps.json"
+export FX_RM_PATH="$S12"; reset_log
+out=$(cd "$R" && bash "$WT" sweep 2>/dev/null)
+assert_contains "sweep: an idle agent terminal is an ask" "$out" "ask	$S10	AB-310 · term	an agent session is open here (idle)"
+assert_contains "sweep: an idle chat is an ask" "$out" "ask	$S11	AB-311 · chat	an agent session is open here (idle)"
+assert_not_contains "sweep: the idle terminal is not closed" "$(logged)" "terminal close --terminal h10"
+assert_eq "sweep: both live workspaces still there" "yes yes" "$([ -d "$S10" ] && echo yes || echo no) $([ -d "$S11" ] && echo yes || echo no)"
+assert_contains "sweep: one with no agent is still removed" "$out" "removed	$S12	AB-312 · none"
+export FX_RM_PATH="$S10"; out=$(bash "$WT" remove-if-safe "$S10" 2>/dev/null); rc=$?
+assert_status "remove-if-safe (asked for by path): an idle agent does not block" 0 "$rc"
+rm -f "$FX/terms.json" "$FX/ps.json"; unset FX_RM_PATH
+bash "$WT" remove "$S11" >/dev/null 2>&1; orca_off
 assert_summary
