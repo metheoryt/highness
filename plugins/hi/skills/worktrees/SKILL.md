@@ -62,7 +62,8 @@ the options "Remove the <n> safe ones" (recommended, only the 🗑 rows), "Let m
 
 - 🗑 picked → `bash "$L/wt.sh" remove-if-safe <path>`. It checks again; exit 3 → show its `unsafe`
   lines in words and keep the workspace.
-- ❓ picked → the user chose it knowing the reasons: `bash "$L/wt.sh" remove <path>`.
+- ❓ picked → the user chose it knowing the reasons: `bash "$L/wt.sh" remove <path>`. A user who
+  names a workspace instead: `remove` also takes its folder or name, and refuses one that names several.
 - Exit 4 → print the `LEAKED` line verbatim; its `sudo rm -rf` is the user's; never run it yourself.
 - Report one line per workspace from `wt.sh`'s own `removed "…"` announce (what happened to the
   branch — a merged or landed one is deleted, any other kept — and how to resume the chat).

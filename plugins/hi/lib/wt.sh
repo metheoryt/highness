@@ -59,6 +59,7 @@ usage: wt.sh [--repo PATH] <verb> …   (--repo: run as if from PATH, e.g. a clo
                     (a live agent session there gets the brief; else a new terminal, which
                     waits out gortex indexing itself; exit 3: that session is mid-turn)
        wt.sh remove-if-safe <path> | remove-if-landed <path> | remove <path> | sweep
+                (remove* take a workspace's path, or its folder or name when that names one)
        wt.sh review-head --pr N --base-ref B | waiting
        wt.sh board <path> <column>   (Orca board column: board.sh lists them; prints one row)
        wt.sh board -                 (path<TAB>column lines on stdin; one row each, one listing)
@@ -289,7 +290,29 @@ _infer() {
   last=${2##*/}
   k=$(printf '%s' "$last" | sed -n 's/^\([A-Za-z][A-Za-z0-9]*-[0-9][0-9]*\).*/\1/p' | LC_ALL=C tr '[:lower:]' '[:upper:]')
   if [ -n "$k" ]; then printf 'ticket\t%s\n' "$k"; return; fi
+  # A <repo>#<n> key rides the branch as <n>, <n>-<slug> or <n>_<slug> (_carries_key's rule).
+  k=$(printf '%s' "$last" | sed -n 's/^\([0-9][0-9]*\)\([-_].*\)\{0,1\}$/\1/p')
+  if [ -n "$k" ] && k=$(_issue_key "$k"); then printf 'ticket\t%s\n' "$k"; return; fi
   printf 'work\t%s\n' "$folder"
+}
+
+# _issue_key <n>: the <repo>#<n> key of issue <n> — the one a ticket record of this repo already
+# holds (what create recorded), else origin's repo name, else the main checkout's folder.
+_issue_key() {
+  local f b r='' n=0
+  while IFS= read -r f; do
+    b=${f##*/}; b=${b%.md}
+    case "$b" in *"#$1") r=$b; n=$((n + 1)) ;; esac
+  done <<EOF
+$(_rec_files)
+EOF
+  if [ "$n" -eq 1 ] && _valid_id ticket "$r"; then printf '%s' "$r"; return 0; fi
+  r=$(git -C "$MAIN" remote get-url origin 2>/dev/null) || r=''
+  r=${r%/}; r=${r%.git}; r=${r##*/}; r=${r##*:}
+  [ -n "$r" ] || r=${MAIN##*/}
+  r=$(printf '%s' "$r" | LC_ALL=C tr '[:upper:]' '[:lower:]')
+  _valid_id ticket "$r#$1" || return 1
+  printf '%s#%s' "$r" "$1"
 }
 
 # _rec_owns <kind> <key> <path>: may <path>'s row read that key's record? A record is per key and
@@ -1085,14 +1108,31 @@ _reason_text() {
 _guard_target() {
   local p="${1:-}" pp
   [ -n "$p" ] || { say 'refusing an empty path'; return 2; }
-  TROW=$(_find --path "$p" 2>/dev/null) || {
-    say "$p is not a workspace of this repo (the main checkout, another repo, or not a worktree) — nothing removed"
+  case "$p" in
+    */*) TROW=$(_find --path "$p" 2>/dev/null) || TROW='' ;;
+    *)   TROW=$(_find_name "$p") || return 2 ;;
+  esac
+  [ -n "$TROW" ] || {
+    say "$p is not a workspace of this repo (the main checkout, another repo, or not a worktree; give its path, folder or name) — nothing removed"
     return 2; }
   pp=$(cd "$(_col "$TROW" 1)" 2>/dev/null && pwd -P)
   case "$CALLER_PWD/" in
     "$pp/"*) say "refusing to remove $(_col "$TROW" 1): this session is inside it"; return 2 ;;
   esac
   return 0
+}
+
+# _find_name <word>: the one row whose folder or record name (the name Orca shows) is <word>;
+# nothing when none is. Two or more: says which, exit 1 — a name never picks one of several.
+_find_name() {
+  local hit
+  hit=$(_rows | awk -F'\t' -v v="$1" '{ f = $1; sub(/.*\//, "", f) } f == v || $7 == v')
+  case "$(printf '%s' "$hit" | grep -c .)" in
+    0|1) printf '%s' "$hit"; return 0 ;;
+  esac
+  say "$1 names more than one workspace — give the path of one; nothing removed:"
+  printf '%s\n' "$hit" | cut -f1 | sed 's/^/  /' >&2
+  return 1
 }
 
 _close_terms() {

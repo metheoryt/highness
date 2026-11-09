@@ -57,6 +57,19 @@ bash "$WT" find --nope x >/dev/null 2>&1;    assert_status "find: unknown flag e
 assert_eq "find from a linked worktree sees the same rows" "$D/review-7" \
   "$(cd "$D/scratch" && bash "$WT" find --review 7 | cut -f1)"
 
+# A GitHub-issue ticket rides its branch as <n>-<slug> (create's rule, highness#12): inferred as
+# ticket <repo>#<n>, <repo> from origin's name, or the key a record of this repo already holds.
+git worktree add -q -b feat/3-slug "$D/gh-3" main
+git worktree add -q -b fix/4_other "$D/gh-4" main
+bash "$WT" rec set --ticket 'app#4' name 'app#4 · other'
+out=$(bash "$WT" list)
+g=$(printf '%s\n' "$out" | awk -F'\t' '$1 ~ /gh-3$/')
+assert_eq "inferred #-ticket: kind/key from origin's name" "ticket up#3" "$(col "$g" 5) $(col "$g" 6)"
+g=$(printf '%s\n' "$out" | awk -F'\t' '$1 ~ /gh-4$/')
+assert_eq "inferred #-ticket: the key a record holds" "ticket app#4" "$(col "$g" 5) $(col "$g" 6)"
+assert_eq "inferred #-ticket: its record's name" 'app#4 · other' "$(col "$g" 7)"
+assert_eq "find --ticket <repo>#<n>" "$D/gh-3" "$(col "$(bash "$WT" find --ticket 'up#3')" 1)"
+
 # Orca: listed paths get the Orca id verbatim and backend orca; unlisted stay git.
 orca_on
 export FX_ORCA_ONLY="$D/review-7"
