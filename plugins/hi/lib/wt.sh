@@ -57,13 +57,15 @@ usage: wt.sh [--repo PATH] <verb> …   (--repo: run as if from PATH, e.g. a clo
                     [--detach SHA] [--parent PATH (default: the workspace it runs in)] [--slug S] [--tests]
        wt.sh dispatch <path> --brief <file> [--name N] [--resume ID] [--config-dir D]
                     (a live agent session there gets the brief; else a new terminal, which
-                    waits out gortex indexing itself; exit 3: that session is mid-turn)
+                    waits out gortex indexing itself; exit 3: that session is mid-turn;
+                    exit 5: typed into it, but not seen taken — look before resending)
        wt.sh remove-if-safe <path> | remove-if-landed <path> | remove <path> | sweep
        wt.sh review-head --pr N --base-ref B | waiting
        wt.sh board <path> <column>   (Orca board column: board.sh lists them; prints one row)
        wt.sh board -                 (path<TAB>column lines on stdin; one row each, one listing)
 exit: 0 ok · 1 not found or failed · 2 usage, not in a git work tree, or create in an umbrella
       · 3 refused (remove-if-safe; dispatch: a session is mid-turn there) · 4 removed, but the directory survived
+      · 5 dispatch: the brief was typed into a live session, but no turn start was seen
 U
   exit 2
 }
@@ -731,6 +733,42 @@ _tui_idle() {
        jq -r '.ok // false' 2>/dev/null)" = true ]
 }
 
+# _send_taken <receipt-json> <handle> <prompt>: exit 0 when the prompt typed into that agent
+# terminal was taken — Orca's receipt says the turn started, or the rendered screen shows the
+# prompt outside the composer (the box between the last two rule lines) and not inside it.
+# Text still in the composer is a swallowed Enter. Whitespace is dropped before comparing, so
+# a prompt wrapped over several rows still matches. The screen is read up to HI_SEND_READS
+# times (default 5), a second apart; the last tail read is left in _SEND_SCREEN for the report.
+_SEND_SCREEN=''
+_send_taken() {
+  local want n=0 reads=${HI_SEND_READS:-5} js verdict
+  _SEND_SCREEN=''
+  [ "$(printf '%s' "$1" | jq -r '(.result.send.prompt.stages // []) | index("turn_started") != null' 2>/dev/null)" = true ] && return 0
+  want=$(printf '%s' "$3" | tr -d ' \t\n')
+  while [ "$n" -lt "$reads" ]; do
+    [ "$n" -gt 0 ] && sleep 1
+    n=$((n + 1))
+    js=$("$ORCA" terminal read --terminal "$2" --screen --json 2>/dev/null </dev/null) || continue
+    # Only a rendered screen counts: an accumulated stream has no composer box to tell apart.
+    [ "$(printf '%s' "$js" | jq -r '.result.terminal.source // ""' 2>/dev/null)" = screen ] || continue
+    _SEND_SCREEN=$(printf '%s' "$js" | jq -r '.result.terminal.tail // [] | .[]' 2>/dev/null |
+                   awk 'NF { l[++k] = $0 } END { for (i = (k > 8 ? k - 7 : 1); i <= k; i++) print l[i] }')
+    verdict=$(printf '%s' "$js" | jq -r '.result.terminal.tail // [] | .[]' 2>/dev/null |
+      awk -v want="$want" '
+        { line[NR] = $0; t = $0; gsub(/[ \t]/, "", t); r = t; gsub(/─/, "", r)
+          if (t != "" && r == "") { a = b; b = NR } }
+        END {
+          if (!a) { print "none"; exit }
+          box = ""; rest = ""
+          for (i = 1; i <= NR; i++) { t = line[i]; gsub(/[ \t]/, "", t)
+            if (i > a && i < b) box = box t; else rest = rest t }
+          if (index(box, want)) print "composer"; else if (index(rest, want)) print "taken"; else print "none"
+        }')
+    [ "$verdict" = taken ] && return 0
+  done
+  return 1
+}
+
 # Extra `claude` flags for a dispatched session.
 DISPATCH_FLAGS=''
 
@@ -812,14 +850,23 @@ cmd_dispatch() {
     tmp=$(mktemp "${TMPDIR:-/tmp}/hi-send.XXXXXX") || return 1
     printf 'Read %s and follow it.' "$dst" > "$tmp"
     js=$(HI_CONFIRMED=1 bash "$ORCA_SH" send "$handle" "$tmp" 2>/dev/null </dev/null)
-    if [ "$(printf '%s' "$js" | jq -r '.ok // false' 2>/dev/null)" = true ]; then
-      rm -f "$tmp"
-      _rec_set "$kind" "$key" dispatched send || say 'dispatch: could not record the dispatch'
-      printf '%s\t%s\t%s\n' "$uuid" send "$handle"
-      say "dispatched \"$name\" into its live session (terminal $handle)${uuid:+ — resume: cd $wt && claude --resume $uuid}"
-      return 0
-    fi
     rm -f "$tmp"
+    if [ "$(printf '%s' "$js" | jq -r 'if .ok == true and .result.send.accepted != false then "y" else "n" end' 2>/dev/null)" = y ]; then
+      # Accepted is not taken: a swallowed Enter leaves the brief in the composer (highness#14).
+      # Never resend here: a send Orca could not observe has landed before, and a second one
+      # submits the brief twice.
+      if _send_taken "$js" "$handle" "Read $dst and follow it."; then
+        _rec_set "$kind" "$key" dispatched send || say 'dispatch: could not record the dispatch'
+        printf '%s\t%s\t%s\n' "$uuid" send "$handle"
+        say "dispatched \"$name\" into its live session (terminal $handle)${uuid:+ — resume: cd $wt && claude --resume $uuid}"
+        return 0
+      fi
+      _rec_set "$kind" "$key" dispatched unconfirmed || say 'dispatch: could not record the dispatch'
+      printf '%s\t%s\t%s\n' "$uuid" unconfirmed "$handle"
+      say "dispatch: typed the brief into the live session in $wt (terminal $handle), but neither Orca nor its screen shows it was taken (Orca: $(printf '%s' "$js" | jq -r '[(.result.send.prompt.stages // [] | join(" -> ")), (.result.send.prompt.observation // empty)] | map(select(. != "")) | join(", ") | if . == "" then "no receipt" else . end' 2>/dev/null)). Look at that terminal before sending again — a resend can submit it twice; brief: $dst"
+      [ -n "$_SEND_SCREEN" ] && say "  screen tail:" && printf '%s\n' "$_SEND_SCREEN" | sed 's/^/    /' >&2
+      return 5
+    fi
     say "dispatch: sending to the live session in $wt (terminal $handle) failed — not starting a second one; brief: $dst"
     return 1
   elif [ "$rc" = 3 ]; then

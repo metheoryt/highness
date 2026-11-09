@@ -454,13 +454,22 @@ orphaned() {
 }
 
 # send <handle> <prompt-file>: type the prompt into that terminal and press Enter. It
-# writes into another live session, so it is gated like a confirmed write.
+# writes into another live session, so it is gated like a confirmed write. Prints Orca's
+# receipt. A host that can observe delivery (runtime capability terminal.prompt-delivery.v1)
+# is asked to wait up to HI_SEND_WAIT seconds (default 20) for the prompt to start a turn:
+# the receipt's result.send.prompt.stages then ends in turn_started. Without that capability
+# the CLI refuses --wait-submit, so it is left out, and the receipt says only input_accepted
+# with observation `unsupported` (highness#14) — the caller has to confirm another way.
 send_prompt() {
-  local handle="${1:-}" file="${2:-}"
+  local handle="${1:-}" file="${2:-}" wait=()
   if [ -z "$handle" ] || [ ! -f "$file" ]; then echo 'orca.sh send: <handle> <prompt-file> are required' >&2; return 2; fi
   [ "${HI_CONFIRMED:-}" = 1 ] || { echo 'orca.sh send: refusing without HI_CONFIRMED=1 (show the prompt and get a yes first)' >&2; return 3; }
   have_orca || { echo "orca.sh send: $UNRESOLVED_MSG" >&2; return 1; }
-  "$ORCA" terminal send --terminal "$handle" --text "$(cat "$file")" --enter --json
+  if "$ORCA" status --json 2>/dev/null </dev/null |
+       jq -e '(.result.runtime.capabilities // []) | index("terminal.prompt-delivery.v1") != null' >/dev/null 2>&1; then
+    wait=(--wait-submit "${HI_SEND_WAIT:-20}")
+  fi
+  "$ORCA" terminal send --terminal "$handle" --text "$(cat "$file")" --enter ${wait[@]+"${wait[@]}"} --json
 }
 
 case "${1:-}" in

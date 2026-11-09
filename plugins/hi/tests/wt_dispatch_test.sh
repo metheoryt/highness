@@ -168,6 +168,60 @@ bash "$WT" dispatch "$OP" --brief "$SANDBOX/brief.md" >/dev/null 2>"$SANDBOX/err
 assert_status "send failure: 1" 1 "$?"
 assert_not_contains "send failure: no second session" "$(logged)" "terminal create"
 rm -f "$FX/send.json"
+# Accepted is not taken (highness#14): `dispatched` only once Orca saw the turn start or the
+# rendered screen shows the brief left the composer. Otherwise exit 5, via=unconfirmed, the
+# screen tail on stderr — and never a second send.
+printf '%s\n' '{"ok":true,"result":{"send":{"accepted":false,"refusedReason":"agent_prompt_blocked"}}}' > "$FX/send.json"; reset_log
+bash "$WT" dispatch "$OP" --brief "$SANDBOX/brief.md" >/dev/null 2>&1
+assert_status "send refused (accepted:false): 1" 1 "$?"
+printf '%s\n' '{"ok":true,"result":{"send":{"handle":"cl1","accepted":true,"prompt":{"requestId":"unsupported-old-host","stages":["input_accepted"],"provider":"old-host","observation":"unsupported"}}}}' > "$FX/send.json"
+RULE='────────────────────'
+screen() { jq -n --arg src "$1" '{ok:true,result:{terminal:{handle:"cl1",status:"running",source:$src,tail:$ARGS.positional}}}' --args "${@:2}" > "$FX/read.json"; }
+reset_log; rm -f "$FX/read.json"
+out=$(bash "$WT" dispatch "$OP" --brief "$SANDBOX/brief.md" 2>"$SANDBOX/err"); rc=$?
+assert_status "unobserved, no screen: exit 5" 5 "$rc"
+assert_eq "unobserved, no screen: via=unconfirmed" "99999999-2222-3333-4444-555555555555	unconfirmed	cl1" "$out"
+assert_eq "unobserved: recorded as unconfirmed, not send" unconfirmed "$(bash "$WT" rec get --work spike dispatched)"
+assert_eq "unobserved: typed once, never resent" 1 "$(grep -c 'terminal send' "$WT_TEST_LOG")"
+assert_not_contains "unobserved: no second session" "$(logged)" "terminal create"
+assert_contains "unobserved: says what Orca saw" "$(cat "$SANDBOX/err")" "input_accepted, unsupported"
+assert_contains "unobserved: says to look first" "$(cat "$SANDBOX/err")" "Look at that terminal before sending again"
+# a swallowed Enter: the brief still sits in the composer, wrapped over two rows
+HALF=$(printf 'Read %s and follow it.' "$OB" | cut -c1-20); REST=$(printf 'Read %s and follow it.' "$OB" | cut -c21-)
+screen screen "earlier output" "$RULE" "❯ $HALF" "  $REST" "$RULE" "  ⏵⏵ bypass permissions on"; reset_log
+out=$(bash "$WT" dispatch "$OP" --brief "$SANDBOX/brief.md" 2>"$SANDBOX/err"); rc=$?
+assert_status "brief in the composer: exit 5" 5 "$rc"
+assert_eq "brief in the composer: unconfirmed" unconfirmed "$(col "$out" 2)"
+assert_contains "brief in the composer: the screen tail is shown" "$(cat "$SANDBOX/err")" "bypass permissions on"
+assert_contains "the screen is read rendered" "$(logged)" "orca terminal read --terminal cl1 --screen --json"
+# the brief left the composer and shows above it: taken
+screen screen "❯ Read $OB and follow it." "✽ Thinking… (2s)" "$RULE" "❯ " "$RULE"; reset_log
+out=$(bash "$WT" dispatch "$OP" --brief "$SANDBOX/brief.md" 2>/dev/null); rc=$?
+assert_status "brief above the composer: exit 0" 0 "$rc"
+assert_eq "brief above the composer: send" send "$(col "$out" 2)"
+assert_eq "brief above the composer: recorded send" send "$(bash "$WT" rec get --work spike dispatched)"
+# an accumulated stream is no rendered screen: it cannot tell the composer apart
+screen stream "❯ Read $OB and follow it." "$RULE" "❯ " "$RULE"; reset_log
+bash "$WT" dispatch "$OP" --brief "$SANDBOX/brief.md" >/dev/null 2>&1
+assert_status "stream, not screen: exit 5" 5 "$?"
+# no composer box on screen (another TUI): not confirmed by the screen
+screen screen "❯ Read $OB and follow it."; reset_log
+bash "$WT" dispatch "$OP" --brief "$SANDBOX/brief.md" >/dev/null 2>&1
+assert_status "no composer box: exit 5" 5 "$?"
+rm -f "$FX/send.json" "$FX/read.json"
+# Orca saw the turn start: no screen read needed
+reset_log
+bash "$WT" dispatch "$OP" --brief "$SANDBOX/brief.md" >/dev/null 2>&1
+assert_status "turn_started: exit 0" 0 "$?"
+assert_not_contains "turn_started: no screen read" "$(logged)" "terminal read"
+# A host that can observe delivery is asked to wait for the turn start; one that cannot is not
+# (its CLI refuses --wait-submit and sends nothing).
+assert_not_contains "no prompt-delivery capability: no --wait-submit" "$(logged)" "--wait-submit"
+jq '.result.runtime.capabilities = ["terminal.prompt-delivery.v1"]' "$FX/status.json" > "$FX/st.json" && mv "$FX/st.json" "$FX/status.json"
+reset_log
+HI_SEND_WAIT=7 bash "$WT" dispatch "$OP" --brief "$SANDBOX/brief.md" >/dev/null 2>&1
+assert_contains "prompt-delivery capability: --wait-submit" "$(logged)" "--enter --wait-submit 7 --json"
+orca_on
 jq -n --arg p "$UOP" '{ok:true,result:{terminals:[{handle:"sh1",connected:true,writable:true,worktreePath:$p,title:"shell",agentIdentity:""}]}}' > "$FX/terms.json"
 reset_log
 out=$(bash "$WT" dispatch "$OP" --brief "$SANDBOX/brief.md" 2>/dev/null)

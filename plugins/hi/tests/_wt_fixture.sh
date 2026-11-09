@@ -77,7 +77,10 @@ case "$1 $2" in
   'worktree ps') cat "$FX/ps.json" 2>/dev/null || echo '{"ok":true,"result":{"worktrees":[]}}' ;;
   'terminal create') cat "$FX/term.json" 2>/dev/null || echo '{"ok":true,"result":{"terminal":{"handle":"h1"}}}' ;;
   'terminal list') cat "$FX/terms.json" 2>/dev/null || echo '{"ok":true,"result":{"terminals":[]}}' ;;
-  'terminal send') cat "$FX/send.json" 2>/dev/null || echo '{"ok":true}' ;;
+  # A send receipt as Orca 1.4.254 gives it when it saw the turn start; $FX/send.json overrides.
+  'terminal send') cat "$FX/send.json" 2>/dev/null ||
+    echo '{"ok":true,"result":{"send":{"handle":"cl1","accepted":true,"prompt":{"stages":["input_accepted","turn_started"],"provider":"claude","observation":"observed"}}}}' ;;
+  'terminal read') cat "$FX/read.json" 2>/dev/null || { echo '{"ok":false}'; exit 1; } ;;
   'terminal wait') cat "$FX/wait.json" 2>/dev/null || echo '{"ok":true}' ;;
   'terminal close') echo '{"ok":true}' ;;
   *) echo '{"ok":false}'; exit 1 ;;
@@ -124,7 +127,7 @@ printf 'todo\tMains\nin-progress\tIn progress\nst-rev\tIn review\nst-qa\tQA\ncom
 export HI_ORCA_BOARD="$FX/board.tsv"
 export HI_ORCA="$STUB/orca" HI_TMUX="$STUB/tmux" HI_GORTEX="$STUB/gortex" HI_CLAUDE=claude \
        HI_WT_RM_WAIT=0 HI_WT_SETUP="$STUB/setup" HI_WT_TEARDOWN="$STUB/teardown" HI_WT_ROOT="$SANDBOX/wt" \
-       HI_UUID=11111111-2222-3333-4444-555555555555 PATH="$STUB:$PATH"
+       HI_UUID=11111111-2222-3333-4444-555555555555 HI_SEND_READS=1 PATH="$STUB:$PATH"
 
 orca_on()  { printf '%s\n' '{"ok":true,"result":{"runtime":{"state":"ready","reachable":true,"appVersion":"1.4.252"}}}' > "$FX/status.json"; unset HI_WT_BACKEND; }
 orca_off() { rm -f "$FX/status.json"; export HI_WT_BACKEND=git; }
