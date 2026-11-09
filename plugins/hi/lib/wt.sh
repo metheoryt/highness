@@ -741,6 +741,23 @@ _plugin_dir() {
   (cd "$HERE/.." && pwd -P)
 }
 
+# _deny_edits <workspace>: the `--settings` JSON that denies Edit and Write (an Edit rule covers
+# both) under the plugin root and under the repo's main checkout (highness#14). --add-dir grants
+# writes as well as reads: a worker in highness itself, whose plugin root IS the main checkout,
+# edited it with no prompt. A deny rule holds in every permission mode, bypass included (measured
+# 2026-10-09; on a path with a space 2026-11-09). A dir that holds the workspace is left out, or
+# the worker could edit nothing.
+_deny_edits() {
+  local w d rules=''
+  w=$(cd "$1" 2>/dev/null && pwd -P) || w=$1
+  for d in "$(_plugin_dir)" "$(cd "$MAIN" 2>/dev/null && pwd -P)"; do
+    [ -n "$d" ] || continue
+    case "$w/" in "$d/"*) continue ;; esac
+    rules="$rules${rules:+,}$(jq -cn --arg d "$d" '"Edit(/" + $d + "/**)"')"
+  done
+  printf '{"permissions":{"deny":[%s]}}' "$rules"
+}
+
 # Shell-quote for a line a human reads (and may paste): bare when safe, single-quoted otherwise.
 _q() {
   case "$1" in
@@ -827,7 +844,8 @@ cmd_dispatch() {
   # both outside its workspace: with blockReadsOutsideWorkingDirectories
   # each one is a permission prompt nobody watches. --add-dir takes several values, so
   # it goes before --session-id/--resume: an option ends its list, the prompt would not.
-  dirs="--add-dir $(_q "$STORE/briefs") --add-dir $(_q "$(_plugin_dir)")"
+  # Both are read, never written: --settings denies edits there (_deny_edits).
+  dirs="--add-dir $(_q "$STORE/briefs") --add-dir $(_q "$(_plugin_dir)") --settings $(_q "$(_deny_edits "$wt")")"
   if [ -n "$resume" ]; then
     uuid=$(printf '%s' "$resume" | LC_ALL=C tr '[:upper:]' '[:lower:]')
     line="$wrap$env$(_q "$CLAUDE") $dirs --resume $uuid${DISPATCH_FLAGS:+ $DISPATCH_FLAGS} $(_q "Read $dst and follow it.")"

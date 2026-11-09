@@ -16,7 +16,9 @@ B="$R/.git/hi/briefs/AB-101-retry-lock-ordering.md"
 # The brief and the plugin root are outside the workspace: both are --add-dir, before the
 # session flags, since --add-dir takes several values and would swallow the prompt.
 export HI_PLUGIN_DIR=/opt/hi
-AD="--add-dir $R/.git/hi/briefs --add-dir /opt/hi"
+# Neither the plugin root nor the main checkout may be edited (highness#14): --settings denies it.
+RP=$(cd "$R" && pwd -P)
+AD="--add-dir $R/.git/hi/briefs --add-dir /opt/hi --settings '{\"permissions\":{\"deny\":[\"Edit(//opt/hi/**)\",\"Edit(/$RP/**)\"]}}'"
 
 # tmux: session hi created when absent, one detached window named after the work
 echo 1 > "$FX/tmux-has.rc"; reset_log
@@ -191,7 +193,14 @@ rm -f "$FX/ps.json"; orca_off
 # the plugin root defaults to the hi plugin directory wt.sh runs from, physical
 out=$(HI_PLUGIN_DIR= HI_TMUX=none bash "$WT" dispatch "$P" --brief "$SANDBOX/brief.md" 2>/dev/null)
 assert_contains "plugin root: default is wt.sh's plugin root" "$(printf '%s\n' "$out" | sed -n 2p)" \
-  "--add-dir $(cd "$HERE/.." && pwd -P) --session-id"
+  "--add-dir $(cd "$HERE/.." && pwd -P) --settings"
+assert_contains "plugin root: edits under it are denied" "$(printf '%s\n' "$out" | sed -n 2p)" \
+  "Edit(/$(cd "$HERE/.." && pwd -P)/**)"
+# a workspace inside a denied dir keeps it editable: the deny would block the worker's own tree
+PD=$(cd "$P/.." && pwd -P)
+out=$(HI_PLUGIN_DIR="$PD" HI_TMUX=none bash "$WT" dispatch "$P" --brief "$SANDBOX/brief.md" 2>/dev/null)
+assert_not_contains "a dir holding the workspace is not denied" "$(printf '%s\n' "$out" | sed -n 2p)" "Edit(/$PD/**)"
+assert_contains "the main checkout is still denied" "$(printf '%s\n' "$out" | sed -n 2p)" "Edit(/$RP/**)"
 
 # guards
 bash "$WT" dispatch "$P" >/dev/null 2>&1;                               assert_status "no --brief: 2" 2 "$?"

@@ -49,7 +49,8 @@ P=$(printf '%s\n' "$row" | cut -f1)
 printf 'delta round\n' > "$SANDBOX/brief.md"
 out=$(HI_PLUGIN_DIR=/opt/hi HI_TMUX=none bash "$WT" dispatch "$P" --brief "$SANDBOX/brief.md" --resume 99999999-aaaa-bbbb-cccc-dddddddddddd 2>/dev/null); rc=$?
 assert_status "resume: exit 0" 0 "$rc"
-assert_contains "resume: claude --resume <uuid>" "$(printf '%s\n' "$out" | sed -n 2p)" "--add-dir /opt/hi --resume 99999999-aaaa-bbbb-cccc-dddddddddddd 'Read "
+assert_contains "resume: claude --resume <uuid>" "$(printf '%s\n' "$out" | sed -n 2p)" "\"]}}' --resume 99999999-aaaa-bbbb-cccc-dddddddddddd 'Read "
+assert_contains "resume: edits under the plugin root are denied" "$(printf '%s\n' "$out" | sed -n 2p)" "--add-dir /opt/hi --settings '{\"permissions\":{\"deny\":[\"Edit(//opt/hi/**)\""
 assert_contains "resume: the brief dir is added" "$(printf '%s\n' "$out" | sed -n 2p)" "claude --add-dir $R/.git/hi/briefs "
 assert_not_contains "resume: no new --session-id" "$out" "--session-id"
 bash "$WT" dispatch "$P" --brief "$SANDBOX/brief.md" --resume 'x;rm' >/dev/null 2>&1
