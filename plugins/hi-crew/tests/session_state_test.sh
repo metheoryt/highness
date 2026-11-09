@@ -15,8 +15,10 @@ TAB=$(printf '\t')
 WS="$T/ws/AB-1"; mkdir -p "$WS/sub" "$T/ws/AB-10"; WS=$(cd "$WS" && pwd -P)
 TR="$T/t.jsonl"; : >"$TR"
 sleep 600 & AGENT=$!   # a live "claude"
-# ev <event> <session> [extra json fields] — the payload shape Claude Code 2.1.319 sends
-# (session_id, transcript_path and cwd first, one line).
+# ev <event> <session> [extra json fields] — the payload shape Claude Code 2.1.319 sends, one
+# line: session_id, transcript_path, cwd, then hook_event_name and tool_name, all before
+# tool_input and tool_response (measured for SessionStart, UserPromptSubmit, PreToolUse,
+# PostToolUse and Stop).
 ev() {
   printf '{"session_id":"%s","transcript_path":"%s","cwd":"%s","permission_mode":"default","hook_event_name":"%s"%s}' \
     "$2" "$TR" "${CWD:-$WS/sub}" "$1" "${3:+,$3}" | HI_AGENT_PID="${PID-$AGENT}" bash "$SS" hook

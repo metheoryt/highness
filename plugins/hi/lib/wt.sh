@@ -932,7 +932,7 @@ _uuid() {
 }
 
 cmd_dispatch() {
-  local before hs src above where sent path="${1:-}" brief='' name='' resume='' cfg='' env='' row wt sel kind key dst dirs uuid line via=print handle='' js T rc tmp wrap state
+  local before hs src above where sent sstate path="${1:-}" brief='' name='' resume='' cfg='' env='' row wt sel kind key dst dirs uuid line via=print handle='' js T rc tmp wrap state
   [ -n "$path" ] || { say 'dispatch: <path> is required'; return 2; }
   shift
   while [ $# -gt 0 ]; do
@@ -974,9 +974,18 @@ cmd_dispatch() {
     # first (highness#27); without one the screen does: rows above the composer that move between
     # two reads HI_MOTION_WAIT seconds apart (default 2) are a running turn; on a still screen the
     # dialog rules tell a dialog from idle. The last read is the echo count before the send.
+    # A hook line may only add caution: when it says idle, a dialog or the mode line of a turn on
+    # the one screen read still refuses — a dialog no hook reports (a server approval, a trust
+    # prompt) would take the brief's Enter as its answer.
     _screen_echo "$handle" "Read $dst and follow it."
     if hs=$(_hook_state "$wt" "$uuid"); then
       state=$(_col "$hs" 1); src=hooks
+      if [ "$state" = idle ]; then
+        read -r _ _ sstate <<EOF
+$_ECHO
+EOF
+        case "$sstate" in blocked|working) state=$sstate; src=veto ;; esac
+      fi
     else
       above=$_ABOVE; sleep "${HI_MOTION_WAIT:-2}"
       _screen_echo "$handle" "Read $dst and follow it."
@@ -993,9 +1002,9 @@ EOF
       rm -f "$tmp"
       printf '%s\t%s\t%s\n' "$uuid" busy ''
       if [ "$state" = blocked ]; then
-        say "dispatch: the session in $wt (terminal $handle) $([ "$src" = hooks ] && echo 'is on a dialog (its hooks say so)' || echo 'shows a dialog') waiting for an answer — not typing into it; answer it, then rerun dispatch; brief: $dst"
+        say "dispatch: the session in $wt (terminal $handle) $(case "$src" in hooks) echo 'is on a dialog (its hooks say so)' ;; veto) echo 'shows a dialog its hooks did not report' ;; *) echo 'shows a dialog' ;; esac) waiting for an answer — not typing into it; answer it, then rerun dispatch; brief: $dst"
       else
-        say "dispatch: a session is mid-turn in $wt ($([ "$src" = hooks ] && echo 'its hooks say a turn runs' || echo 'its screen shows a turn running'), terminal $handle) — not starting a second one; give it $dst when it is idle, or rerun dispatch then"
+        say "dispatch: a session is mid-turn in $wt ($(case "$src" in hooks) echo 'its hooks say a turn runs' ;; veto) echo 'its screen shows a turn its hooks did not report' ;; *) echo 'its screen shows a turn running' ;; esac), terminal $handle) — not starting a second one; give it $dst when it is idle, or rerun dispatch then"
       fi
       [ -n "$_SEND_SCREEN" ] && say "  screen tail:" && printf '%s\n' "$_SEND_SCREEN" | sed 's/^/    /' >&2
       return 3

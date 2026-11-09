@@ -329,8 +329,20 @@ SID=99999999-2222-3333-4444-555555555555
 reads_reset
 pre screen "earlier output" "$RULE" " Bash command" "   make test" " Do you want to proceed?" " ❯ 1. Yes" "   2. No" " Esc to cancel"
 hookline idle; reset_log
+bash "$WT" dispatch "$OP" --brief "$SANDBOX/brief.md" >/dev/null 2>"$SANDBOX/err"
+assert_status "hook line idle, a dialog on screen: the screen vetoes, refused with 3" 3 "$?"
+assert_not_contains "hook line idle, a dialog on screen: nothing typed" "$(logged)" "terminal send"
+assert_contains "hook line idle, a dialog on screen: says the hooks did not report it" "$(cat "$SANDBOX/err")" "a dialog its hooks did not report"
+assert_eq "hook line idle: one screen read, no motion wait" 1 "$(grep -c 'terminal read' "$WT_TEST_LOG")"
+reads_reset; pre screen "✻ Musing… (3s)" "$RULE" "❯ " "$RULE" "  ⏵⏵ accept edits on · esc to interrupt"
+hookline idle; reset_log
 bash "$WT" dispatch "$OP" --brief "$SANDBOX/brief.md" >/dev/null 2>&1
-assert_contains "hook line idle, a dialog on screen: the line wins, typed" "$(logged)" "terminal send"
+assert_status "hook line idle, the mode line of a turn: refused with 3" 3 "$?"
+reads_reset; pre screen "earlier output" "$RULE" "❯ " "$RULE"
+screen -2 screen "earlier output" "✢ Frobbing…" "$RULE" "❯ " "$RULE"
+hookline idle; reset_log
+bash "$WT" dispatch "$OP" --brief "$SANDBOX/brief.md" >/dev/null 2>&1
+assert_contains "hook line idle, an idle screen: typed (no motion read: the line decides)" "$(logged)" "terminal send"
 reads_reset; pre screen "earlier output" "$RULE" "❯ " "$RULE"
 hookline working; reset_log
 out=$(bash "$WT" dispatch "$OP" --brief "$SANDBOX/brief.md" 2>"$SANDBOX/err"); rc=$?
