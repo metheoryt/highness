@@ -3,9 +3,13 @@
 #
 # A worker that hits a permission prompt waits for someone to answer it, and nothing else tells
 # the person: Orca shows the worker as busy and the worker sends no question. The Notification
-# hook (matcher permission_prompt) writes one marker per session in
+# hook (matcher permission_prompt|elicitation_dialog) writes one marker per session in
 # ${HIGHNESS_STATE:-${XDG_STATE_HOME:-~/.local/state}/highness}/prompts/<session_id>.json: since
-# (UTC), the session's cwd, the transcript and the pending tool call.
+# (UTC), the session's cwd, the transcript, the pending tool call and the kind: `permission`, or
+# `input` for an MCP server's input dialog (elicitation), which also holds a tool call open.
+# elicitation_dialog is a notification type the Claude Code 2.1.319 CLI carries; its payload is
+# not measured. Without a transcript the marker is never believed, so a payload unlike
+# permission_prompt's stays silent (herdr's screen manifest has the same dialog, highness#24).
 #
 # Measured on Claude Code 2.1.316 in default mode: the payload carries session_id,
 # transcript_path, cwd, message and notification_type ("permission_prompt"), and no tool name;
@@ -19,8 +23,8 @@
 #
 #   prompt-mark.sh hook                hook payload on stdin (Notification, Stop); always exit 0,
 #                                      never prints: every error is silence
-#   prompt-mark.sh list                every live marker: cwd<TAB>since<TAB>tool<TAB>session
-#   prompt-mark.sh check <workspace>   since<TAB>tool when a session working in <workspace> (its
+#   prompt-mark.sh list                every live marker: cwd<TAB>since<TAB>tool<TAB>session<TAB>kind
+#   prompt-mark.sh check <workspace>   since<TAB>tool<TAB>kind when a session working in <workspace> (its
 #                                      cwd is the workspace or under it) sits on a prompt (exit 0),
 #                                      else exit 1
 set -uo pipefail
@@ -57,7 +61,7 @@ live() { # <marker file>
 }
 
 hook() {
-  local in ev sid cwd tr pt f
+  local in ev sid cwd tr pt f kind
   command -v jq >/dev/null 2>&1 || return 0
   in=$(cat 2>/dev/null) || return 0
   ev=$(printf '%s' "$in" | jq -r '[(.hook_event_name // ""), (.notification_type // ""), (.session_id // ""),
@@ -67,7 +71,12 @@ hook() {
   f="$dir/$sid.json"
   case "$(printf '%s' "$ev" | cut -f1)" in
     Stop) rm -f "$f" 2>/dev/null; return 0 ;;
-    Notification) [ "$(printf '%s' "$ev" | cut -f2)" = permission_prompt ] || return 0 ;;
+    Notification)
+      case "$(printf '%s' "$ev" | cut -f2)" in
+        permission_prompt) kind=permission ;;
+        elicitation_dialog) kind=input ;;
+        *) return 0 ;;
+      esac ;;
     *) return 0 ;;
   esac
   cwd=$(printf '%s' "$ev" | cut -f4); tr=$(printf '%s' "$ev" | cut -f5)
@@ -76,8 +85,8 @@ hook() {
   pt=''; [ -z "$tr" ] || pt=$(pending_tool "$tr")
   mkdir -p "$dir" 2>/dev/null || return 0
   jq -n -c --arg since "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" --arg cwd "$cwd" --arg sid "$sid" --arg tr "$tr" \
-     --arg id "$(printf '%s' "$pt" | cut -f1)" --arg tool "$(printf '%s' "$pt" | cut -f2)" \
-     '{since: $since, cwd: $cwd, session: $sid, transcript: $tr, tool_id: $id, tool: $tool}' \
+     --arg id "$(printf '%s' "$pt" | cut -f1)" --arg tool "$(printf '%s' "$pt" | cut -f2)" --arg kind "$kind" \
+     '{since: $since, cwd: $cwd, session: $sid, transcript: $tr, tool_id: $id, tool: $tool, kind: $kind}' \
      > "$f.tmp" 2>/dev/null && mv "$f.tmp" "$f" 2>/dev/null
   rm -f "$f.tmp" 2>/dev/null
   return 0
@@ -89,7 +98,7 @@ list() {
   for f in "$dir"/*.json; do
     [ -f "$f" ] || continue
     if live "$f"; then
-      jq -r '[.cwd, .since, (.tool // ""), .session] | @tsv' "$f" 2>/dev/null || true
+      jq -r '[.cwd, .since, (.tool // ""), .session, (.kind // "permission")] | @tsv' "$f" 2>/dev/null || true
     else
       rm -f "$f" 2>/dev/null
     fi
@@ -102,7 +111,7 @@ case "${1:-}" in
   check)
     [ -n "${2:-}" ] || { echo 'prompt-mark.sh check: <workspace> is required' >&2; exit 2; }
     ws=$(cd "$2" 2>/dev/null && pwd -P) || exit 1
-    hit=$(list | awk -F'\t' -v w="$ws" '$1 == w || index($1, w "/") == 1 { print $2 "\t" $3; exit }')
+    hit=$(list | awk -F'\t' -v w="$ws" '$1 == w || index($1, w "/") == 1 { print $2 "\t" $3 "\t" $5; exit }')
     [ -n "$hit" ] || exit 1
     printf '%s\n' "$hit" ;;
   *) echo 'usage: prompt-mark.sh hook | list | check <workspace>' >&2; exit 2 ;;

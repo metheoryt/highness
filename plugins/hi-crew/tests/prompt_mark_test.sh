@@ -78,6 +78,15 @@ check 'no pending tool: empty tool' "$(bash "$PM" list | cut -f3)" ''
 printf '%s\n' "$use2" "$(later result tu_2)" >>"$TR"
 check 'no tool id: a later result retires it' "$(bash "$PM" list)" ''
 
+# An MCP server's input dialog (elicitation_dialog) holds its tool call open the same way:
+# marked as kind input; a permission marker is kind permission.
+put "$prompt" "$use1" "$res1" "$use2"; notify s-6 elicitation_dialog
+check 'elicitation: listed with kind input' "$(bash "$PM" list | cut -f3,5)" "Bash${TAB}input"
+check 'elicitation: check gives the kind' "$(bash "$PM" check "$WS" | cut -f2,3)" "Bash${TAB}input"
+stop s-6; notify s-7
+check 'permission: kind permission' "$(bash "$PM" check "$WS" | cut -f3)" permission
+stop s-7
+
 # A transcript that is gone: the marker is dropped.
 put "$prompt" "$use2"; notify s-5; rm -f "$TR"
 check 'no transcript: not listed, removed' "$(bash "$PM" list)$(ls "$DIR")" ''
@@ -85,9 +94,9 @@ check 'no transcript: not listed, removed' "$(bash "$PM" list)$(ls "$DIR")" ''
 bash "$PM" check </dev/null >/dev/null 2>&1; check 'check without a path: exit 2' "$?" 2
 
 J="$HERE/../hooks/hooks.json"
-check 'hooks.json: Notification permission_prompt runs prompt-mark.sh' \
-  "$(jq -r '.hooks.Notification[0] | .matcher + "|" + .hooks[0].command' "$J")" \
-  'permission_prompt|bash "${CLAUDE_PLUGIN_ROOT}/lib/prompt-mark.sh" hook'
+check 'hooks.json: Notification permission_prompt and elicitation_dialog run prompt-mark.sh' \
+  "$(jq -r '.hooks.Notification[0] | .matcher + " " + .hooks[0].command' "$J")" \
+  'permission_prompt|elicitation_dialog bash "${CLAUDE_PLUGIN_ROOT}/lib/prompt-mark.sh" hook'
 check 'hooks.json: Stop runs prompt-mark.sh' "$(jq -r '.hooks.Stop[0].hooks[0].command' "$J")" \
   'bash "${CLAUDE_PLUGIN_ROOT}/lib/prompt-mark.sh" hook'
 exit $fail

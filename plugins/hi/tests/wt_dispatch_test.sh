@@ -218,6 +218,50 @@ reset_log
 bash "$WT" dispatch "$OP" --brief "$SANDBOX/brief.md" >/dev/null 2>&1
 assert_status "a second echo below the earlier one: exit 0" 0 "$?"
 reads_reset
+# Orca says idle, but the screen shows a dialog (herdr's Claude manifest shapes, highness#24):
+# never typed into, refused like a busy session.
+screen screen "earlier output" "$RULE" " Bash command" "   rm -rf build" "" " Do you want to proceed?" \
+  " ❯ 1. Yes" "   2. Yes, and don't ask again for rm commands" "   3. No, and tell Claude what to do differently (esc)" \
+  "" " Esc to cancel · Tab to amend · ctrl+e to explain"; reset_log
+out=$(bash "$WT" dispatch "$OP" --brief "$SANDBOX/brief.md" 2>"$SANDBOX/err"); rc=$?
+assert_status "permission dialog on screen: refused with 3" 3 "$rc"
+assert_eq "permission dialog on screen: busy" busy "$(col "$out" 2)"
+assert_not_contains "permission dialog on screen: nothing typed" "$(logged)" "terminal send"
+assert_contains "permission dialog on screen: says why" "$(cat "$SANDBOX/err")" "shows a dialog"
+assert_contains "permission dialog on screen: shows it" "$(cat "$SANDBOX/err")" "Do you want to proceed?"
+screen screen "earlier output" "$RULE" " Which approach?" " ❯ 1. Small" "   2. Large" "" \
+  " Enter to select · ↑/↓ to navigate · Esc to cancel"; reset_log
+bash "$WT" dispatch "$OP" --brief "$SANDBOX/brief.md" >/dev/null 2>&1
+assert_status "question form on screen: refused with 3" 3 "$?"
+assert_not_contains "question form on screen: nothing typed" "$(logged)" "terminal send"
+screen screen "earlier output" "$RULE" ' MCP server "docs" requests your input' " ❯ Accept" "   Decline" " Esc to cancel"; reset_log
+bash "$WT" dispatch "$OP" --brief "$SANDBOX/brief.md" >/dev/null 2>&1
+assert_status "MCP input dialog on screen: refused with 3" 3 "$?"
+screen screen "✻ Musing… (12s · ↑ 1.2k tokens)" "$RULE" "❯ " "$RULE" "  ⏵⏵ accept edits on (shift+tab to cycle) · esc to interrupt"; reset_log
+out=$(bash "$WT" dispatch "$OP" --brief "$SANDBOX/brief.md" 2>"$SANDBOX/err"); rc=$?
+assert_status "a turn running on screen: refused with 3" 3 "$rc"
+assert_not_contains "a turn running on screen: nothing typed" "$(logged)" "terminal send"
+assert_contains "a turn running on screen: says mid-turn" "$(cat "$SANDBOX/err")" "mid-turn"
+# a dialog's footer words in the output above the composer are not a dialog
+screen -1 screen "  it printed: Enter to confirm · Esc to cancel" "$RULE" "❯ " "$RULE" "  ? for shortcuts"
+screen screen "  it printed: Enter to confirm · Esc to cancel" "$RULE" "❯ " "$RULE" "  ? for shortcuts"; reset_log
+bash "$WT" dispatch "$OP" --brief "$SANDBOX/brief.md" >/dev/null 2>&1
+assert_status "dialog words above the composer: typed (then unconfirmed, 5)" 5 "$?"
+assert_contains "dialog words above the composer: typed" "$(logged)" "terminal send"
+reads_reset
+# After the send, a turn running or a dialog open is the turn start, with or without the echo
+screen -1 screen "earlier output" "$RULE" "❯ " "$RULE" "  ? for shortcuts"
+screen screen "earlier output" "✻ Musing… (3s · esc to interrupt)" "$RULE" "❯ " "$RULE" "  ⏵⏵ accept edits on · esc to interrupt"; reset_log
+out=$(bash "$WT" dispatch "$OP" --brief "$SANDBOX/brief.md" 2>/dev/null); rc=$?
+assert_status "working after the send, no echo: exit 0" 0 "$rc"
+assert_eq "working after the send: recorded send" send "$(bash "$WT" rec get --work spike dispatched)"
+reads_reset
+screen -1 screen "earlier output" "$RULE" "❯ " "$RULE" "  ? for shortcuts"
+screen screen "earlier output" "$RULE" " Bash command" "   make test" " Do you want to proceed?" " ❯ 1. Yes" "   2. No" " Esc to cancel"; reset_log
+bash "$WT" dispatch "$OP" --brief "$SANDBOX/brief.md" >/dev/null 2>"$SANDBOX/err"
+assert_status "a dialog after the send: exit 0" 0 "$?"
+assert_contains "a dialog after the send: says to look" "$(cat "$SANDBOX/err")" "opened a dialog at once"
+reads_reset
 # an accumulated stream is no rendered screen: it cannot tell the composer apart
 reads_reset; screen stream "❯ Read $OB and follow it." "$RULE" "❯ " "$RULE"; reset_log
 bash "$WT" dispatch "$OP" --brief "$SANDBOX/brief.md" >/dev/null 2>&1

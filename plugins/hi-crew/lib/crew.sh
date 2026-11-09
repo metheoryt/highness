@@ -39,8 +39,9 @@
 #   crew.sh watch-install [<cron>]    create or update that automation (default every 10 minutes)
 #   crew.sh events [--ack]            watch events no one has seen, TSV: time, key, run, pr, what;
 #                                     --ack marks them seen
-#   crew.sh prompts                   the open tickets whose worker sits on a permission dialog,
-#                                     TSV: key, run, since, tool. The plugin's Notification hook marks
+#   crew.sh prompts                   the open tickets whose worker sits on a permission dialog (or
+#                                     an MCP server's input dialog), TSV: key, run, since, tool, kind
+#                                     (permission | input). The plugin's Notification hook marks
 #                                     a session on a dialog (prompt-mark.sh); a worker's is the one
 #                                     whose cwd is in the ticket's `workspace`. The watch wakes the
 #                                     coordinator once per dialog
@@ -277,7 +278,7 @@ pr_state() { # <facts json>
 
 cmd_watch() {
   need_jq
-  local w="$DIR/watch" lock="$DIR/watch/lock" t key pr run now snap what hit since tool
+  local w="$DIR/watch" lock="$DIR/watch/lock" t key pr run now snap what hit since tool kind
   mkdir -p "$w"
   if ! mkdir "$lock" 2>/dev/null; then
     [ -n "$(find "$lock" -maxdepth 0 -mmin +30 2>/dev/null)" ] || return 0  # another watch runs
@@ -289,11 +290,11 @@ cmd_watch() {
     run=$(printf '%s' "$t" | jq -r '.run // empty')
     # A dialog is told once: its `since` is kept until the next one.
     if hit=$(on_prompt "$t"); then
-      since=$(printf '%s' "$hit" | cut -f1); tool=$(printf '%s' "$hit" | cut -f2)
+      since=$(printf '%s' "$hit" | cut -f1); tool=$(printf '%s' "$hit" | cut -f2); kind=$(printf '%s' "$hit" | cut -f3)
       if [ "$(cat "$w/$key.prompt" 2>/dev/null)" != "$since" ]; then
         printf '%s\n' "$since" >"$w/$key.prompt"
         event "$key" "$run" "${pr:-$(printf '%s' "$t" | jq -r '.workspace')}" \
-          "waits on a permission dialog${tool:+ for $tool}"
+          "$([ "$kind" = input ] && echo 'waits on an MCP input dialog' || echo 'waits on a permission dialog')${tool:+ for $tool}"
       fi
     fi
     [ -n "$pr" ] || continue
@@ -308,7 +309,7 @@ cmd_watch() {
 
 PROMPT_MARK="$HERE/prompt-mark.sh"
 
-# since<TAB>tool when the worker of these facts sits on a permission dialog; exit 1 otherwise.
+# since<TAB>tool<TAB>kind when the worker of these facts sits on a dialog; exit 1 otherwise.
 on_prompt() { # <facts json>
   local ws
   ws=$(printf '%s' "$1" | jq -r '.workspace // empty')
