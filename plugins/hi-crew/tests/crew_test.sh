@@ -162,6 +162,34 @@ check 'prompts: an input dialog has kind input' "$(bash "$C" prompts | cut -f4,5
 bash "$C" watch
 check 'watch: an input dialog is said as one' "$(bash "$C" events | cut -f5)" 'waits on an MCP input dialog for mcp__docs__ask'
 bash "$C" events --ack
+# The hook line (session-state.sh) adds question forms, and says what each worker is doing.
+rm -f "$HIGHNESS_STATE/prompts/"*.json; : >"$PTR"
+sleep 300 & LIVE=$!
+sev() { # <event> [extra json] — a hook payload for the W-2 worker's session
+  printf '{"session_id":"sw2","transcript_path":"%s","cwd":"%s/sub","hook_event_name":"%s"%s}' "$PTR" "$WS2" "$1" "${2:+,$2}" \
+    | HI_AGENT_PID=$LIVE bash "$HERE/../lib/session-state.sh" hook; }
+check 'states: no hook line, unknown' "$(bash "$C" states | grep '^W-2' | cut -f3)" unknown
+sev UserPromptSubmit; sev PreToolUse '"tool_name":"Bash"'
+check 'states: working, the open tool, 0 min' "$(bash "$C" states | grep '^W-2' | cut -f2-3,6,7,8)" "$(printf 'run_w1\tworking\tBash\t0\t0')"
+check 'prompts: a working worker is not listed' "$(bash "$C" prompts)" ''
+sev PreToolUse '"tool_name":"AskUserQuestion"'
+check 'prompts: a question form, kind question' "$(bash "$C" prompts | cut -f1,4,5)" "$(printf 'W-2\tAskUserQuestion\tquestion')"
+check 'prompts: since is UTC' "$(bash "$C" prompts | cut -f3 | grep -cE '^[0-9-]{10}T[0-9:]{8}Z$')" 1
+check 'states: blocked, kind question' "$(bash "$C" states | grep '^W-2' | cut -f3,5)" "$(printf 'blocked\tquestion')"
+bash "$C" watch
+check 'watch: a question form is said as one' "$(bash "$C" events | cut -f5)" 'waits on a question form for AskUserQuestion'
+bash "$C" events --ack
+# A tool call open longer than HI_TOOL_STUCK minutes is told once.
+sev PostToolUse; sev PreToolUse '"tool_name":"Bash"'
+HI_TOOL_STUCK=0 bash "$C" watch
+check 'watch: a long tool call is told' "$(bash "$C" events | cut -f2,5)" "$(printf 'W-2\thas had one Bash call open for 0 min — a hung command?')"
+HI_TOOL_STUCK=0 bash "$C" watch
+check 'watch: the same call is told once' "$(bash "$C" events | wc -l | tr -d ' ')" 1
+bash "$C" watch; bash "$C" events --ack
+sev Stop
+check 'states: idle after Stop' "$(bash "$C" states | grep '^W-2' | cut -f3,6)" "$(printf 'idle\t')"
+kill "$LIVE" 2>/dev/null
+check 'states: the agent gone, unknown' "$(sleep 0.2; bash "$C" states | grep '^W-2' | cut -f3)" unknown
 
 # --- gh_state: the default for github.com, with the same marker rule
 cat >"$W/bin/gh" <<'EOF'

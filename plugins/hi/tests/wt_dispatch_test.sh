@@ -180,6 +180,8 @@ RULE='────────────────────'
 screen() { local f="$FX/read.json"; case "$1" in -*) f="$FX/read.${1#-}.json"; shift ;; esac
   jq -n --arg src "$1" '{ok:true,result:{terminal:{handle:"cl1",status:"running",source:$src,tail:$ARGS.positional}}}' --args "${@:2}" > "$f"; }
 reads_reset() { rm -f "$FX"/read.*json "$FX/read.n"; }
+# pre <source> <rows…>: what both reads before the send render (a still screen)
+pre() { screen -1 "$@"; screen -2 "$@"; }
 reset_log; reads_reset
 out=$(bash "$WT" dispatch "$OP" --brief "$SANDBOX/brief.md" 2>"$SANDBOX/err"); rc=$?
 assert_status "unobserved, no screen: exit 5" 5 "$rc"
@@ -200,7 +202,7 @@ assert_contains "brief in the composer: the screen tail is shown" "$(cat "$SANDB
 assert_contains "the screen is read rendered" "$(logged)" "orca terminal read --terminal cl1 --screen --json"
 # the brief left the composer and shows above it, where it was not before the send: taken
 reads_reset
-screen -1 screen "earlier output" "$RULE" "❯ " "$RULE"
+pre screen "earlier output" "$RULE" "❯ " "$RULE"
 screen screen "❯ Read $OB and follow it." "✽ Thinking… (2s)" "$RULE" "❯ " "$RULE"; reset_log
 out=$(bash "$WT" dispatch "$OP" --brief "$SANDBOX/brief.md" 2>/dev/null); rc=$?
 assert_status "brief above the composer: exit 0" 0 "$rc"
@@ -212,7 +214,7 @@ screen screen "❯ Read $OB and follow it." "  Done." "$RULE" "❯ " "$RULE"; re
 bash "$WT" dispatch "$OP" --brief "$SANDBOX/brief.md" >/dev/null 2>&1
 assert_status "an earlier dispatch's echo only: exit 5" 5 "$?"
 reads_reset
-screen -1 screen "❯ Read $OB and follow it." "  Done." "$RULE" "❯ " "$RULE"
+pre screen "❯ Read $OB and follow it." "  Done." "$RULE" "❯ " "$RULE"
 screen screen "❯ Read $OB and follow it." "  Done." "❯ Read $OB and follow it." "✽ Thinking…" "$RULE" "❯ " "$RULE"
 reset_log
 bash "$WT" dispatch "$OP" --brief "$SANDBOX/brief.md" >/dev/null 2>&1
@@ -243,27 +245,27 @@ assert_status "a turn running on screen: refused with 3" 3 "$rc"
 assert_not_contains "a turn running on screen: nothing typed" "$(logged)" "terminal send"
 assert_contains "a turn running on screen: says mid-turn" "$(cat "$SANDBOX/err")" "mid-turn"
 # a dialog's footer words in the output above the composer are not a dialog
-screen -1 screen "  it printed: Enter to confirm · Esc to cancel" "$RULE" "❯ " "$RULE" "  ? for shortcuts"
+pre screen "  it printed: Enter to confirm · Esc to cancel" "$RULE" "❯ " "$RULE" "  ? for shortcuts"
 screen screen "  it printed: Enter to confirm · Esc to cancel" "$RULE" "❯ " "$RULE" "  ? for shortcuts"; reset_log
 bash "$WT" dispatch "$OP" --brief "$SANDBOX/brief.md" >/dev/null 2>&1
 assert_status "dialog words above the composer: typed (then unconfirmed, 5)" 5 "$?"
 assert_contains "dialog words above the composer: typed" "$(logged)" "terminal send"
 reads_reset
 # After the send, a turn running or a dialog open is the turn start, with or without the echo
-screen -1 screen "earlier output" "$RULE" "❯ " "$RULE" "  ? for shortcuts"
+pre screen "earlier output" "$RULE" "❯ " "$RULE" "  ? for shortcuts"
 screen screen "earlier output" "✻ Musing… (3s · esc to interrupt)" "$RULE" "❯ " "$RULE" "  ⏵⏵ accept edits on · esc to interrupt"; reset_log
 out=$(bash "$WT" dispatch "$OP" --brief "$SANDBOX/brief.md" 2>/dev/null); rc=$?
 assert_status "working after the send, no echo: exit 0" 0 "$rc"
 assert_eq "working after the send: recorded send" send "$(bash "$WT" rec get --work spike dispatched)"
 reads_reset
-screen -1 screen "earlier output" "$RULE" "❯ " "$RULE" "  ? for shortcuts"
+pre screen "earlier output" "$RULE" "❯ " "$RULE" "  ? for shortcuts"
 screen screen "earlier output" "$RULE" " Bash command" "   make test" " Do you want to proceed?" " ❯ 1. Yes" "   2. No" " Esc to cancel"; reset_log
 bash "$WT" dispatch "$OP" --brief "$SANDBOX/brief.md" >/dev/null 2>"$SANDBOX/err"
 assert_status "a dialog after the send: exit 0" 0 "$?"
 assert_contains "a dialog after the send: says to look" "$(cat "$SANDBOX/err")" "opened a dialog at once"
 reads_reset
 # the brief still in the composer is not taken, even with a turn showing (highness#14)
-screen -1 screen "earlier output" "$RULE" "❯ " "$RULE" "  ? for shortcuts"
+pre screen "earlier output" "$RULE" "❯ " "$RULE" "  ? for shortcuts"
 screen screen "✻ Musing… (3s · esc to interrupt)" "$RULE" "❯ Read $OB and follow it." "$RULE" "  ⏵⏵ accept edits on · esc to interrupt"; reset_log
 bash "$WT" dispatch "$OP" --brief "$SANDBOX/brief.md" >/dev/null 2>&1
 assert_status "brief in the composer with a turn showing: exit 5" 5 "$?"
@@ -276,12 +278,95 @@ assert_status "stream, not screen: exit 5" 5 "$?"
 reads_reset; screen screen "❯ Read $OB and follow it."; reset_log
 bash "$WT" dispatch "$OP" --brief "$SANDBOX/brief.md" >/dev/null 2>&1
 assert_status "no composer box: exit 5" 5 "$?"
+# --- Motion (highness#27): with no hook line, a turn is rows above the composer that change
+# between the two reads before the send; the spinner's words do not matter.
+reads_reset
+screen -1 screen "✻ Fiddle-faddling… (running PreToolUse hooks… 2/3 · 7m 26s · ↓ 20.6k tokens)" "$RULE" "❯ " "$RULE" "  ⏵⏵ bypass permissions on (shift+tab to cycle) · PR #26"
+screen -2 screen "✢ Fiddle-faddling… (running PreToolUse hooks… 2/3 · 7m 27s · ↓ 20.6k tokens)" "$RULE" "❯ " "$RULE" "  ⏵⏵ bypass permissions on (shift+tab to cycle) · PR #26"
+reset_log
+out=$(bash "$WT" dispatch "$OP" --brief "$SANDBOX/brief.md" 2>"$SANDBOX/err"); rc=$?
+assert_status "motion above the composer (the #26 review's spinner): refused with 3" 3 "$rc"
+assert_not_contains "motion above the composer: nothing typed" "$(logged)" "terminal send"
+assert_contains "motion above the composer: says the screen shows a turn" "$(cat "$SANDBOX/err")" "its screen shows a turn running"
+assert_eq "motion: two reads before deciding" 2 "$(grep -c 'terminal read' "$WT_TEST_LOG")"
+reads_reset
+screen -1 screen "✶ Thinking… (esc to interrupt)" "$RULE" "❯ " "$RULE"
+screen -2 screen "✳ Thinking… (esc to interrupt)" "$RULE" "❯ " "$RULE"; reset_log
+bash "$WT" dispatch "$OP" --brief "$SANDBOX/brief.md" >/dev/null 2>&1
+assert_status "a spinner with words in its parenthesis, moving: refused with 3" 3 "$?"
+# a spinner-shaped line that stands still is old output, not a turn
+reads_reset
+pre screen "✻ Worked for 3m 2s" "✻ Musing… (12s · ↑ 1.2k tokens)" "$RULE" "❯ " "$RULE"; reset_log
+bash "$WT" dispatch "$OP" --brief "$SANDBOX/brief.md" >/dev/null 2>&1
+assert_status "a still spinner-shaped line: typed (then unconfirmed, 5)" 5 "$?"
+# a status line below the composer that ticks (a clock) is not motion
+reads_reset
+screen -1 screen "  Done." "$RULE" "❯ " "$RULE" "  12:00:01 · usage 40%"
+screen -2 screen "  Done." "$RULE" "❯ " "$RULE" "  12:00:03 · usage 41%"; reset_log
+bash "$WT" dispatch "$OP" --brief "$SANDBOX/brief.md" >/dev/null 2>&1
+assert_status "a ticking status line below the composer: typed (then unconfirmed, 5)" 5 "$?"
+# rows scrolled off the top (the composer grew) are not motion
+reads_reset
+screen -1 screen "  one" "  two" "  three" "$RULE" "❯ " "$RULE"
+screen -2 screen "  two" "  three" "$RULE" "❯ draft" "  more" "$RULE"; reset_log
+bash "$WT" dispatch "$OP" --brief "$SANDBOX/brief.md" >/dev/null 2>&1
+assert_status "rows gone from the top only: typed (then unconfirmed, 5)" 5 "$?"
+# after the send, rows above the composer that move are the turn start, echo or not
+reads_reset
+pre screen "earlier output" "$RULE" "❯ " "$RULE" "  ? for shortcuts"
+screen -3 screen "earlier output" "· Frobbing…" "$RULE" "❯ " "$RULE" "  ? for shortcuts"
+screen screen "earlier output" "✢ Frobbing…" "$RULE" "❯ " "$RULE" "  ? for shortcuts"; reset_log
+bash "$WT" dispatch "$OP" --brief "$SANDBOX/brief.md" >/dev/null 2>&1
+assert_status "motion after the send: taken, exit 0" 0 "$?"
+
+# --- Hook lines first (highness#27): the session's own state beats the screen.
+SD="$XDG_STATE_HOME/highness/sessions"; mkdir -p "$SD"
+sleep 300 & LIVE=$!
+hookline() { # <state> [kind] — the recorded session's line, its agent alive
+  printf '%s\t%s\t%s\t-\t-\t-\t%s\t%s\t-\t%s\t%s\n' "$1" "$(date +%s)" "$(date -u +%Y-%m-%dT%H:%M:%S)" \
+    "$LIVE" "$UOP" "$SID" "${2:--}" > "$SD/$SID"; }
+SID=99999999-2222-3333-4444-555555555555
+reads_reset
+pre screen "earlier output" "$RULE" " Bash command" "   make test" " Do you want to proceed?" " ❯ 1. Yes" "   2. No" " Esc to cancel"
+hookline idle; reset_log
+bash "$WT" dispatch "$OP" --brief "$SANDBOX/brief.md" >/dev/null 2>&1
+assert_contains "hook line idle, a dialog on screen: the line wins, typed" "$(logged)" "terminal send"
+reads_reset; pre screen "earlier output" "$RULE" "❯ " "$RULE"
+hookline working; reset_log
+out=$(bash "$WT" dispatch "$OP" --brief "$SANDBOX/brief.md" 2>"$SANDBOX/err"); rc=$?
+assert_status "hook line working, a still idle screen: refused with 3" 3 "$rc"
+assert_not_contains "hook line working: nothing typed" "$(logged)" "terminal send"
+assert_contains "hook line working: says the hooks said so" "$(cat "$SANDBOX/err")" "its hooks say a turn runs"
+assert_eq "hook line working: one screen read" 1 "$(grep -c 'terminal read' "$WT_TEST_LOG")"
+reads_reset; pre screen "earlier output" "$RULE" "❯ " "$RULE"
+hookline blocked question; reset_log
+bash "$WT" dispatch "$OP" --brief "$SANDBOX/brief.md" >/dev/null 2>"$SANDBOX/err"
+assert_status "hook line blocked: refused with 3" 3 "$?"
+assert_contains "hook line blocked: says it is on a dialog" "$(cat "$SANDBOX/err")" "is on a dialog (its hooks say so)"
+# a line whose agent is gone is not believed: the screen decides again
+reads_reset; pre screen "earlier output" "$RULE" "❯ " "$RULE"
+hookline working; sed "s/	$LIVE	/	999999	/" "$SD/$SID" > "$SD/x" && mv "$SD/x" "$SD/$SID"; reset_log
+bash "$WT" dispatch "$OP" --brief "$SANDBOX/brief.md" >/dev/null 2>&1
+assert_contains "hook line of a dead agent: ignored, typed" "$(logged)" "terminal send"
+assert_eq "hook line of a dead agent: removed" no "$([ -f "$SD/$SID" ] && echo yes || echo no)"
+# after the send, a fresh working line confirms the brief with nothing on screen
+reads_reset; pre screen "earlier output" "$RULE" "❯ " "$RULE"
+hookline idle
+# the send fires UserPromptSubmit: the line turns working, stamped now
+printf '#!/usr/bin/env bash\nawk -F"\\t" -v OFS="\\t" -v t="$(date +%%s)" "{ \\$1 = \\"working\\"; \\$2 = t; print }" "%s" > "%s.n" && mv "%s.n" "%s"\n' "$SD/$SID" "$SD/$SID" "$SD/$SID" "$SD/$SID" > "$FX/on-send"
+chmod +x "$FX/on-send"; reset_log
+out=$(bash "$WT" dispatch "$OP" --brief "$SANDBOX/brief.md" 2>/dev/null); rc=$?
+assert_status "hook line working after the send: taken, exit 0" 0 "$rc"
+assert_eq "hook line working after the send: send" send "$(col "$out" 2)"
+assert_eq "hook line working after the send: no screen read after it" 1 "$(grep -c 'terminal read' "$WT_TEST_LOG")"
+rm -f "$FX/on-send" "$SD/$SID"; kill "$LIVE" 2>/dev/null
+
 rm -f "$FX/send.json"; reads_reset
 # Orca saw the turn start: the screen is read only once, before the send
 reset_log
 bash "$WT" dispatch "$OP" --brief "$SANDBOX/brief.md" >/dev/null 2>&1
 assert_status "turn_started: exit 0" 0 "$?"
-assert_eq "turn_started: no screen read after the send" 1 "$(grep -c 'terminal read' "$WT_TEST_LOG")"
+assert_eq "turn_started: no screen read after the send (two before it)" 2 "$(grep -c 'terminal read' "$WT_TEST_LOG")"
 # A host that can observe delivery is asked to wait for the turn start; one that cannot is not
 # (its CLI refuses --wait-submit and sends nothing).
 assert_not_contains "no prompt-delivery capability: no --wait-submit" "$(logged)" "--wait-submit"

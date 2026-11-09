@@ -208,4 +208,6 @@ open on three named conditions.
    full move.
 
 One cheaper follow-up stands on its own: the hook-fed state described above. It would make
-"is this worker idle, working or on a dialog" independent of both Orca and herdr.
+"is this worker idle, working or on a dialog" independent of both Orca and herdr. Built in #27:
+hi-crew's hooks keep a state line per session (`session-state.sh`), and the screen rules are now
+the fallback, with screen motion in place of the spinner rule.
