@@ -301,11 +301,13 @@ run orphaned >/dev/null 2>&1; assert_status "orphaned: no Orca exits 1" 1 "$?"
 
 # --- agents -----------------------------------------------------------------
 # /w/a (UNC in ps): an agent terminal Orca calls idle, one it calls working, one with no ps
-# row, a bare shell, and a working chat. /w/b: a done chat. /w/c: nothing.
+# row, one whose turn is done (Orca 1.4.254 reports `done` after a finished turn, not `idle`),
+# a bare shell, and a working chat. /w/b: a done chat. /w/c: nothing.
 TL='{"ok":true,"result":{"terminals":[
   {"handle":"t1","worktreePath":"/w/a","connected":true,"writable":true,"agentIdentity":"claude","tabId":"A","leafId":"1"},
   {"handle":"t2","worktreePath":"/w/a","connected":true,"writable":true,"agentIdentity":"claude","tabId":"B","leafId":"2"},
   {"handle":"t3","worktreePath":"/w/a","connected":true,"writable":true,"agentIdentity":"codex","tabId":"C","leafId":"3"},
+  {"handle":"t6","worktreePath":"/w/a","connected":true,"writable":true,"agentIdentity":"claude","tabId":"F","leafId":"6"},
   {"handle":"t4","worktreePath":"/w/a","connected":true,"writable":true,"agentIdentity":null,"tabId":"D","leafId":"4"},
   {"handle":"t5","worktreePath":"/w/b","connected":false,"writable":true,"agentIdentity":"claude","tabId":"E","leafId":"5"}
 ]}}'
@@ -313,6 +315,7 @@ PS='{"ok":true,"result":{"worktrees":[
   {"path":"\\\\wsl.localhost\\Ubuntu\\w\\a","agents":[
     {"paneKey":"A:1","state":"done","programStatus":{"state":"idle"}},
     {"paneKey":"B:2","state":"done","programStatus":{"state":"working"}},
+    {"paneKey":"F:6","state":"done","programStatus":{"state":"done"}},
     {"paneKey":"structured-agent-session-claude_1:tab1","state":"working"}]},
   {"path":"/w/b","agents":[{"paneKey":"structured-agent-session-claude_3:tab3","state":"done"}]},
   {"path":"/w/c"}
@@ -324,6 +327,7 @@ assert_status "agents: exits 0" 0 "$rc"
 assert_eq "agents: terminals by Orca's status (no row → unknown), no shell, the chat" "t1	terminal	idle
 t2	terminal	busy
 t3	terminal	unknown
+t6	terminal	idle
 structured-agent-session-claude_1	chat	busy" "$out"
 assert_eq "agents: a done chat is idle; a disconnected terminal is not listed" "structured-agent-session-claude_3	chat	idle" "$(run agents /w/b)"
 assert_eq "agents: no agents" "" "$(run agents /w/c)"
@@ -331,7 +335,8 @@ run agents >/dev/null 2>&1; assert_status "agents: no path is 2" 2 "$?"
 mkstub "case \"\$*\" in 'status --json') echo '$READY' ;; 'terminal list --json') cat '$stub/tl.json' ;; *) exit 1 ;; esac"
 assert_eq "agents: no worktree ps → every terminal unknown, no chats" "t1	terminal	unknown
 t2	terminal	unknown
-t3	terminal	unknown" "$(run agents /w/a)"
+t3	terminal	unknown
+t6	terminal	unknown" "$(run agents /w/a)"
 mkstub 'exit 1'
 run agents /w/a >/dev/null 2>&1; assert_status "agents: no Orca exits 1" 1 "$?"
 

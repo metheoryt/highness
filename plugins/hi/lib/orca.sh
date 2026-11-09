@@ -408,7 +408,8 @@ terminals() {
 # or `chat` (Orca's "structured" surface, the default since 1.4.246: no terminal, so only
 # `worktree ps` shows it, paneKey structured-agent-session-<id>:<tab>). verdict is `idle`,
 # `busy`, or `unknown` when Orca gave no status for a terminal (the caller waits on it).
-# A terminal's verdict is its `worktree ps` programStatus, found by paneKey = tabId:leafId:
+# A terminal's verdict is its `worktree ps` programStatus (idle or done is idle: Orca 1.4.254
+# reports `done` after a finished turn), found by paneKey = tabId:leafId:
 # two calls for the whole workspace instead of a tui-idle wait per terminal. A chat's is its
 # state: done or idle is idle, any other state (working, a prompt, a new one) is busy. A bare
 # shell has no agentIdentity and no ps row: never listed. Exit 1: no Orca or no terminal list.
@@ -429,7 +430,7 @@ agents() {
         | select(.worktreePath | here)
         | "\(.tabId):\(.leafId)" as $k
         | ([ $ag[] | select(.paneKey == $k) ][0].programStatus.state // "") as $s
-        | [.handle, "terminal", (if $s == "idle" then "idle" elif $s == "" then "unknown" else "busy" end)] ),
+        | [.handle, "terminal", (if $s == "idle" or $s == "done" then "idle" elif $s == "" then "unknown" else "busy" end)] ),
       ( $ag[] | select((.paneKey // "") | startswith("structured-agent-session-"))
         | [(.paneKey | sub(":.*$"; "")), "chat",
            (if (.state // "") == "done" or (.state // "") == "idle" then "idle" else "busy" end)] )
