@@ -57,6 +57,26 @@ bash "$WT" find --nope x >/dev/null 2>&1;    assert_status "find: unknown flag e
 assert_eq "find from a linked worktree sees the same rows" "$D/review-7" \
   "$(cd "$D/scratch" && bash "$WT" find --review 7 | cut -f1)"
 
+# A <repo>#<n> ticket rides its branch as <n>-<slug>, but a number alone is no ticket
+# (highness#12): only hi's record ties a tree to the key — it names the path, or its branch.
+git worktree add -q -b release/2026-notes "$D/notes" main
+git worktree add -q -b 2026-x "$D/x2026" main
+bash "$WT" rec set --ticket 'app#2026' workspace "$D/elsewhere" branch feat/2026-real name 'app#2026 · real'
+G3=$(bash "$WT" create --kind ticket --key 'app#3' --name 'app#3 · slug' --base main --branch feat/3-slug 2>/dev/null | cut -f1)
+G4=$(bash "$WT" create --kind ticket --key 'app#4' --name 'app#4 · moved' --base main --branch fix/4-moved 2>/dev/null | cut -f1)
+bash "$WT" rec set --ticket 'app#4' workspace "$D/gone-4"   # the record now names another tree
+assert_eq "create records the branch" feat/3-slug "$(bash "$WT" rec get --ticket 'app#3' branch)"
+out=$(bash "$WT" list)
+g=$(printf '%s\n' "$out" | awk -F'\t' '$1 ~ /notes$/')
+assert_eq "#-key: a leading number with no record is work" "work notes" "$(col "$g" 5) $(col "$g" 6)"
+g=$(printf '%s\n' "$out" | awk -F'\t' '$1 ~ /x2026$/')
+assert_eq "#-key: a record of that number for another tree and branch is no tie" "work x2026" "$(col "$g" 5) $(col "$g" 6)"
+g=$(printf '%s\n' "$out" | awk -F'\t' -v p="$G3" '$1 == p')
+assert_eq "#-key: a tree create made is a ticket" "ticket app#3" "$(col "$g" 5) $(col "$g" 6)"
+g=$(printf '%s\n' "$out" | awk -F'\t' -v p="$G4" '$1 == p')
+assert_eq "#-key: the record's branch ties a tree it no longer names" "ticket app#4" "$(col "$g" 5) $(col "$g" 6)"
+assert_eq "find --ticket <repo>#<n>" "$G3" "$(col "$(bash "$WT" find --ticket 'app#3')" 1)"
+
 # Orca: listed paths get the Orca id verbatim and backend orca; unlisted stay git.
 orca_on
 export FX_ORCA_ONLY="$D/review-7"

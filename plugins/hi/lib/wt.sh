@@ -61,6 +61,7 @@ usage: wt.sh [--repo PATH] <verb> …   (--repo: run as if from PATH, e.g. a clo
        wt.sh land [<path>] [--test CMD]   (merge origin/<trunk>, test, check, fast-forward and push
                     the trunk; loops while the trunk moves. CMD default: config land.test)
        wt.sh remove-if-safe <path> | remove-if-landed <path> | remove <path> | sweep
+                (remove* take a workspace's path, or its folder or name when that names one)
        wt.sh review-head --pr N --base-ref B | waiting
        wt.sh board <path> <column>   (Orca board column: board.sh lists them; prints one row)
        wt.sh board -                 (path<TAB>column lines on stdin; one row each, one listing)
@@ -291,7 +292,32 @@ _infer() {
   last=${2##*/}
   k=$(printf '%s' "$last" | sed -n 's/^\([A-Za-z][A-Za-z0-9]*-[0-9][0-9]*\).*/\1/p' | LC_ALL=C tr '[:lower:]' '[:upper:]')
   if [ -n "$k" ]; then printf 'ticket\t%s\n' "$k"; return; fi
+  # A <repo>#<n> key rides the branch as a bare number (<n>-<slug>), and a number alone says
+  # nothing: release/2026-notes is not issue 2026, even when that issue has a record. So such a
+  # tree is a ticket only when hi's own record ties it: the record names this path (_rows reads
+  # that before _infer), or the branch create recorded is this tree's branch (highness#12).
+  k=$(_issue_key "$2") && { printf 'ticket\t%s\n' "$k"; return; }
   printf 'work\t%s\n' "$folder"
+}
+
+# _issue_key <branch>: the <repo>#<n> key whose record's `branch` is <branch>; exit 1 when none
+# or more than one is. Records written before create stored `branch` have none: their tree is a
+# ticket only while the record names its path.
+_issue_key() {
+  local f b hit='' n=0
+  [ -n "$1" ] || return 1
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    b=${f##*/}; b=${b%.md}
+    case "$b" in *'#'[0-9]*) ;; *) continue ;; esac
+    _valid_id ticket "$b" || continue
+    [ "$(_rec_get ticket "$b" branch 2>/dev/null)" = "$1" ] || continue
+    hit=$b; n=$((n + 1))
+  done <<EOF
+$(_rec_files)
+EOF
+  [ "$n" -eq 1 ] || return 1
+  printf '%s' "$hit"
 }
 
 # _rec_owns <kind> <key> <path>: may <path>'s row read that key's record? A record is per key and
@@ -543,7 +569,7 @@ U
 }
 
 cmd_create() {
-  local col='' kind='' key='' b0='' name='' base='' branch='' adopt='' detach='' parent='' psel='' slug='' ufrom='' uhome='' \
+  local col='' kind='' key='' b0='' bn='' name='' base='' branch='' adopt='' detach='' parent='' psel='' slug='' ufrom='' uhome='' \
         tests=0 hit prev prow row WT='' SEL='' nl='
 ' tab='	'
   while [ $# -gt 0 ]; do
@@ -672,6 +698,8 @@ cmd_create() {
     [ "$ufrom" != "$uhome" ] && [ "$MAIN" != "$uhome" ] && set -- "$@" umbrella "$ufrom"
   # base: the commit the workspace started at, so `landed` can tell finished work from a fresh tree.
   b0=$(git -C "$WT" rev-parse --verify -q HEAD 2>/dev/null) && [ "$kind" != review ] && set -- "$@" base "$b0"
+  # branch: what ties a tree to a <repo>#<n> key once the record names another path (_issue_key).
+  bn=$(git -C "$WT" symbolic-ref -q --short HEAD 2>/dev/null) && [ "$kind" != review ] && set -- "$@" branch "$bn"
   _rec_set "$kind" "$key" "$@" || say 'create: the workspace exists, but its record could not be written'
   row=$(_find --path "$WT") || { say "create: made $WT but cannot list it"; return 1; }
   say "created \"$name\" → $WT ($BACKEND)"
@@ -1087,14 +1115,31 @@ _reason_text() {
 _guard_target() {
   local p="${1:-}" pp
   [ -n "$p" ] || { say 'refusing an empty path'; return 2; }
-  TROW=$(_find --path "$p" 2>/dev/null) || {
-    say "$p is not a workspace of this repo (the main checkout, another repo, or not a worktree) — nothing removed"
+  case "$p" in
+    */*) TROW=$(_find --path "$p" 2>/dev/null) || TROW='' ;;
+    *)   TROW=$(_find_name "$p") || return 2 ;;
+  esac
+  [ -n "$TROW" ] || {
+    say "$p is not a workspace of this repo (the main checkout, another repo, or not a worktree; give its path, folder or name) — nothing removed"
     return 2; }
   pp=$(cd "$(_col "$TROW" 1)" 2>/dev/null && pwd -P)
   case "$CALLER_PWD/" in
     "$pp/"*) say "refusing to remove $(_col "$TROW" 1): this session is inside it"; return 2 ;;
   esac
   return 0
+}
+
+# _find_name <word>: the one row whose folder or record name (the name Orca shows) is <word>;
+# nothing when none is. Two or more: says which, exit 1 — a name never picks one of several.
+_find_name() {
+  local hit
+  hit=$(_rows | awk -F'\t' -v v="$1" '{ f = $1; sub(/.*\//, "", f) } f == v || $7 == v')
+  case "$(printf '%s' "$hit" | grep -c .)" in
+    0|1) printf '%s' "$hit"; return 0 ;;
+  esac
+  say "$1 names more than one workspace — give the path of one; nothing removed:"
+  printf '%s\n' "$hit" | cut -f1 | sed 's/^/  /' >&2
+  return 1
 }
 
 _close_terms() {
