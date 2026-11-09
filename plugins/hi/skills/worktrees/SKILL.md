@@ -79,11 +79,11 @@ the options "Remove the <n> safe ones" (recommended, only the 🗑 rows), "Let m
   ask:
 
   ```bash
-  bash "$L/wt.sh" create --kind work --key <slug> --name '<name>' --base <trunk> --branch work/<slug>
+  bash "$L/wt.sh" create --kind work --key <slug> --name '<name>' --base origin/<trunk> --branch work/<slug>
   ```
 
 - **A workspace for a ticket** → `create --kind ticket --key <KEY> --name '<KEY> · <title>'
-  --base <trunk> --branch <a branch carrying KEY>` (or `--adopt <existing branch>`). For a
+  --base origin/<trunk> --branch <a branch carrying KEY>` (or `--adopt <existing branch>`). For a
   review → `bash "$L/wt.sh" review-head --pr <n> --base-ref <base>` prints `base<TAB>head`, then
   `create --kind review --key <n> --name 'review #<n> · <title>' --detach <head>`.
 

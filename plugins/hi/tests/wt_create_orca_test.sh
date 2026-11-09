@@ -14,7 +14,9 @@ out=$(bash "$WT" create --kind ticket --key AB-101 --name 'AB-101 · Retry lock 
         --base main --branch task/dev/AB-101-retry-lock 2>"$SANDBOX/err"); rc=$?
 assert_status "orca ticket: exit 0" 0 "$rc"
 L=$(logged)
-assert_contains "orca: create argv" "$L" "orca worktree create --repo id:R --name AB-101-retry-lock-ordering --base-branch main --setup skip --comment hi:ticket AB-101 --json --branch task/dev/AB-101-retry-lock --parent-worktree id:R::"
+# a bare trunk as --base goes to Orca as origin/<trunk> (highness#16: handed `main` with a new
+# --branch, Orca put the tree on [main] and create failed)
+assert_contains "orca: create argv, bare trunk sent as origin/main" "$L" "orca worktree create --repo id:R --name AB-101-retry-lock-ordering --base-branch origin/main --setup skip --comment hi:ticket AB-101 --json --branch task/dev/AB-101-retry-lock --parent-worktree id:R::"
 assert_contains "orca: display name set on the Orca id" "$L" "orca worktree set --worktree id:R::\\\\wsl.localhost\\d"
 assert_contains "orca: display name value" "$L" "--display-name AB-101 · Retry lock ordering"
 assert_eq "orca: path is POSIX" "$O/AB-101-retry-lock-ordering" "$(col "$out" 1)"
@@ -26,6 +28,11 @@ assert_contains "orca: setup ran (setup skip + our run)" "$L" "setup $O/AB-101-r
 assert_contains "orca: announce" "$(cat "$SANDBOX/err")" "(orca)"
 assert_not_contains "orca: never --no-parent" "$L" "--no-parent"
 assert_eq "orca: made from the main checkout → its parent is the main checkout" "$(cd "$R" && pwd -P)" "$(col "$out" 8)"
+
+# a base that is not the trunk is passed as given
+git branch -q epic/AB-1-thing main; reset_log
+bash "$WT" create --kind ticket --key AB-150 --name 'AB-150 · on epic' --base epic/AB-1-thing --branch task/dev/AB-150-epic >/dev/null 2>&1
+assert_contains "orca: a non-trunk base is kept" "$(logged)" "--base-branch epic/AB-1-thing --setup"
 
 # made from inside a workspace, no --parent: that workspace is the parent
 reset_log

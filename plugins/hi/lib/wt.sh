@@ -598,6 +598,13 @@ cmd_create() {
   [ -n "$parent" ] || parent=$(git rev-parse --show-toplevel 2>/dev/null) || parent=''
   [ -n "$parent" ] || { say 'create: cannot tell which workspace this runs in'; return 2; }
   _backend || return 1
+  # A bare trunk name as --base means the remote trunk (highness#16): Orca, handed the local
+  # branch name with a new --branch, put the tree on [main] and create failed. origin/<trunk> is
+  # also the fresh trunk, not a local copy the sync may not have moved yet.
+  if [ -n "$base" ] && [ "$(_trunk)" = "origin/$base" ] &&
+     git -C "$MAIN" show-ref --verify --quiet "refs/remotes/origin/$base"; then
+    base="origin/$base"
+  fi
   if [ "$(cd "$parent" 2>/dev/null && pwd -P)" = "$MAIN" ]; then
     parent=$MAIN
     if [ "$BACKEND" = orca ]; then
