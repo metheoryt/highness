@@ -63,7 +63,7 @@ sent). After sending, it waits up to five seconds to see `working` or `blocked`,
 
 | Our check | What it did | Verdict | Change in this PR |
 | --- | --- | --- | --- |
-| Idle check before typing (`_live_agent`: Orca's `programStatus`, then a 2 s `tui-idle` wait) | Typed only into a terminal Orca called idle. A dialog on screen was invisible to it. | Stricter than herdr: no "no rule matched, so idle" fallback. It still trusted Orca's idle completely. | `dispatch` reads the screen it already reads for the echo check. If herdr's blocked shapes or a live turn appear there, it refuses with exit 3 (`via=busy`), says which, and prints the screen tail. |
+| Idle check before typing (`_live_agent`: Orca's `programStatus`, then a 2 s `tui-idle` wait) | Typed only into a terminal Orca called idle. Orca already shows a session on a permission dialog as busy, so those were refused. Other dialogs (question forms, MCP input) and the path where Orca gave no status and a `tui-idle` wait alone decided were not checked. | Stricter than herdr: no "no rule matched, so idle" fallback. It still trusted Orca's idle for every dialog that is not a permission prompt. | `dispatch` reads the screen it already reads for the echo check. If herdr's blocked shapes or a live turn appear there, it refuses with exit 3 (`via=busy`), says which, and prints the screen tail. |
 | Dispatch confirmation (`_send_taken`: Orca's `turn_started`, or one more echo of the brief outside the composer) | Missed a turn whose echo scrolled off or was redrawn, and reported it `unconfirmed`. | herdr's rule (working or blocked after the send) is the better signal. | A turn running, or a dialog open, after the send counts as taken. The screen showed neither before the send, since dispatch now refuses those. A dialog right after the send is reported. |
 | Permission-dialog marker (`prompt-mark.sh`: `Notification` hook plus transcript) | Saw permission prompts from Claude's own event and checked the pending tool call in the transcript. | Better than herdr's screen rules for permission prompts. It does not depend on how Claude draws the dialog, and survives UI changes that herdr fixes by re-shipping manifests. | The hook also matches `elicitation_dialog`, Claude's notification for an MCP server's input dialog: herdr's `mcp_elicitation_prompt`. The marker records its kind, and the watch says "waits on an MCP input dialog". |
 
@@ -145,7 +145,8 @@ branch that calls `herdr agent start` and `agent prompt`, beside Orca and tmux.
 ### Claude status under herdr-core
 
 core never reads the screen. A terminal has a status only if its program writes OSC 7501, and
-core's API has no method to set a status from outside. Claude Code does not emit OSC 7501, so a
+core's API has no method to set a status from outside: the OpenRPC method list has none, and
+`terminal.put` only drops a file beside the terminal for its program to read. Claude Code does not emit OSC 7501, so a
 Claude worker under core has no status: `hc wait` and `hc send --if idle` have nothing to act on.
 There are two ways out:
 

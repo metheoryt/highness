@@ -839,7 +839,8 @@ _send_taken() {
 $_ECHO
 EOF
     _SEND_STATE=$state
-    case "$state" in working|blocked) return 0 ;; esac
+    # a swallowed Enter leaves the brief in the composer whatever else the screen shows
+    [ "$where" != composer ] && case "$state" in working|blocked) return 0 ;; esac
     [ "$where" = out ] && [ "${count:-0}" -gt "${4:-0}" ] && return 0
   done
   return 1

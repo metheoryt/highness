@@ -94,9 +94,9 @@ check 'no transcript: not listed, removed' "$(bash "$PM" list)$(ls "$DIR")" ''
 bash "$PM" check </dev/null >/dev/null 2>&1; check 'check without a path: exit 2' "$?" 2
 
 J="$HERE/../hooks/hooks.json"
-check 'hooks.json: Notification permission_prompt and elicitation_dialog run prompt-mark.sh' \
-  "$(jq -r '.hooks.Notification[0] | .matcher + " " + .hooks[0].command' "$J")" \
-  'permission_prompt|elicitation_dialog bash "${CLAUDE_PLUGIN_ROOT}/lib/prompt-mark.sh" hook'
+check 'hooks.json: Notification permission_prompt and elicitation_dialog, one entry each, run prompt-mark.sh' \
+  "$(jq -r '[.hooks.Notification[] | .matcher + " " + .hooks[0].command] | join(";")' "$J")" \
+  'permission_prompt bash "${CLAUDE_PLUGIN_ROOT}/lib/prompt-mark.sh" hook;elicitation_dialog bash "${CLAUDE_PLUGIN_ROOT}/lib/prompt-mark.sh" hook'
 check 'hooks.json: Stop runs prompt-mark.sh' "$(jq -r '.hooks.Stop[0].hooks[0].command' "$J")" \
   'bash "${CLAUDE_PLUGIN_ROOT}/lib/prompt-mark.sh" hook'
 exit $fail

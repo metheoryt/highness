@@ -3,7 +3,7 @@
 #
 # A worker that hits a permission prompt waits for someone to answer it, and nothing else tells
 # the person: Orca shows the worker as busy and the worker sends no question. The Notification
-# hook (matcher permission_prompt|elicitation_dialog) writes one marker per session in
+# hook (matchers permission_prompt and elicitation_dialog) writes one marker per session in
 # ${HIGHNESS_STATE:-${XDG_STATE_HOME:-~/.local/state}/highness}/prompts/<session_id>.json: since
 # (UTC), the session's cwd, the transcript, the pending tool call and the kind: `permission`, or
 # `input` for an MCP server's input dialog (elicitation), which also holds a tool call open.

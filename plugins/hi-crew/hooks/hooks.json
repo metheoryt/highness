@@ -2,7 +2,13 @@
   "hooks": {
     "Notification": [
       {
-        "matcher": "permission_prompt|elicitation_dialog",
+        "matcher": "permission_prompt",
+        "hooks": [
+          { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/lib/prompt-mark.sh\" hook" }
+        ]
+      },
+      {
+        "matcher": "elicitation_dialog",
         "hooks": [
           { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/lib/prompt-mark.sh\" hook" }
         ]

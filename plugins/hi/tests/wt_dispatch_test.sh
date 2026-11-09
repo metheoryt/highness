@@ -262,6 +262,12 @@ bash "$WT" dispatch "$OP" --brief "$SANDBOX/brief.md" >/dev/null 2>"$SANDBOX/err
 assert_status "a dialog after the send: exit 0" 0 "$?"
 assert_contains "a dialog after the send: says to look" "$(cat "$SANDBOX/err")" "opened a dialog at once"
 reads_reset
+# the brief still in the composer is not taken, even with a turn showing (highness#14)
+screen -1 screen "earlier output" "$RULE" "❯ " "$RULE" "  ? for shortcuts"
+screen screen "✻ Musing… (3s · esc to interrupt)" "$RULE" "❯ Read $OB and follow it." "$RULE" "  ⏵⏵ accept edits on · esc to interrupt"; reset_log
+bash "$WT" dispatch "$OP" --brief "$SANDBOX/brief.md" >/dev/null 2>&1
+assert_status "brief in the composer with a turn showing: exit 5" 5 "$?"
+reads_reset
 # an accumulated stream is no rendered screen: it cannot tell the composer apart
 reads_reset; screen stream "❯ Read $OB and follow it." "$RULE" "❯ " "$RULE"; reset_log
 bash "$WT" dispatch "$OP" --brief "$SANDBOX/brief.md" >/dev/null 2>&1
