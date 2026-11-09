@@ -733,38 +733,54 @@ _tui_idle() {
        jq -r '.ok // false' 2>/dev/null)" = true ]
 }
 
-# _send_taken <receipt-json> <handle> <prompt>: exit 0 when the prompt typed into that agent
-# terminal was taken — Orca's receipt says the turn started, or the rendered screen shows the
-# prompt outside the composer (the box between the last two rule lines) and not inside it.
-# Text still in the composer is a swallowed Enter. Whitespace is dropped before comparing, so
-# a prompt wrapped over several rows still matches. The screen is read up to HI_SEND_READS
-# times (default 5), a second apart; the last tail read is left in _SEND_SCREEN for the report.
-_SEND_SCREEN=''
+# _screen_echo <handle> <prompt>: read that terminal's rendered screen once and set
+# _ECHO to `<where> <count>`: where is `composer` when the prompt sits in the composer (the box between
+# the last two rule lines — a swallowed Enter), else `out`, or `none` when there is no rendered
+# screen or no composer box; count is how often the prompt shows outside the composer.
+# Whitespace is dropped before comparing, so a prompt wrapped over several rows still matches.
+# The last few non-blank rows are left in _SEND_SCREEN for the report. Globals, not stdout:
+# a command substitution would lose _SEND_SCREEN.
+_SEND_SCREEN='' _ECHO=''
+_screen_echo() {
+  local js want
+  _ECHO='none 0'
+  want=$(printf '%s' "$2" | tr -d ' \t\n')
+  js=$("$ORCA" terminal read --terminal "$1" --screen --json 2>/dev/null </dev/null) || return 0
+  # Only a rendered screen counts: an accumulated stream has no composer box to tell apart.
+  [ "$(printf '%s' "$js" | jq -r '.result.terminal.source // ""' 2>/dev/null)" = screen ] || return 0
+  _SEND_SCREEN=$(printf '%s' "$js" | jq -r '.result.terminal.tail // [] | .[]' 2>/dev/null |
+                 awk 'NF { l[++k] = $0 } END { for (i = (k > 8 ? k - 7 : 1); i <= k; i++) print l[i] }')
+  _ECHO=$(printf '%s' "$js" | jq -r '.result.terminal.tail // [] | .[]' 2>/dev/null |
+    awk -v want="$want" '
+      { line[NR] = $0; t = $0; gsub(/[ \t]/, "", t); r = t; gsub(/─/, "", r)
+        if (t != "" && r == "") { a = b; b = NR } }
+      END {
+        if (!a) { print "none 0"; exit }
+        box = ""; rest = ""
+        for (i = 1; i <= NR; i++) { t = line[i]; gsub(/[ \t]/, "", t)
+          if (i > a && i < b) box = box t; else rest = rest t }
+        n = 0; while ((p = index(rest, want)) > 0) { n++; rest = substr(rest, p + length(want)) }
+        print (index(box, want) ? "composer" : "out"), n
+      }')
+}
+
+# _send_taken <receipt-json> <handle> <prompt> <count-before>: exit 0 when the prompt typed
+# into that agent terminal was taken — Orca's receipt says the turn started, or the screen
+# shows one more copy of it outside the composer than before the send, and none inside. The
+# count matters: every dispatch into a workspace types the same line, so an earlier one's echo
+# may still be on screen. The screen is read up to HI_SEND_READS times (default 5), a second apart.
 _send_taken() {
-  local want n=0 reads=${HI_SEND_READS:-5} js verdict
+  local n=0 reads=${HI_SEND_READS:-5} where count
   _SEND_SCREEN=''
   [ "$(printf '%s' "$1" | jq -r '(.result.send.prompt.stages // []) | index("turn_started") != null' 2>/dev/null)" = true ] && return 0
-  want=$(printf '%s' "$3" | tr -d ' \t\n')
   while [ "$n" -lt "$reads" ]; do
     [ "$n" -gt 0 ] && sleep 1
     n=$((n + 1))
-    js=$("$ORCA" terminal read --terminal "$2" --screen --json 2>/dev/null </dev/null) || continue
-    # Only a rendered screen counts: an accumulated stream has no composer box to tell apart.
-    [ "$(printf '%s' "$js" | jq -r '.result.terminal.source // ""' 2>/dev/null)" = screen ] || continue
-    _SEND_SCREEN=$(printf '%s' "$js" | jq -r '.result.terminal.tail // [] | .[]' 2>/dev/null |
-                   awk 'NF { l[++k] = $0 } END { for (i = (k > 8 ? k - 7 : 1); i <= k; i++) print l[i] }')
-    verdict=$(printf '%s' "$js" | jq -r '.result.terminal.tail // [] | .[]' 2>/dev/null |
-      awk -v want="$want" '
-        { line[NR] = $0; t = $0; gsub(/[ \t]/, "", t); r = t; gsub(/─/, "", r)
-          if (t != "" && r == "") { a = b; b = NR } }
-        END {
-          if (!a) { print "none"; exit }
-          box = ""; rest = ""
-          for (i = 1; i <= NR; i++) { t = line[i]; gsub(/[ \t]/, "", t)
-            if (i > a && i < b) box = box t; else rest = rest t }
-          if (index(box, want)) print "composer"; else if (index(rest, want)) print "taken"; else print "none"
-        }')
-    [ "$verdict" = taken ] && return 0
+    _screen_echo "$2" "$3"
+    read -r where count <<EOF
+$_ECHO
+EOF
+    [ "$where" = out ] && [ "${count:-0}" -gt "${4:-0}" ] && return 0
   done
   return 1
 }
@@ -812,7 +828,7 @@ _uuid() {
 }
 
 cmd_dispatch() {
-  local path="${1:-}" brief='' name='' resume='' cfg='' env='' row wt sel kind key dst dirs uuid line via=print handle='' js T rc tmp wrap
+  local before path="${1:-}" brief='' name='' resume='' cfg='' env='' row wt sel kind key dst dirs uuid line via=print handle='' js T rc tmp wrap
   [ -n "$path" ] || { say 'dispatch: <path> is required'; return 2; }
   shift
   while [ $# -gt 0 ]; do
@@ -849,13 +865,17 @@ cmd_dispatch() {
     uuid=${resume:-$(_col "$row" 9)}
     tmp=$(mktemp "${TMPDIR:-/tmp}/hi-send.XXXXXX") || return 1
     printf 'Read %s and follow it.' "$dst" > "$tmp"
+    _screen_echo "$handle" "Read $dst and follow it."
+    read -r _ before <<EOF
+$_ECHO
+EOF
     js=$(HI_CONFIRMED=1 bash "$ORCA_SH" send "$handle" "$tmp" 2>/dev/null </dev/null)
     rm -f "$tmp"
     if [ "$(printf '%s' "$js" | jq -r 'if .ok == true and .result.send.accepted != false then "y" else "n" end' 2>/dev/null)" = y ]; then
       # Accepted is not taken: a swallowed Enter leaves the brief in the composer (highness#14).
       # Never resend here: a send Orca could not observe has landed before, and a second one
       # submits the brief twice.
-      if _send_taken "$js" "$handle" "Read $dst and follow it."; then
+      if _send_taken "$js" "$handle" "Read $dst and follow it." "${before:-0}"; then
         _rec_set "$kind" "$key" dispatched send || say 'dispatch: could not record the dispatch'
         printf '%s\t%s\t%s\n' "$uuid" send "$handle"
         say "dispatched \"$name\" into its live session (terminal $handle)${uuid:+ — resume: cd $wt && claude --resume $uuid}"

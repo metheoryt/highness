@@ -176,8 +176,11 @@ bash "$WT" dispatch "$OP" --brief "$SANDBOX/brief.md" >/dev/null 2>&1
 assert_status "send refused (accepted:false): 1" 1 "$?"
 printf '%s\n' '{"ok":true,"result":{"send":{"handle":"cl1","accepted":true,"prompt":{"requestId":"unsupported-old-host","stages":["input_accepted"],"provider":"old-host","observation":"unsupported"}}}}' > "$FX/send.json"
 RULE='────────────────────'
-screen() { jq -n --arg src "$1" '{ok:true,result:{terminal:{handle:"cl1",status:"running",source:$src,tail:$ARGS.positional}}}' --args "${@:2}" > "$FX/read.json"; }
-reset_log; rm -f "$FX/read.json"
+# screen [-N] <source> <rows…>: what `terminal read --screen` renders (-N: on its Nth call only)
+screen() { local f="$FX/read.json"; case "$1" in -*) f="$FX/read.${1#-}.json"; shift ;; esac
+  jq -n --arg src "$1" '{ok:true,result:{terminal:{handle:"cl1",status:"running",source:$src,tail:$ARGS.positional}}}' --args "${@:2}" > "$f"; }
+reads_reset() { rm -f "$FX"/read.*json "$FX/read.n"; }
+reset_log; reads_reset
 out=$(bash "$WT" dispatch "$OP" --brief "$SANDBOX/brief.md" 2>"$SANDBOX/err"); rc=$?
 assert_status "unobserved, no screen: exit 5" 5 "$rc"
 assert_eq "unobserved, no screen: via=unconfirmed" "99999999-2222-3333-4444-555555555555	unconfirmed	cl1" "$out"
@@ -188,32 +191,47 @@ assert_contains "unobserved: says what Orca saw" "$(cat "$SANDBOX/err")" "input_
 assert_contains "unobserved: says to look first" "$(cat "$SANDBOX/err")" "Look at that terminal before sending again"
 # a swallowed Enter: the brief still sits in the composer, wrapped over two rows
 HALF=$(printf 'Read %s and follow it.' "$OB" | cut -c1-20); REST=$(printf 'Read %s and follow it.' "$OB" | cut -c21-)
+reads_reset
 screen screen "earlier output" "$RULE" "❯ $HALF" "  $REST" "$RULE" "  ⏵⏵ bypass permissions on"; reset_log
 out=$(bash "$WT" dispatch "$OP" --brief "$SANDBOX/brief.md" 2>"$SANDBOX/err"); rc=$?
 assert_status "brief in the composer: exit 5" 5 "$rc"
 assert_eq "brief in the composer: unconfirmed" unconfirmed "$(col "$out" 2)"
 assert_contains "brief in the composer: the screen tail is shown" "$(cat "$SANDBOX/err")" "bypass permissions on"
 assert_contains "the screen is read rendered" "$(logged)" "orca terminal read --terminal cl1 --screen --json"
-# the brief left the composer and shows above it: taken
+# the brief left the composer and shows above it, where it was not before the send: taken
+reads_reset
+screen -1 screen "earlier output" "$RULE" "❯ " "$RULE"
 screen screen "❯ Read $OB and follow it." "✽ Thinking… (2s)" "$RULE" "❯ " "$RULE"; reset_log
 out=$(bash "$WT" dispatch "$OP" --brief "$SANDBOX/brief.md" 2>/dev/null); rc=$?
 assert_status "brief above the composer: exit 0" 0 "$rc"
 assert_eq "brief above the composer: send" send "$(col "$out" 2)"
 assert_eq "brief above the composer: recorded send" send "$(bash "$WT" rec get --work spike dispatched)"
+# every dispatch types the same line: an earlier dispatch's echo already on screen is not this one
+reads_reset
+screen screen "❯ Read $OB and follow it." "  Done." "$RULE" "❯ " "$RULE"; reset_log
+bash "$WT" dispatch "$OP" --brief "$SANDBOX/brief.md" >/dev/null 2>&1
+assert_status "an earlier dispatch's echo only: exit 5" 5 "$?"
+reads_reset
+screen -1 screen "❯ Read $OB and follow it." "  Done." "$RULE" "❯ " "$RULE"
+screen screen "❯ Read $OB and follow it." "  Done." "❯ Read $OB and follow it." "✽ Thinking…" "$RULE" "❯ " "$RULE"
+reset_log
+bash "$WT" dispatch "$OP" --brief "$SANDBOX/brief.md" >/dev/null 2>&1
+assert_status "a second echo below the earlier one: exit 0" 0 "$?"
+reads_reset
 # an accumulated stream is no rendered screen: it cannot tell the composer apart
-screen stream "❯ Read $OB and follow it." "$RULE" "❯ " "$RULE"; reset_log
+reads_reset; screen stream "❯ Read $OB and follow it." "$RULE" "❯ " "$RULE"; reset_log
 bash "$WT" dispatch "$OP" --brief "$SANDBOX/brief.md" >/dev/null 2>&1
 assert_status "stream, not screen: exit 5" 5 "$?"
 # no composer box on screen (another TUI): not confirmed by the screen
-screen screen "❯ Read $OB and follow it."; reset_log
+reads_reset; screen screen "❯ Read $OB and follow it."; reset_log
 bash "$WT" dispatch "$OP" --brief "$SANDBOX/brief.md" >/dev/null 2>&1
 assert_status "no composer box: exit 5" 5 "$?"
-rm -f "$FX/send.json" "$FX/read.json"
-# Orca saw the turn start: no screen read needed
+rm -f "$FX/send.json"; reads_reset
+# Orca saw the turn start: the screen is read only once, before the send
 reset_log
 bash "$WT" dispatch "$OP" --brief "$SANDBOX/brief.md" >/dev/null 2>&1
 assert_status "turn_started: exit 0" 0 "$?"
-assert_not_contains "turn_started: no screen read" "$(logged)" "terminal read"
+assert_eq "turn_started: no screen read after the send" 1 "$(grep -c 'terminal read' "$WT_TEST_LOG")"
 # A host that can observe delivery is asked to wait for the turn start; one that cannot is not
 # (its CLI refuses --wait-submit and sends nothing).
 assert_not_contains "no prompt-delivery capability: no --wait-submit" "$(logged)" "--wait-submit"

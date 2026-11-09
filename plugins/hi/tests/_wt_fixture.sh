@@ -80,7 +80,10 @@ case "$1 $2" in
   # A send receipt as Orca 1.4.254 gives it when it saw the turn start; $FX/send.json overrides.
   'terminal send') cat "$FX/send.json" 2>/dev/null ||
     echo '{"ok":true,"result":{"send":{"handle":"cl1","accepted":true,"prompt":{"stages":["input_accepted","turn_started"],"provider":"claude","observation":"observed"}}}}' ;;
-  'terminal read') cat "$FX/read.json" 2>/dev/null || { echo '{"ok":false}'; exit 1; } ;;
+  # terminal read: the Nth call serves $FX/read.N.json when present, else $FX/read.json.
+  'terminal read')
+    n=$(( $(cat "$FX/read.n" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$FX/read.n"
+    cat "$FX/read.$n.json" 2>/dev/null || cat "$FX/read.json" 2>/dev/null || { echo '{"ok":false}'; exit 1; } ;;
   'terminal wait') cat "$FX/wait.json" 2>/dev/null || echo '{"ok":true}' ;;
   'terminal close') echo '{"ok":true}' ;;
   *) echo '{"ok":false}'; exit 1 ;;
