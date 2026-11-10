@@ -25,8 +25,9 @@ Below, `$O` stands for that executable.
 
 ## Before the first start
 
-- Orchestration is experimental in Orca: if `$O orchestration run-current` says it is off, tell the
-  user to turn it on (Orca Settings → Experimental → Orchestration) and stop.
+- On a fresh box, `/hi:setup` (the hi plugin) checks and fixes everything below in one pass.
+- Orchestration: if `$O orchestration run-current` fails, tell the user to set it up (Orca 1.4.254:
+  Settings → Orchestration → Agent Orchestration; older Orca: Settings → Experimental) and stop.
 - `jq` must be installed (`crew.sh` needs it).
 - Team settings come from `.claude/highness.json` at the git root of **this session's working
   directory** (a team commits it), or the user's `highness/config.json`. In a workspace that holds

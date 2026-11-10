@@ -183,4 +183,42 @@ QR=$(bash -c 'source /dev/stdin <<<"$(sed -n "/^q()/p" "$1")"; q "it'"'"'s a b"'
 check 'q quotes one shell word' "$(eval "printf %s $QR")" "it's a b"
 unset ORCA_CLI_COMMAND
 
+# --- setup-status: what /hi:setup shows for hi-crew (#25)
+cat >"$T/bin/setuporca" <<'EOF'
+#!/bin/sh
+case "$1 $2" in
+  "orchestration run-list") [ -n "${FAKE_ORCH_OFF:-}" ] && { echo '{"ok":false,"error":{"message":"orchestration is not enabled"}}'; exit 1; }
+                            echo '{"ok":true,"result":{"runs":[]}}' ;;
+  "skills installed") if [ -n "${FAKE_NO_SKILL:-}" ]; then echo '{"ok":true,"result":{"skills":[{"name":"other"}]}}'
+                      else echo '{"ok":true,"result":{"skills":[{"name":"orchestration"}]}}'; fi ;;
+  "automations list") printf '%s\n' "${FAKE_AUTOS:-{\"ok\":true,\"result\":{\"automations\":[]}}}" ;;
+esac
+EOF
+chmod +x "$T/bin/setuporca"
+ss() { ORCA_CLI_COMMAND="$T/bin/setuporca" bash "$C" setup-status; }
+r() { printf '%s\n' "$1" | awk -F'\t' -v n="$2" '$1 == n { print $2 }'; }
+rm -f "$HIGHNESS_CONFIG"
+out=$(ss)
+check 'setup-status: orchestration on' "$(r "$out" orchestration)" on
+check 'setup-status: orca skill ok' "$(r "$out" orca-skill)" ok
+check 'setup-status: no automation → watch missing' "$(r "$out" watch)" missing
+check 'setup-status: crew.agent unset' "$(r "$out" crew.agent)" unset
+check 'setup-status: crew.model unset' "$(r "$out" crew.model)" unset
+out=$(FAKE_ORCH_OFF=1 FAKE_NO_SKILL=1 ss)
+check 'setup-status: orchestration off' "$(r "$out" orchestration)" off
+case "$out" in *'orchestration is not enabled'*) ok "setup-status: off carries Orca's message" ;; *) no "setup-status: off carries Orca's message" ;; esac
+check 'setup-status: orca skill missing' "$(r "$out" orca-skill)" missing
+SELF="$(cd "$HERE/../lib" && pwd)/crew.sh"
+out=$(FAKE_AUTOS="$(jq -nc --arg p "sh -lic 'bash \"$SELF\" watch'" '{ok:true,result:{automations:[{name:"hi-crew watch",enabled:true,rrule:"*/10 * * * *",precheck:$p}]}}')" ss)
+check 'setup-status: watch runs this crew.sh → ok' "$(r "$out" watch)" ok
+out=$(FAKE_AUTOS='{"ok":true,"result":{"automations":[{"name":"hi-crew watch","enabled":true,"precheck":"bash /gone/crew.sh watch"}]}}' ss)
+check 'setup-status: watch runs another crew.sh → stale' "$(r "$out" watch)" stale
+out=$(FAKE_AUTOS='{"ok":true,"result":{"automations":[{"name":"hi-crew watch","enabled":false,"precheck":""}]}}' ss)
+check 'setup-status: watch turned off → disabled' "$(r "$out" watch)" disabled
+printf '{"crew":{"agent":"codex","model":null}}\n' >"$HIGHNESS_CONFIG"
+out=$(ss)
+check 'setup-status: crew.agent set' "$(r "$out" crew.agent)" set
+check 'setup-status: crew.model null → default on purpose' "$(r "$out" crew.model)" default
+rm -f "$HIGHNESS_CONFIG"
+
 exit $fail

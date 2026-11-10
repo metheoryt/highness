@@ -4,7 +4,7 @@ A harness for Claude Code agents, as a plugin marketplace. Each plugin is enable
 
 | plugin | what it gives |
 |---|---|
-| `hi` | `/hi:worktrees` — one workspace per piece of work, over Orca worktrees or plain git worktrees, with lineage, a removal check and a per-tree setup (gortex tracking when gortex is installed, local config links, the repo's own setup script). `/hi:repo-setup` — check and wire a repo for that. |
+| `hi` | `/hi:worktrees` — one workspace per piece of work, over Orca worktrees or plain git worktrees, with lineage, a removal check and a per-tree setup (gortex tracking when gortex is installed, local config links, the repo's own setup script). `/hi:repo-setup` — check and wire a repo for that. `/hi:setup` — check and fix a machine and a person for hi and hi-crew, then the repo. |
 | `hi-guard` | A PreToolUse hook on Bash: denies `sudo` from an agent session (quote-aware, through `bash -c`, `ssh`, `eval`…) and any configured deny pattern. Other tools can add checks. |
 | `hi-docs` | `/hi-docs:write-doc` and `/hi-docs:reader-test` — documents that read in short sittings, tested on a reader with no context. |
 | `hi-crew` | `/hi-crew:start <KEY>` — a worker agent on a ticket, in its own Orca workspace, carrying it to a reviewed pull request and stopping only for a person's decision. `/hi-crew:agenda` — what the workers wait on you for: their questions, people's comments on their PRs, PRs ready to merge. A watch (an Orca automation that never starts an agent) wakes the coordinator when a worker's PR is merged or closed, its CI fails, a person comments, or the worker sits on a permission dialog (a Notification hook marks it). Needs Orca with orchestration turned on, and `jq`. Team settings under `crew` in `.claude/highness.json`: `process`, `agent`, `model`, `marker`, `pr_state`. |
@@ -18,6 +18,18 @@ A harness for Claude Code agents, as a plugin marketplace. Each plugin is enable
 
 For a team, add the marketplace and the plugins to the repo's `.claude/settings.json`
 (`extraKnownMarketplaces` and `enabledPlugins`).
+
+## First run
+
+1. Install the plugins above (`hi` and `hi-crew` at least; `hi-guard` is recommended), in the Claude
+   Code profile Orca starts its agents under.
+2. In a new session, from the repo you will start tickets in: `/hi:setup`. It checks the machine
+   (jq, Orca and its orchestration, the launcher, the plugins the worker profile loads, the hi-crew
+   watch, the board columns), your config (`crew.agent`, `crew.model`, a repo overlay) and the repo
+   (an Orca project, plus `/hi:repo-setup`), and proposes one fix per gap. Some steps are yours in
+   the Orca window; it gives them.
+3. `/hi-crew:start <KEY>`. A key is letters, digits, `.`, `_` and `-` only (`[A-Za-z0-9._-]`), not
+   starting with a dot: `repo-24` works, `repo#24` does not.
 
 ## Configuration
 
