@@ -16,6 +16,9 @@
 #   board.sh set          id<TAB>label<TAB>column, one per Orca column; column is the name
 #                         below whose label it carries, empty for any other column
 #   board.sh id <column>  the id of one of the columns below; exit 1 when the set lacks it
+#   board.sh missing      the label of each column below the set lacks, one per line (nothing
+#                         when it has them all); exit 1 when the set cannot be read, so an
+#                         unreadable set never reads as "every column missing"
 #
 # Columns (the label each one looks for):
 #   mains=Mains  active=In progress  in_review=In review  qa=QA  done=Done
@@ -106,5 +109,11 @@ case "${1:-}" in
     id=$(printf '%s\n' "$s" | awk -F'\t' -v l="$want" '$2 == l { print $1; exit }')
     [ -n "$id" ] || { say "Orca has no \"$want\" column"; exit 1; }
     printf '%s\n' "$id" ;;
-  *) echo 'usage: board.sh set | id <column>' >&2; exit 2 ;;
+  missing)
+    s=$(the_set) || exit 1
+    for c in $COLUMNS; do
+      l=$(label_of_column "$c")
+      printf '%s\n' "$s" | awk -F'\t' -v l="$l" '$2 == l { f = 1 } END { exit !f }' || printf '%s\n' "$l"
+    done ;;
+  *) echo 'usage: board.sh set | id <column> | missing' >&2; exit 2 ;;
 esac

@@ -18,6 +18,8 @@
 #
 #   config.sh get [--user] <jq-path>    the value (raw for strings); exit 1 when unset
 #   config.sh list [--user] <jq-path>   one array element per line from both files; nothing when unset
+#   config.sh has [--user] <jq-path>    the file that sets the key, even to null (how a person says
+#                                       "leave it to the default" on purpose); exit 1 when no source does
 #   config.sh files [--user]            the files that exist, repo first
 #
 # --user reads the user file's top level only. A key that runs code or switches a protection off
@@ -79,6 +81,24 @@ EOF
   return 1
 }
 
+# A key set to null counts here, unlike _get: `(path(<p>)) as $q | getpath($q[:-1]) | has(last)`.
+_has() {
+  local f base
+  command -v jq >/dev/null 2>&1 || return 1
+  while IFS="$(printf '\t')" read -r f base; do
+    [ -n "$f" ] || continue
+    jq -e "($base // {}) as \$o | (try path($1) catch null) as \$q
+           | (\$q != null) and (\$q | length) > 0
+             and ((\$o | getpath(\$q[:-1])) as \$p | (\$p | type) == \"object\" and (\$p | has(\$q[-1])))" \
+      "$f" >/dev/null 2>&1 || continue
+    printf '%s\n' "$f"
+    return 0
+  done <<EOF
+$(_sources)
+EOF
+  return 1
+}
+
 _list() {
   local f base
   command -v jq >/dev/null 2>&1 || return 0
@@ -97,6 +117,7 @@ set -- "$cmd" "$@"
 case "${1:-}" in
   get)   [ -n "${2:-}" ] || { echo 'usage: config.sh get [--user] <jq-path>' >&2; exit 2; }; _get "$2" ;;
   list)  [ -n "${2:-}" ] || { echo 'usage: config.sh list [--user] <jq-path>' >&2; exit 2; }; _list "$2" ;;
+  has)   [ -n "${2:-}" ] || { echo 'usage: config.sh has [--user] <jq-path>' >&2; exit 2; }; _has "$2" ;;
   files) _files ;;
-  *) echo 'usage: config.sh get|list [--user] <jq-path> | files [--user]' >&2; exit 2 ;;
+  *) echo 'usage: config.sh get|list|has [--user] <jq-path> | files [--user]' >&2; exit 2 ;;
 esac

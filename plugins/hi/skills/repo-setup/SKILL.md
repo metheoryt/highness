@@ -1,6 +1,6 @@
 ---
 name: repo-setup
-description: Set up or re-check one repo for hi workspaces — gortex tracking and index health, the gortex MCP wiring, the Python type view gortex's resolver keys off (a type checker plus ruff annotation rules), the highness launcher, the Orca worktree hooks (a committed orca.yaml and each person's own hook fields), and the repo's own worktree delegate. One status table, then one proposed fix per gap. In "local" mode (the default; config repo_setup.mode) it never writes a file the repo tracks. Use when the user asks to set up, align, onboard or check a repo for gortex or for Orca worktrees.
+description: Set up or re-check one repo for hi workspaces — gortex tracking and index health, the gortex MCP wiring, the Python type view gortex's resolver keys off (a type checker plus ruff annotation rules), the highness launcher, the Orca worktree hooks (a committed orca.yaml and each person's own hook fields), the repo's own worktree delegate, and the Orca board columns hi needs. One status table, then one proposed fix per gap. In "local" mode (the default; config repo_setup.mode) it never writes a file the repo tracks. Use when the user asks to set up, align, onboard or check a repo for gortex or for Orca worktrees.
 ---
 
 # /hi:repo-setup
@@ -143,6 +143,17 @@ any change re-asks every teammate's trust.
   markers; every step stays non-fatal.
 - An existing delegate is never overwritten: `scaffold-delegate` prints the diff against the
   template and exits 1. Show the diff; the user decides.
+
+### board
+
+The Orca board columns `wt.sh board` moves workspaces between, by label: Mains, In progress, In
+review, QA, Done, Review queue, Waiting author, Needs me. The set is per box, not per repo.
+
+- `missing <labels>`: a move to one of these is skipped (`board: Orca has no "<label>" column`).
+  Orca's CLI cannot add a column, so the person adds each by hand, spelled exactly: open the
+  **Workspace board**, its **Board settings** menu → **Statuses** → **Add status**, then **Rename**
+  it to the label. Never write Orca's profile database.
+- `unknown`: the set could not be read; the detail says why.
 
 ## 3. Close
 

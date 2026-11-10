@@ -34,6 +34,19 @@ assert_status "id: a label the set lacks fails" 1 "$?"
 HI_ORCA_BOARD= HI_ORCA_STATE_DB="$SANDBOX/none.db" bash "$BOARD" set >/dev/null 2>&1
 assert_status "set: no database fails" 1 "$?"
 
+# --- board.sh missing: the columns hi needs that the set lacks (#23) -------------------------
+printf 'todo\tTodo\nin-progress\tIn progress\nin-review\tIn review\ncompleted\tDone\n' > "$SANDBOX/defaults.tsv"
+out=$(HI_ORCA_BOARD="$SANDBOX/defaults.tsv" bash "$BOARD" missing); rc=$?
+assert_status "missing: exit 0" 0 "$rc"
+assert_eq "missing: Orca's four default columns lack exactly five" \
+  "$(printf 'Mains\nQA\nReview queue\nWaiting author\nNeeds me')" "$out"
+out=$(HI_ORCA_BOARD= HI_ORCA_STATE_DB="$SNAP" bash "$BOARD" missing)
+assert_eq "missing: from the database" \
+  "$(printf 'In progress\nIn review\nDone\nReview queue\nWaiting author')" "$out"
+out=$(HI_ORCA_BOARD= HI_ORCA_STATE_DB="$SANDBOX/none.db" bash "$BOARD" missing 2>/dev/null); rc=$?
+assert_status "missing: an unreadable set fails" 1 "$rc"
+assert_eq "missing: an unreadable set lists nothing" "" "$out"
+
 # --- wt.sh board ----------------------------------------------------------------------------
 mk_repo; cd "$R"; orca_on
 out=$(bash "$WT" create --kind ticket --key AB-1 --name 'AB-1 · one' --base main --branch task/AB-1-one 2>/dev/null)

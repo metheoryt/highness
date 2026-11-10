@@ -46,6 +46,13 @@
 #                                     whose cwd is in the ticket's `workspace`. The watch wakes the
 #                                     coordinator once per dialog
 #   crew.sh orca                      the Orca executable this host should use
+#   crew.sh setup-status              what hi-crew needs on this machine and from this person, one
+#                                     row per item, name<TAB>state<TAB>detail (/hi:setup renders them):
+#                                       orchestration  on | off            Orca's orchestration CLI answers
+#                                       orca-skill     ok | missing        Orca's orchestration skill installed
+#                                       watch          ok | stale | disabled | missing | unknown
+#                                       crew.agent     set | default | unset   (default: set to null on purpose)
+#                                       crew.model     set | default | unset
 #
 # PR state comes from the config key crew.pr_state, read at the ticket's `root` (the coordinator's
 # git root, recorded at start): a command that prints one JSON object for a PR,
@@ -382,6 +389,57 @@ cmd_watch_install() {
   fi
 }
 
+# One line of an Orca error, for a status row's detail.
+first_err() { printf '%s' "$1" | jq -r '.error.message // .error // empty' 2>/dev/null | head -1; }
+
+cmd_setup_status() {
+  need_jq
+  local O out msg self a k v
+  O=$(orca_cmd)
+  if ! command -v "$O" >/dev/null 2>&1; then
+    printf 'orchestration\toff\tno Orca CLI (%s) on PATH\n' "$O"
+  elif out=$("$O" orchestration run-list --json 2>&1) && [ "$(printf '%s' "$out" | jq -r '.ok // false' 2>/dev/null)" = true ]; then
+    printf 'orchestration\ton\t%s orchestration answers\n' "$O"
+  else
+    msg=$(first_err "$out"); [ -n "$msg" ] || msg=$(printf '%s\n' "$out" | head -1)
+    printf 'orchestration\toff\t%s\n' "${msg:-orchestration run-list failed}"
+  fi
+  if out=$("$O" skills installed --json 2>/dev/null) \
+     && printf '%s' "$out" | jq -e '[.result.skills[]? | select(.name == "orchestration")] | length > 0' >/dev/null 2>&1; then
+    printf 'orca-skill\tok\torchestration\n'
+  elif [ "$(printf '%s' "$out" | jq -r '.ok // false' 2>/dev/null)" = true ]; then
+    printf 'orca-skill\tmissing\tOrca'"'"'s orchestration skill is not installed for the agents\n'
+  else
+    printf 'orca-skill\tunknown\t%s skills installed failed\n' "$O"
+  fi
+  self=$(stable_self)
+  if ! out=$("$O" automations list --json 2>/dev/null) || [ "$(printf '%s' "$out" | jq -r '.ok // false' 2>/dev/null)" != true ]; then
+    printf 'watch\tunknown\t%s automations list failed\n' "$O"
+  else
+    a=$(printf '%s' "$out" | jq -c --arg n "$WATCH_NAME" '[.result.automations[]? | select(.name == $n)][0] // empty')
+    if [ -z "$a" ]; then
+      printf 'watch\tmissing\tno "%s" automation\n' "$WATCH_NAME"
+    elif [ "$(printf '%s' "$a" | jq -r '.enabled')" != true ]; then
+      printf 'watch\tdisabled\t"%s" is turned off\n' "$WATCH_NAME"
+    elif ! printf '%s' "$a" | jq -e --arg s "$self" '(.precheck // "") | contains($s)' >/dev/null 2>&1; then
+      printf 'watch\tstale\tits precheck does not run %s\n' "$self"
+    else
+      printf 'watch\tok\t%s\n' "$(printf '%s' "$a" | jq -r '.rrule // ""')"
+    fi
+  fi
+  for k in agent model; do
+    if v=$(bash "$CONFIG" get ".crew.$k"); then
+      printf 'crew.%s\tset\t%s\n' "$k" "$v"
+    elif a=$(bash "$CONFIG" has ".crew.$k"); then
+      printf 'crew.%s\tdefault\tnull in %s: left to the default on purpose\n' "$k" "$a"
+    elif [ "$k" = agent ]; then
+      printf 'crew.agent\tunset\tworkers run claude\n'
+    else
+      printf 'crew.model\tunset\tworkers get the agent'"'"'s own default, which differs per person\n'
+    fi
+  done
+}
+
 sub=${1:-}; [ $# -gt 0 ] && shift
 case "$sub" in
   dir) printf '%s\n' "$DIR" ;;
@@ -399,5 +457,6 @@ case "$sub" in
   events) cmd_events "$@" ;;
   prompts) cmd_prompts ;;
   orca) orca_cmd ;;
-  *) sed -n '2,59p' "$0" | sed 's/^# \{0,1\}//'; [ -z "$sub" ] || exit 2 ;;
+  setup-status) cmd_setup_status ;;
+  *) sed -n '2,66p' "$0" | sed 's/^# \{0,1\}//'; [ -z "$sub" ] || exit 2 ;;
 esac

@@ -32,4 +32,15 @@ mkdir -p "$T/shop/.claude" && printf '{"x":"team","deny":["t"]}' >"$T/shop/.clau
 check 'repo file wins over every overlay'               "$(g shop get .x)"  team
 check 'list: repo file first'                           "$(g shop list .deny | tr '\n' ' ')" 't r o u '
 if g mine get .nothing >/dev/null; then check 'unset key exits 1' set unset; else check 'unset key exits 1' unset unset; fi
+
+# has: a key set to null counts (a person leaving it to the default on purpose); get does not see it.
+cat >"$T/user2.json" <<'JSON'
+{"crew": {"model": null}, "repos": {"acme": {"crew": {"agent": null}}}}
+JSON
+h() { (cd "$T/$1" && HIGHNESS_CONFIG="$T/user2.json" bash "$C" has "$2" >/dev/null); }
+if h mine .crew.model; then check 'has: a key set to null' yes yes; else check 'has: a key set to null' no yes; fi
+if (cd "$T/mine" && HIGHNESS_CONFIG="$T/user2.json" bash "$C" get .crew.model >/dev/null); then check 'get: null reads unset' set unset; else check 'get: null reads unset' unset unset; fi
+if h mine .crew.agent; then check 'has: an absent key' yes no; else check 'has: an absent key' no no; fi
+if h other .crew.agent; then check 'has: through an owner overlay' yes yes; else check 'has: through an owner overlay' no yes; fi
+if h mine .nothing.deeper; then check 'has: under an absent parent' yes no; else check 'has: under an absent parent' no no; fi
 exit $fail

@@ -314,4 +314,20 @@ out=$(st "$MINE"); assert_eq "delegate: an older us/ delegate counts as local" "
 assert_contains "delegate: detail names it" "$(detail "$out" delegate)" ".git/us/worktree-setup.sh"
 rm -rf "$MINE/.git/us"
 
+# --- status: board (#23) -----------------------------------------------------------
+printf 'todo\tTodo\nin-progress\tIn progress\nin-review\tIn review\ncompleted\tDone\n' > "$SANDBOX/defaults.tsv"
+out=$(HI_ORCA_BOARD="$SANDBOX/defaults.tsv" st "$MINE")
+assert_eq "board: Orca's default columns → missing" "missing" "$(row "$out" board)"
+assert_eq "board: names the five labels to add" "Mains, QA, Review queue, Waiting author, Needs me" "$(detail "$out" board)"
+printf 'a\tMains\nb\tIn progress\nc\tIn review\nd\tQA\ne\tDone\nf\tReview queue\ng\tWaiting author\nh\tNeeds me\n' > "$SANDBOX/full.tsv"
+out=$(HI_ORCA_BOARD="$SANDBOX/full.tsv" st "$MINE"); assert_eq "board: every column → ok" "ok" "$(row "$out" board)"
+out=$(HI_ORCA_STATE_DB="$SANDBOX/none.db" st "$MINE")
+assert_eq "board: an unreadable set → unknown, never all missing" "unknown" "$(row "$out" board)"
+
+# --- launcher / board alone, outside any repo (for /hi:setup) -----------------------
+out=$(cd "$SANDBOX" && HI_ORCA_BOARD="$SANDBOX/defaults.tsv" bash "$RS" board); rc=$?
+assert_status "board verb: no repo needed" 0 "$rc"
+assert_eq "board verb: the row" "$(printf 'board\tmissing\tMains, QA, Review queue, Waiting author, Needs me')" "$out"
+out=$(cd "$SANDBOX" && bash "$RS" launcher); assert_eq "launcher verb: no repo needed" "launcher" "$(printf '%s' "$out" | cut -f1)"
+
 assert_summary
