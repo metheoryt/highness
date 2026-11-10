@@ -98,6 +98,14 @@ assert_eq "watch: from crew.sh" missing "$(row "$out" machine watch)"
 assert_eq "crew.model: in the person section" unset "$(row "$out" person crew.model)"
 assert_eq "crew.agent: in the person section" unset "$(row "$out" person crew.agent)"
 assert_eq "crew rows are not machine rows" "" "$(row "$out" machine crew.model)"
+assert_eq "session-state: this hi-crew registers its hooks" ok "$(row "$out" machine session-state)"
+
+# An older hi-crew: a crew.sh with setup-status, but no session-state hooks.
+OLD="$SANDBOX/old-crew"; mkdir -p "$OLD/lib" "$OLD/hooks"
+cp "$CREW_ROOT/lib/"* "$OLD/lib/"
+printf '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"bash prompt-mark.sh hook"}]}]}}\n' > "$OLD/hooks/hooks.json"
+out=$(cd "$SANDBOX" && FAKE_PLUGINS="$(CREW_ROOT=$OLD plugins hi-crew@highness:user)" bash "$S" status)
+assert_eq "session-state: an older hi-crew → old" old "$(row "$out" machine session-state)"
 
 mkdir -p "$XDG_CONFIG_HOME/highness"
 printf '{"crew":{"agent":"claude","model":null}}\n' > "$XDG_CONFIG_HOME/highness/config.json"

@@ -22,16 +22,19 @@ this skill" printed above, two levels up.
 2. **What blocks a worker**: `bash "$C" asks` — open questions, decision gates, and escalations
    (a worker that stopped without reporting), across the Runs of all open tickets, each with its
    Run. `$O orchestration inbox --limit 100 --full --json` gives the full text.
-   **Workers on a permission dialog**: `bash "$C" prompts` (TSV: key, run, since, tool, kind — `permission`, or `input` for an MCP server's input dialog). Such a
+   **Workers on a dialog**: `bash "$C" prompts` (TSV: key, run, since, tool, kind — `permission`, `input` for an MCP server's input dialog, or `question` for a question form). Such a
    worker waits for someone to click in its terminal and sends no question, so nothing else shows
    it; the person answers it there (`$O terminal list`, or the worker's workspace in Orca).
 3. **Last reports**: `bash "$C" reports` — the latest `worker_done` per dispatch. A report no
    session handled lands here; record what it names (`pr`, `head`).
 4. **What the watch saw**: `bash "$C" events` — PRs merged or closed, CI failures, people's
-   new comments, workers left on a permission dialog, since anyone last looked (TSV: time, key, run, pr, what). When it is empty and
+   new comments, workers left on a dialog, a tool call open too long (a hung command?), since anyone last looked (TSV: time, key, run, pr, what). When it is empty and
    `$O automations list --json` has no "hi-crew watch", offer `bash "$C" watch-install` once.
-5. **Workers**: `$O orchestration worker-list --run <run> --json` for each of `bash "$C" runs` —
-   which are working, idle, finished.
+5. **Workers**: `bash "$C" states` first — each worker's state from its own hooks (TSV: key,
+   run, state, since, kind, open tool, minutes that tool has run, minutes the turn has run;
+   `unknown` when its session has no hook line). Then `$O orchestration worker-list --run <run>
+   --json` for each of `bash "$C" runs` — which are working, idle, finished — for the `unknown` ones
+   and for finished.
 6. **Each ticket's PR** (`pr` in the facts; when missing, find it by the `branch` on the forge, and record it): read its state with the team's forge tool (the `crew.process` text
    says which): open, draft or ready, merged or closed; review rounds; CI; and comments from people
    since the worker's last report. A comment is a person's when it is not the review bot's and does
@@ -43,7 +46,7 @@ this skill" printed above, two levels up.
 One short list, most urgent first, each item with its next step in words:
 
 1. **Waiting on you** — open questions and gates (with the worker's proposals), workers on a
-   permission dialog (since when, which tool), stopped workers, people's new comments on a
+   dialog (since when, which tool), stopped workers, people's new comments on a
    PR, PRs whose review loop finished and that wait for a person to resolve threads and merge.
 2. **Running** — what each worker is doing, from its last report.
 3. **Done since last time** — merged or closed, and reports whose subject starts `already done:`

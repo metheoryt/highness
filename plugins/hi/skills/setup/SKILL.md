@@ -56,6 +56,10 @@ file a repo tracks is a printed proposal, as in `/hi:repo-setup`'s `local` mode.
 - `hi-crew off`: hi-crew is not enabled for workers, so there are no orchestration, watch or crew
   rows. Fix the `plugin:hi-crew` row first and re-run. `hi-crew unknown`: the enabled hi-crew is
   older than this check: `claude plugin update hi-crew@highness`, then re-run.
+- `session-state old`: the enabled hi-crew predates the hooks that keep each session's state
+  (working, blocked, idle), so dispatch and the watch tell a worker's state from its screen alone.
+  The fix is the same update: `claude plugin update hi-crew@highness` in the worker profile; the
+  hooks load at the next session start.
 - `orchestration off`: the detail is Orca's own answer. In Orca 1.4.254 there is no switch for it;
   it is set up in Orca → **Settings → Orchestration → Agent Orchestration**, which installs the
   Orca CLI and the orchestration skill. An older Orca had it under Settings → Experimental. These

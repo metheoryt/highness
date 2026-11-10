@@ -9,6 +9,7 @@
 #
 # Sections and rows:
 #   machine  jq, orca, launcher, plugin:<name> (each highness plugin), hi-crew (its crew.sh),
+#            session-state (that hi-crew registers the session-state hooks),
 #            orchestration, orca-skill, watch (these three from `crew.sh setup-status`), board
 #   person   config, crew.agent, crew.model (from crew.sh), overlay
 #   repo     orca-project, then every row of `repo-setup.sh status` except launcher and board,
@@ -107,6 +108,12 @@ rows_machine() {
     CREW_ROWS=$(cd "${TOP:-.}" && ORCA_CLI_COMMAND=${O:-${ORCA_CLI_COMMAND:-}} bash "$crew" setup-status 2>/dev/null) || CREW_ROWS=''
     if [ -n "$CREW_ROWS" ]; then _row machine hi-crew ok "$crew"
     else _row machine hi-crew unknown "$crew has no setup-status: an older hi-crew, update it"; fi
+    # The session-state hooks (highness#27): without them dispatch and the watch read the screen only.
+    if grep -q 'session-state\.sh' "$(dirname "$(dirname "$crew")")/hooks/hooks.json" 2>/dev/null; then
+      _row machine session-state ok "hi-crew's hooks keep each session's state"
+    else
+      _row machine session-state old "this hi-crew registers no session-state hooks: dispatch and the watch read the screen only; update it"
+    fi
     printf '%s\n' "$CREW_ROWS" | awk -F'\t' 'NF >= 2 && $1 !~ /^crew\./ { print "machine\t" $0 }'
   else
     CREW_ROWS=''

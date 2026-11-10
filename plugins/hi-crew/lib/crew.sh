@@ -39,12 +39,22 @@
 #   crew.sh watch-install [<cron>]    create or update that automation (default every 10 minutes)
 #   crew.sh events [--ack]            watch events no one has seen, TSV: time, key, run, pr, what;
 #                                     --ack marks them seen
-#   crew.sh prompts                   the open tickets whose worker sits on a permission dialog (or
-#                                     an MCP server's input dialog), TSV: key, run, since, tool, kind
-#                                     (permission | input). The plugin's Notification hook marks
-#                                     a session on a dialog (prompt-mark.sh); a worker's is the one
-#                                     whose cwd is in the ticket's `workspace`. The watch wakes the
-#                                     coordinator once per dialog
+#   crew.sh prompts                   the open tickets whose worker sits on a permission dialog, an
+#                                     MCP server's input dialog or a question form, TSV: key, run,
+#                                     since, tool, kind (permission | input | question). The plugin's
+#                                     Notification hook marks a session on a dialog (prompt-mark.sh);
+#                                     its other hooks keep each session's state (session-state.sh),
+#                                     which adds the question forms (AskUserQuestion, ExitPlanMode).
+#                                     A worker's session is the one whose cwd is in the ticket's
+#                                     `workspace`. The watch wakes the coordinator once per dialog
+#   crew.sh states                    what each open ticket's worker is doing, from its own hooks,
+#                                     TSV: key, run, state (working | blocked | idle | unknown),
+#                                     since, kind, open tool, minutes that tool call has run, minutes
+#                                     the turn has run. `unknown`: no hook line to believe (a session
+#                                     started before hi-crew was enabled, another agent, two
+#                                     sessions in one workspace). A tool call open longer than
+#                                     HI_TOOL_STUCK minutes (default 30) is told by the watch once:
+#                                     a hung shell keeps a session "working", and only its age shows
 #   crew.sh orca                      the Orca executable this host should use
 #   crew.sh setup-status              what hi-crew needs on this machine and from this person, one
 #                                     row per item, name<TAB>state<TAB>detail (/hi:setup renders them):
@@ -285,7 +295,7 @@ pr_state() { # <facts json>
 
 cmd_watch() {
   need_jq
-  local w="$DIR/watch" lock="$DIR/watch/lock" t key pr run now snap what hit since tool kind
+  local w="$DIR/watch" lock="$DIR/watch/lock" t key pr run now snap what hit since tool kind hs
   mkdir -p "$w"
   if ! mkdir "$lock" 2>/dev/null; then
     [ -n "$(find "$lock" -maxdepth 0 -mmin +30 2>/dev/null)" ] || return 0  # another watch runs
@@ -301,7 +311,18 @@ cmd_watch() {
       if [ "$(cat "$w/$key.prompt" 2>/dev/null)" != "$since" ]; then
         printf '%s\n' "$since" >"$w/$key.prompt"
         event "$key" "$run" "${pr:-$(printf '%s' "$t" | jq -r '.workspace')}" \
-          "$([ "$kind" = input ] && echo 'waits on an MCP input dialog' || echo 'waits on a permission dialog')${tool:+ for $tool}"
+          "$(case "$kind" in input) echo 'waits on an MCP input dialog' ;; question) echo 'waits on a question form' ;;
+               *) echo 'waits on a permission dialog' ;; esac)${tool:+ for $tool}"
+      fi
+    fi
+    # A tool call open too long: told once per call. Stillness never says "hung"; age does.
+    if hs=$(hook_state "$t") && [ "$(printf '%s' "$hs" | cut -f1)" = working ]; then
+      tool=$(printf '%s' "$hs" | cut -f6); since=$(printf '%s' "$hs" | cut -f7)
+      if [ -n "$tool" ] && [ -n "$since" ] && [ $(( $(date +%s) - since )) -ge $(( ${HI_TOOL_STUCK:-30} * 60 )) ] \
+         && [ "$(cat "$w/$key.tool" 2>/dev/null)" != "$since" ]; then
+        printf '%s\n' "$since" >"$w/$key.tool"
+        event "$key" "$run" "${pr:-$(printf '%s' "$t" | jq -r '.workspace')}" \
+          "has had one $tool call open for $(( ($(date +%s) - since) / 60 )) min — a hung command?"
       fi
     fi
     [ -n "$pr" ] || continue
@@ -316,12 +337,42 @@ cmd_watch() {
 
 PROMPT_MARK="$HERE/prompt-mark.sh"
 
-# since<TAB>tool<TAB>kind when the worker of these facts sits on a dialog; exit 1 otherwise.
-on_prompt() { # <facts json>
+SESSION_STATE="$HERE/session-state.sh"
+
+# The hook line of the worker of these facts (session-state.sh get); exit 1 when none is believed.
+hook_state() { # <facts json>
   local ws
   ws=$(printf '%s' "$1" | jq -r '.workspace // empty')
   [ -n "$ws" ] && [ -d "$ws" ] || return 1
-  bash "$PROMPT_MARK" check "$ws"
+  bash "$SESSION_STATE" get "$ws"
+}
+
+# since<TAB>tool<TAB>kind when the worker of these facts sits on a dialog; exit 1 otherwise.
+# prompt-mark first (it names the tool waiting on a permission); then the hook line, which also
+# knows question forms.
+on_prompt() { # <facts json>
+  local ws hs
+  ws=$(printf '%s' "$1" | jq -r '.workspace // empty')
+  [ -n "$ws" ] && [ -d "$ws" ] || return 1
+  bash "$PROMPT_MARK" check "$ws" && return 0
+  hs=$(hook_state "$1") || return 1
+  [ "$(printf '%s' "$hs" | cut -f1)" = blocked ] || return 1
+  printf '%s\n' "$hs" | awk -F'\t' -v OFS='\t' '{ print $8 "Z", $6, $4 }'
+}
+
+cmd_states() {
+  need_jq
+  local t hs now
+  now=$(date +%s)
+  cmd_list | while IFS= read -r t; do
+    hs=$(hook_state "$t") || hs=''
+    printf '%s\t%s\t' "$(printf '%s' "$t" | jq -r .key)" "$(printf '%s' "$t" | jq -r '.run // ""')"
+    if [ -z "$hs" ]; then printf 'unknown\t\t\t\t\t\n'; continue; fi
+    printf '%s\n' "$hs" | awk -F'\t' -v OFS='\t' -v now="$now" '
+      function mins(e) { return e == "" ? "" : int((now - e) / 60) }
+      { print $1, $8 "Z", $4, $6, ($6 == "" ? "" : mins($7)), mins($5) }'
+  done
+  return 0
 }
 
 cmd_prompts() {
@@ -456,7 +507,8 @@ case "$sub" in
   watch-install) cmd_watch_install "$@" ;;
   events) cmd_events "$@" ;;
   prompts) cmd_prompts ;;
+  states) cmd_states ;;
   orca) orca_cmd ;;
   setup-status) cmd_setup_status ;;
-  *) sed -n '2,66p' "$0" | sed 's/^# \{0,1\}//'; [ -z "$sub" ] || exit 2 ;;
+  *) sed -n '2,77p' "$0" | sed 's/^# \{0,1\}//'; [ -z "$sub" ] || exit 2 ;;
 esac

@@ -120,6 +120,21 @@ printf '%s\n' "   2. No" " Esc to cancel" >> "$FX/tmux-pane"
 bash "$WT" dispatch "$P" --brief "$SANDBOX/brief.md" >/dev/null 2>"$SANDBOX/err"
 assert_status "tmux permission dialog: exit 6" 6 "$?"
 assert_contains "tmux permission dialog: said" "$(cat "$SANDBOX/err")" "opened a dialog and waits for an answer"
+# the new session's own hook line (highness#27): working, written since the launch, ends the watch
+# with no screen read; a line older than the launch (a resumed session's) is not believed
+SD="$XDG_STATE_HOME/highness/sessions"; mkdir -p "$SD"
+sleep 300 & LIVE=$!
+hookline() { # <epoch> — the new session's working line, its agent alive
+  printf 'working\t%s\t-\t-\t-\t-\t%s\t%s\t-\t%s\t-\n' "$1" "$LIVE" "$PP" "$U" > "$SD/$U"; }
+printf '%s\n%s\n' "$RULE" "$TRUST" > "$FX/tmux-pane"
+hookline $(( $(date +%s) + 60 )); reset_log
+bash "$WT" dispatch "$P" --brief "$SANDBOX/brief.md" >/dev/null 2>"$SANDBOX/err"
+assert_status "hook line working since the launch: exit 0" 0 "$?"
+assert_not_contains "hook line working since the launch: no screen read" "$(logged)" "capture-pane"
+hookline $(( $(date +%s) - 60 ))
+bash "$WT" dispatch "$P" --brief "$SANDBOX/brief.md" >/dev/null 2>"$SANDBOX/err"
+assert_status "hook line from before the launch: the screen decides, exit 6" 6 "$?"
+kill "$LIVE" 2>/dev/null; wait "$LIVE" 2>/dev/null; rm -f "$SD/$U"
 printf '%s\n' "❯ Read the brief" "✽ Thinking… (2s)" "$RULE" "❯ " "$RULE" > "$FX/tmux-pane"
 bash "$WT" dispatch "$P" --brief "$SANDBOX/brief.md" >/dev/null 2>"$SANDBOX/err"
 assert_status "tmux turn running: exit 0" 0 "$?"

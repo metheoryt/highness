@@ -4,22 +4,46 @@
       {
         "matcher": "permission_prompt",
         "hooks": [
-          { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/lib/prompt-mark.sh\" hook" }
+          { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/lib/prompt-mark.sh\" hook" },
+          { "type": "command", "command": "HI_AGENT_PID=$PPID bash \"${CLAUDE_PLUGIN_ROOT}/lib/session-state.sh\" hook" }
         ]
       },
       {
         "matcher": "elicitation_dialog",
         "hooks": [
-          { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/lib/prompt-mark.sh\" hook" }
+          { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/lib/prompt-mark.sh\" hook" },
+          { "type": "command", "command": "HI_AGENT_PID=$PPID bash \"${CLAUDE_PLUGIN_ROOT}/lib/session-state.sh\" hook" }
         ]
       }
     ],
     "Stop": [
       {
         "hooks": [
-          { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/lib/prompt-mark.sh\" hook" }
+          { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/lib/prompt-mark.sh\" hook" },
+          { "type": "command", "command": "HI_AGENT_PID=$PPID bash \"${CLAUDE_PLUGIN_ROOT}/lib/session-state.sh\" hook" }
         ]
       }
+    ],
+    "UserPromptSubmit": [
+      { "hooks": [ { "type": "command", "command": "HI_AGENT_PID=$PPID bash \"${CLAUDE_PLUGIN_ROOT}/lib/session-state.sh\" hook" } ] }
+    ],
+    "PreToolUse": [
+      { "hooks": [ { "type": "command", "command": "HI_AGENT_PID=$PPID bash \"${CLAUDE_PLUGIN_ROOT}/lib/session-state.sh\" hook" } ] }
+    ],
+    "PostToolUse": [
+      { "hooks": [ { "type": "command", "command": "HI_AGENT_PID=$PPID bash \"${CLAUDE_PLUGIN_ROOT}/lib/session-state.sh\" hook" } ] }
+    ],
+    "PostToolUseFailure": [
+      { "hooks": [ { "type": "command", "command": "HI_AGENT_PID=$PPID bash \"${CLAUDE_PLUGIN_ROOT}/lib/session-state.sh\" hook" } ] }
+    ],
+    "StopFailure": [
+      { "hooks": [ { "type": "command", "command": "HI_AGENT_PID=$PPID bash \"${CLAUDE_PLUGIN_ROOT}/lib/session-state.sh\" hook" } ] }
+    ],
+    "SessionStart": [
+      { "hooks": [ { "type": "command", "command": "HI_AGENT_PID=$PPID bash \"${CLAUDE_PLUGIN_ROOT}/lib/session-state.sh\" hook" } ] }
+    ],
+    "SessionEnd": [
+      { "hooks": [ { "type": "command", "command": "HI_AGENT_PID=$PPID bash \"${CLAUDE_PLUGIN_ROOT}/lib/session-state.sh\" hook" } ] }
     ]
   }
 }
