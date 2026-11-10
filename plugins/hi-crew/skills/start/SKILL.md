@@ -50,6 +50,15 @@ Below, `$O` stands for that executable.
   and always exits 1, so no agent run ever starts and the automation costs no tokens; Orca's run
   history shows each look as skipped. Run it once per machine, and again after a highness update
   if the automation's history shows errors. Say in one line that you set it up.
+- **Autostart** (off unless the person turns it on in their own config). The watch can also start
+  ready tickets that carry an opt-in label, up to `crew.autostart.max_active` at a time, under the
+  Run of the coordinator session that last asked for its Run on this machine: that session gets
+  their questions. Keys and rules: `bash "$C"` (the `autostart` part of its help);
+  `bash "$C" autostart --dry-run` shows the free slots and what would start. A slot frees when
+  the worker's PR is merged or closed, or, with no PR, when the worker has reported. Each ticket is
+  tried once. Before a start the watch reads the plan usage the person's statusline keeps
+  (`crew.sh usage-save`); at or over `crew.autostart.max_usage_pct` (default 80) it starts nothing.
+  An unknown figure never blocks.
 
 ## Start a ticket
 

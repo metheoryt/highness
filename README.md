@@ -7,7 +7,7 @@ A harness for Claude Code agents, as a plugin marketplace. Each plugin is enable
 | `hi` | `/hi:worktrees` — one workspace per piece of work, over Orca worktrees or plain git worktrees, with lineage, a removal check and a per-tree setup (gortex tracking when gortex is installed, local config links, the repo's own setup script). `/hi:repo-setup` — check and wire a repo for that. `/hi:setup` — check and fix a machine and a person for hi and hi-crew, then the repo. |
 | `hi-guard` | A PreToolUse hook on Bash: denies `sudo` from an agent session (quote-aware, through `bash -c`, `ssh`, `eval`…) and any configured deny pattern. Other tools can add checks. |
 | `hi-docs` | `/hi-docs:write-doc` and `/hi-docs:reader-test` — documents that read in short sittings, tested on a reader with no context. |
-| `hi-crew` | `/hi-crew:start <KEY>` — a worker agent on a ticket, in its own Orca workspace, carrying it to a reviewed pull request and stopping only for a person's decision. `/hi-crew:agenda` — what the workers wait on you for: their questions, people's comments on their PRs, PRs ready to merge. A watch (an Orca automation that never starts an agent) wakes the coordinator when a worker's PR is merged or closed, its CI fails, a person comments, the worker sits on a dialog, or one of its tool calls stays open too long. Its hooks keep one small state line per Claude Code session (working, blocked or idle), which `/hi:worktrees` dispatch reads before the screen. A worker first checks its ticket is not already done (landed on the trunk, a merged PR, the result present) and then reports that instead of opening a PR; any session that does work belonging to an open ticket comments on that ticket. Needs Orca with orchestration turned on, and `jq`. Team settings under `crew` in `.claude/highness.json`: `process`, `agent`, `model`, `marker`, `pr_state`. |
+| `hi-crew` | `/hi-crew:start <KEY>` — a worker agent on a ticket, in its own Orca workspace, carrying it to a reviewed pull request and stopping only for a person's decision. `/hi-crew:agenda` — what the workers wait on you for: their questions, people's comments on their PRs, PRs ready to merge. A watch (an Orca automation that never starts an agent) wakes the coordinator when a worker's PR is merged or closed, its CI fails, a person comments, the worker sits on a dialog, or one of its tool calls stays open too long. Its hooks keep one small state line per Claude Code session (working, blocked or idle), which `/hi:worktrees` dispatch reads before the screen. A worker first checks its ticket is not already done (landed on the trunk, a merged PR, the result present) and then reports that instead of opening a PR; any session that does work belonging to an open ticket comments on that ticket. Needs Orca with orchestration turned on, and `jq`. Team settings under `crew` in `.claude/highness.json`: `process`, `agent`, `model`, `marker`, `pr_state`. Opt-in autostart: the watch starts labelled tickets into free slots, after a check of the plan's usage (see below). |
 
 ## Install
 
@@ -30,6 +30,51 @@ For a team, add the marketplace and the plugins to the repo's `.claude/settings.
    the Orca window; it gives them.
 3. `/hi-crew:start <KEY>`. A key is letters, digits, `.`, `_` and `-` only (`[A-Za-z0-9._-]`), not
    starting with a dot: `repo-24` works, `repo#24` does not.
+
+### Autostart (opt-in)
+
+The watch can start tickets on its own: every 10 minutes it starts ready tickets that carry a label,
+oldest first, into free slots. It is off by default, and every key is read from your own config
+only, since it runs a command and starts agents:
+
+```json
+{"crew": {"autostart": {
+  "enabled": true,
+  "root": "~/work/team-workspace",
+  "candidates": "my-tracker-query --label {{LABEL}} --json",
+  "label": "auto",
+  "max_active": 3
+}}}
+```
+
+- `root`: the coordinator's git root. The team's `crew` settings are read there, the candidates
+  command runs there, and workers start in it unless a ticket names a repo.
+- `candidates`: prints one JSON object per ready ticket, `{"key", "title", "url", "repo"?, "created"?}`.
+  Unset, it lists the root's GitHub issues with the label. Other keys: `repo`, `base`, `run`,
+  `max_usage_pct` (80), `usage_max_age_min` (30). `bash crew.sh` lists them all.
+- Workers join the Run of the coordinator session that last asked for its Run on this machine, so
+  their questions go there. With no such session, nothing starts.
+- A slot is busy while a worker may still work: its PR is open, or it has no PR and has not
+  reported yet. A merged PR frees the slot even when the ticket stays open.
+- Each ticket is tried once (`autostart/tried/<KEY>` in the state dir). One line per start or skip
+  goes to `autostart/log`. `crew.sh autostart --dry-run` shows what it would do.
+
+**Usage check.** Before it starts anything, the watch reads the plan usage of the account Orca
+launches agents on. At or over `max_usage_pct` in the 5-hour or the weekly window, it starts
+nothing. Claude Code hands these figures only to a statusline, so yours has to keep them. Add one
+line to your statusline command, which gets the session JSON on stdin:
+
+```sh
+printf '%s' "$input" | bash <marketplace clone>/plugins/hi-crew/lib/crew.sh usage-save
+```
+
+Known gaps:
+- A figure that is missing, unreadable or older than 30 minutes counts as unknown. Unknown never
+  blocks a start.
+- The figure is only as fresh as the last statusline refresh on that account.
+- Orca has no per-launch account choice, so the watch cannot move a start to a less-used account.
+  It skips the start instead. Switching Orca's selected account would also move your own new
+  sessions.
 
 ## Configuration
 

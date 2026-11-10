@@ -37,6 +37,15 @@
 #                                     Run by the Orca automation below, from its precheck, which then
 #                                     exits 1 so no agent ever starts
 #   crew.sh watch-install [<cron>]    create or update that automation (default every 10 minutes)
+#   crew.sh autostart [--dry-run]     start ready tickets that carry the opt-in label into free
+#                                     slots, under a coordinator's Run (the watch runs it last; off
+#                                     unless crew.autostart.enabled, see "autostart" below).
+#                                     --dry-run writes nothing: the slots, then would-start lines
+#   crew.sh usage [<config dir>]      the plan usage autostart checks, TSV: window, used percent;
+#                                     nothing when unknown
+#   crew.sh usage-save                read Claude Code's statusline JSON on stdin and keep its
+#                                     rate_limits in <config dir>/highness-usage.json for `usage`
+#                                     (call it from your statusline command)
 #   crew.sh events [--ack]            watch events no one has seen, TSV: time, key, run, pr, what;
 #                                     --ack marks them seen
 #   crew.sh prompts                   the open tickets whose worker sits on a permission dialog, an
@@ -333,6 +342,8 @@ cmd_watch() {
     fi
     printf '%s\n' "$now" >"$snap"
   done
+  # Last, with the PR states just read: start labelled tickets into free slots (off by default).
+  cmd_autostart >/dev/null 2>&1 || :
 }
 
 PROMPT_MARK="$HERE/prompt-mark.sh"
@@ -388,6 +399,7 @@ cmd_prompts() {
 # Append one watch event and wake the ticket's coordinator with it.
 event() { # <key> <run> <pr or workspace> <what>
   local w="$DIR/watch" handle
+  mkdir -p "$w"
   printf '%s\t%s\t%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" "$3" "$4" >>"$w/events"
   handle=$(cat "$DIR/handles/$2" 2>/dev/null) || handle=''
   [ -n "$2" ] && [ -n "$handle" ] || return 0
@@ -428,13 +440,13 @@ cmd_watch_install() {
   id=$("$O" automations list --json 2>/dev/null \
     | jq -r --arg n "$WATCH_NAME" '[.result.automations[]? | select(.name == $n) | .id][0] // empty')
   if [ -n "$id" ]; then
-    "$O" automations edit "$id" --trigger "$every" --precheck "$pre" --precheck-timeout 300 --enabled --json >/dev/null \
+    "$O" automations edit "$id" --trigger "$every" --precheck "$pre" --precheck-timeout 600 --enabled --json >/dev/null \
       || die 'could not update the watch automation'
     echo "updated: $WATCH_NAME ($id), $every"
   else
     "$O" automations create --name "$WATCH_NAME" --trigger "$every" --provider "$agent" \
       --prompt 'Nothing to do: hi-crew watch runs in the precheck, which never lets a run start. Stop.' \
-      --precheck "$pre" --precheck-timeout 300 --enabled --json >/dev/null \
+      --precheck "$pre" --precheck-timeout 600 --enabled --json >/dev/null \
       || die 'could not create the watch automation'
     echo "created: $WATCH_NAME, $every"
   fi
@@ -491,6 +503,215 @@ cmd_setup_status() {
   done
 }
 
+# ---- autostart: the watch starts labelled tickets itself (off unless the person turns it on) ----
+#
+# Every key is read from the user's own config (--user): the candidates key runs a command, and
+# turning on agents that start themselves is one person's decision, not something a cloned repo
+# may make for them.
+#   crew.autostart.enabled       true to turn it on (default off)
+#   crew.autostart.root          the coordinator's git root (a ~ is expanded): the team's crew
+#                                settings are read there, the candidates command runs there, and
+#                                it is the `root` of each started ticket's facts. Required
+#   crew.autostart.candidates    a command printing one JSON object per ready ticket that carries
+#                                the label: {"key", "title", "url", "repo"?, "created"?}; {{LABEL}}
+#                                and {{ROOT}} become the shell-quoted label and root. Unset: the
+#                                root's GitHub issues with the label, keyed <repo name>-<number>
+#   crew.autostart.label         the opt-in label (default "auto")
+#   crew.autostart.max_active    slots (default 3)
+#   crew.autostart.repo          Orca repo selector or path for a candidate without "repo"
+#                                (default: the root). A bare path is relative to the root
+#   crew.autostart.base          base branch (default origin/main)
+#   crew.autostart.run           the Run the started workers join (default: the hi-crew Run whose
+#                                coordinator last asked for it here; its terminal sends the start)
+#   crew.autostart.max_usage_pct the plan usage at or over which nothing starts (default 80)
+#   crew.autostart.usage_max_age_min  how old a usage figure may be (default 30)
+#
+# A slot is busy while an open ticket's worker may still work: its PR is not merged or closed,
+# and, with no PR, its dispatch has sent no worker_done. A merged PR frees the slot even when the
+# ticket stays open. A ticket is tried once: autostart/tried/<KEY> is written before the start
+# and never cleared, so a failed start, or a ticket whose facts were closed but which keeps the
+# label, is not picked again (delete the file to let it try again). One log line per start or
+# skip, in autostart/log and on stdout.
+AS_DIR="$DIR/autostart"
+
+as_get() { bash "$CONFIG" get --user ".crew.autostart.$1"; }
+
+as_log() { # <kind> <key> <detail>
+  if [ -n "${AS_DRY:-}" ]; then printf '%s\t%s\t%s\n' "$1" "$2" "$3"; return; fi
+  mkdir -p "$AS_DIR"
+  printf '%s\t%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" "$3" | tee -a "$AS_DIR/log"
+}
+
+as_num() { case "$1" in ''|*[!0-9.]*) printf '%s' "$2" ;; *) printf '%s' "$1" ;; esac; }
+
+# The keys that hold a slot, one per line.
+as_busy() {
+  local done t key pr d st
+  done=$(cmd_reports 2>/dev/null | cut -f2) || done=''
+  cmd_list | while IFS= read -r t; do
+    key=$(printf '%s' "$t" | jq -r .key); pr=$(printf '%s' "$t" | jq -r '.pr // empty')
+    d=$(printf '%s' "$t" | jq -r '.dispatch // empty')
+    if [ -n "$pr" ]; then
+      st=$(jq -r '.state // empty' "$DIR/watch/$key.json" 2>/dev/null) || st=''
+      case "$st" in (merged|closed) continue ;; esac
+    elif [ -n "$d" ] && printf '%s\n' "$done" | grep -qxF "$d"; then
+      continue
+    fi
+    printf '%s\n' "$key"
+  done
+}
+
+# Ready tickets, one JSON object per line, oldest first.
+as_candidates() { # <root> <label>
+  local cmd line name
+  cmd=$(as_get candidates) || cmd=''
+  if [ -z "$cmd" ]; then
+    name=$(git -C "$1" config --get remote.origin.url 2>/dev/null) || return 1
+    name=${name%/}; name=${name%.git}; name=${name##*/}; name=${name##*:}
+    (cd "$1" && gh issue list --label "$2" --state open --limit 100 --json number,title,url,createdAt) 2>/dev/null \
+      | jq -c --arg p "$name" '.[] | {key: "\($p)-\(.number)", title, url, created: .createdAt}' || return 1
+  else
+    line=$(LABEL=$(q "$2") ROOT=$(q "$1") awk '
+      function rep(s, ph, val,   out, i) {
+        out = ""
+        while ((i = index(s, ph)) > 0) { out = out substr(s, 1, i - 1) val; s = substr(s, i + length(ph)) }
+        return out s
+      }
+      { print rep(rep($0, "{{LABEL}}", ENVIRON["LABEL"]), "{{ROOT}}", ENVIRON["ROOT"]) }' <<<"$cmd")
+    (cd "$1" && sh -c "$line") 2>/dev/null | jq -c 'select(type == "object" and (.key | type) == "string")' || return 1
+  fi | jq -sc 'sort_by(.created // "", .key)[]'
+}
+
+# The config dir the next worker runs on: Orca's selected Claude account, else the person's own.
+as_account() {
+  local h
+  h=$("$(orca_cmd)" account list --agent claude --json 2>/dev/null | jq -r '
+    .result.claude as $c | ($c.accounts // [])[] | select(.id == $c.activeAccountId) | .home // empty' 2>/dev/null | head -1) || h=''
+  [ -n "$h" ] && [ -d "$h" ] && { printf '%s\n' "$h"; return; }
+  printf '%s\n' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+}
+
+# usage-save: keep the rate_limits Claude Code gives a statusline, for autostart's usage check.
+cmd_usage_save() {
+  need_jq
+  local d=${CLAUDE_CONFIG_DIR:-$HOME/.claude} f tmp
+  f="$d/highness-usage.json"; tmp="$f.tmp.$$"
+  jq -ce --argjson now "$(date +%s)" '.rate_limits | select(type == "object" and length > 0) | . + {updated_at: $now}' \
+    >"$tmp" 2>/dev/null && mv "$tmp" "$f" || rm -f "$tmp"
+  return 0
+}
+
+# usage <config dir>: "<window>\t<pct>" for each fresh window, nothing when the figure is unknown
+# (no file, bad JSON, older than usage_max_age_min, or a window already reset).
+cmd_usage() {
+  need_jq
+  local age
+  age=$(as_num "$(as_get usage_max_age_min)" 30)
+  jq -r --argjson now "${HI_NOW:-$(date +%s)}" --argjson age "$(awk -v a="$age" 'BEGIN { print int(a * 60) }')" '
+    select(type == "object" and (.updated_at | type) == "number" and ($now - .updated_at) <= $age)
+    | to_entries[] | select((.value | type) == "object")
+    | select((.value.used_percentage | type) == "number" and (.value.resets_at | type) == "number" and .value.resets_at > $now)
+    | "\(.key)\t\(.value.used_percentage)"' "${1:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}}/highness-usage.json" 2>/dev/null
+  return 0
+}
+
+# Prints one line saying how the usage stands; exit 1 when it holds the pass.
+as_usage() {
+  local max acc u over
+  max=$(as_num "$(as_get max_usage_pct)" 80)
+  acc=${HI_ACCOUNT:-$(as_account)}
+  u=$(cmd_usage "$acc")
+  [ -n "$u" ] || { printf 'usage unknown on %s\n' "$acc"; return 0; }
+  over=$(printf '%s\n' "$u" | awk -F'\t' -v m="$max" '$2 + 0 >= m + 0 { printf "%s%s at %s%%", (n++ ? ", " : ""), $1, $2 }')
+  if [ -n "$over" ]; then printf '%s on %s (max %s%%)\n' "$over" "$acc" "$max"; return 1; fi
+  printf 'usage under %s%% on %s\n' "$max" "$acc"
+}
+
+as_start() { # <candidate json> <root> <run> <handle> <dry>
+  local c=$1 root=$2 run=$3 handle=$4 key title url repo base agent model label sf bf out ws path branch err
+  key=$(printf '%s' "$c" | jq -r .key); title=$(printf '%s' "$c" | jq -r '.title // .key')
+  url=$(printf '%s' "$c" | jq -r '.url // ""')
+  repo=$(printf '%s' "$c" | jq -r '.repo // empty'); [ -n "$repo" ] || repo=$(as_get repo) || repo=$root
+  case "$repo" in (id:*|name:*|path:*) ;; (/*) repo="path:$repo" ;; (*) repo="path:$root/$repo" ;; esac
+  base=$(as_get base) || base=origin/main
+  label=$(as_get label) || label=auto
+  if [ -n "$5" ]; then as_log would-start "$key" "$repo from $base: $title"; return 0; fi
+  mkdir -p "$AS_DIR/tried" && date -u +%Y-%m-%dT%H:%M:%SZ >"$AS_DIR/tried/$key"
+  agent=$(cd "$root" && bash "$CONFIG" get '.crew.agent') || agent=claude
+  model=$(cd "$root" && bash "$CONFIG" get '.crew.model') || model=''
+  bf=$(mktemp "${TMPDIR:-/tmp}/hi-crew-brief.XXXXXX") && sf="$bf.spec" || return 1
+  printf 'Started by hi-crew autostart: the ticket carries the label `%s`, and no person has read it\nbefore this start. Read the ticket yourself%s; when it is not clear enough to act on, ask.\n' \
+    "$label" "${url:+ ($url)}" >"$bf"
+  (cd "$root" && bash "$HERE/crew.sh" spec --key "$key" --title "$title" --brief-file "$bf") >"$sf" \
+    || { rm -f "$bf" "$sf"; as_log failed "$key" "could not build the spec"; return 1; }
+  out=$(cd "$root" && "$(orca_cmd)" orchestration worker-start --spec-file "$sf" --task-title "$key: $title" \
+    --worktree new-top-level --repo "$repo" --name "$key" --base-branch "$base" --agent "$agent" \
+    ${model:+--model "$model"} --run "$run" --from "$handle" --timeout-ms 90000 --json 2>&1)
+  local rc=$?
+  rm -f "$bf" "$sf"
+  if [ $rc -ne 0 ] || [ "$(printf '%s' "$out" | jq -r '.ok // false' 2>/dev/null)" != true ]; then
+    err=$(first_err "$out"); [ -n "$err" ] || err=$(printf '%s\n' "$out" | head -1)
+    as_log failed "$key" "worker-start: ${err:-exit $rc}; not retried (rm $AS_DIR/tried/$key to retry)"
+    return 1
+  fi
+  ws=$(printf '%s' "$out" | jq -r '.result.workspace // empty')
+  path=${ws#*::}
+  branch=$(git -C "$path" branch --show-current 2>/dev/null) || branch=''
+  bash "$HERE/crew.sh" record "$key" "$(printf '%s' "$out" | jq -c --arg t "$title" --arg r "$repo" --arg p "$path" \
+      --arg b "$branch" --arg root "$root" --arg a "$agent" --arg m "$model" --arg u "$url" '
+      {title: $t, repo: $r, workspace: $p, branch: $b, dispatch: .result.dispatchId, task: .result.taskId,
+       run: .result.runId, agent: $a, model: $m, root: $root, url: $u, autostart: true}')" \
+    || as_log failed "$key" "started, but its facts were not recorded"
+  event "$key" "$run" "${url:-$path}" "started by autostart in $path"
+  as_log started "$key" "$path"
+}
+
+cmd_autostart() {
+  need_jq
+  local dry='' root label max run handle busy nbusy free cands c key why n=0
+  [ "${1:-}" = --dry-run ] && dry=1
+  AS_DRY=$dry
+  if [ "$(as_get enabled)" != true ]; then
+    [ -n "$dry" ] || return 0
+    echo 'crew: autostart is off (crew.autostart.enabled is not true); showing what it would do' >&2
+  fi
+  root=$(as_get root) || { as_log skip - 'crew.autostart.root is not set'; return 0; }
+  case "$root" in ("~"|"~/"*) root="$HOME${root#\~}" ;; esac
+  [ -d "$root" ] || { as_log skip - "crew.autostart.root $root is not a directory"; return 0; }
+  label=$(as_get label) || label=auto
+  max=$(as_num "$(as_get max_active)" 3)
+  busy=$(as_busy | awk 'NF')
+  nbusy=0; [ -z "$busy" ] || nbusy=$(printf '%s\n' "$busy" | wc -l | tr -d ' ')
+  free=$(( ${max%.*} - nbusy ))
+  [ -z "$dry" ] || printf 'slots\t%s free of %s\tbusy: %s\n' "$free" "${max%.*}" "$(printf '%s' "$busy" | paste -sd, -)"
+  [ "$free" -gt 0 ] || return 0
+  run=$(as_get run) || run=$(ls -t "$DIR/handles" 2>/dev/null | head -1)
+  handle=$(cat "$DIR/handles/$run" 2>/dev/null) || handle=''
+  if [ -z "$run" ] || [ -z "$handle" ]; then
+    as_log skip - "no coordinator to start under${run:+ (Run $run has no terminal here)}: open a session and run /hi-crew:start or /hi-crew:agenda once"
+    [ -n "$dry" ] || return 0
+  fi
+  if why=$(as_usage); then
+    [ -z "$dry" ] || as_log usage - "$why"
+  else
+    as_log skip - "$why; nothing started"
+    [ -n "$dry" ] || return 0
+  fi
+  cands=$(as_candidates "$root" "$label") || { as_log skip - "the candidates command failed in $root"; return 0; }
+  while IFS= read -r c; do
+    [ -n "$c" ] || continue
+    [ "$n" -lt "$free" ] || break
+    key=$(printf '%s' "$c" | jq -r .key)
+    case "$key" in (''|*[!A-Za-z0-9._-]*|.*) as_log skip "$key" 'not a valid ticket key'; continue ;; esac
+    if [ -f "$DIR/$key.json" ]; then continue; fi
+    if [ -f "$AS_DIR/tried/$key" ]; then continue; fi
+    as_start "$c" "$root" "$run" "$handle" "$dry" && n=$((n + 1))
+  done <<EOF
+$cands
+EOF
+  return 0
+}
+
 sub=${1:-}; [ $# -gt 0 ] && shift
 case "$sub" in
   dir) printf '%s\n' "$DIR" ;;
@@ -505,10 +726,13 @@ case "$sub" in
   spec) cmd_spec "$@" ;;
   watch) cmd_watch ;;
   watch-install) cmd_watch_install "$@" ;;
+  autostart) cmd_autostart "$@" ;;
+  usage) cmd_usage "$@" ;;
+  usage-save) cmd_usage_save ;;
   events) cmd_events "$@" ;;
   prompts) cmd_prompts ;;
   states) cmd_states ;;
   orca) orca_cmd ;;
   setup-status) cmd_setup_status ;;
-  *) sed -n '2,77p' "$0" | sed 's/^# \{0,1\}//'; [ -z "$sub" ] || exit 2 ;;
+  *) sed -n '2,/^set -uo/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; [ -z "$sub" ] || exit 2 ;;
 esac
