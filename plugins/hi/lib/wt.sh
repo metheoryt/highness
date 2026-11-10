@@ -907,21 +907,21 @@ EOF
 }
 
 # _claude_json <config dir or empty>: the global config file a Claude Code session started with
-# that CLAUDE_CONFIG_DIR reads — where it keeps folder trust. As Claude Code (2.1.322) and Orca
-# (1.4.254) pick it: <dir>/.config.json when that file exists (an older layout), else
-# <dir>/.claude.json; with no dir, ~/.claude/.config.json, else ~/.claude.json. A symlinked file
-# is followed one level, so the write below replaces its target, not the link.
+# that CLAUDE_CONFIG_DIR reads — where it keeps folder trust. As Claude Code 2.1.322 picks it:
+# <dir>/.config.json (an older layout) when it is a non-empty file, or an empty one with no
+# non-empty .claude.json beside it; else <dir>/.claude.json. With no dir, the first is
+# ~/.claude/.config.json and the second ~/.claude.json. A symlinked file is followed one level,
+# so the write below replaces its target, not the link.
 _claude_json() {
-  local f t
-  if [ -f "${1:-$HOME/.claude}/.config.json" ]; then f="${1:-$HOME/.claude}/.config.json"
-  else f="${1:-$HOME}/.claude.json"; fi
+  local f t c="${1:-$HOME/.claude}/.config.json" j="${1:-$HOME}/.claude.json"
+  if [ -s "$c" ] || { [ -f "$c" ] && [ ! -s "$j" ]; }; then f=$c; else f=$j; fi
   if [ -L "$f" ] && t=$(readlink "$f"); then
     case "$t" in /*) f=$t ;; *) f="$(dirname "$f")/$t" ;; esac
   fi
   printf '%s' "$f"
 }
 
-# _pretrust <workspace> <config dir or empty>: make sure the new session there does not stop on
+# _pretrust <workspace> <config dir or empty> <kind>: make sure the new session there does not stop on
 # Claude Code's folder-trust dialog ("Is this a project you created or one you trust?",
 # highness#9), which nobody watching a dispatched terminal answers. Measured on Claude Code
 # 2.1.322: trust is projects[<path>].hasTrustDialogAccepted in the config file above, keyed by the
@@ -929,14 +929,18 @@ _claude_json() {
 # a trusted folder above a git repo does not count. Trust is the person's decision about this
 # repo's code, so it is copied, never made: the workspace's key is written only when the main
 # checkout or another worktree of the repo is already trusted — in the session's config or in
-# the dispatcher's own. Otherwise the session asks, and dispatch reports the dialog. The write
-# takes the lock Claude Code and Orca take (<file>.lock, a directory) and keeps the file's mode.
+# the dispatcher's own. A review tree holds someone else's branch, whose .claude/ settings the
+# dialog guards: for it only the main checkout's trust counts, as it does for Claude Code itself.
+# Otherwise the session asks, and dispatch reports the dialog. The write takes the lock Claude
+# Code and Orca take (<file>.lock, a directory; Orca treats it as stale only after days, so it is
+# removed on any exit) and keeps the file's mode.
 _pretrust() {
   local w f own keys k tmp n=0
   w=$(cd "$1" 2>/dev/null && pwd -P) || return 0
   f=$(_claude_json "$2"); own=$(_claude_json "${CLAUDE_CONFIG_DIR:-}")
   [ -f "$f" ] || { say "dispatch: no Claude Code config at $f — the session may stop on the folder-trust dialog"; return 0; }
   keys=$( { printf '%s\n' "$MAIN"
+            [ "${3:-}" = review ] ||
             git -C "$MAIN" worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p' |
               while IFS= read -r k; do (cd "$k" 2>/dev/null && pwd -P); done; } |
           jq -Rsc 'split("\n") | map(select(. != "")) | unique')
@@ -951,6 +955,8 @@ _pretrust() {
     sleep 0.2
   done
   tmp="$f.hi-trust.$$"
+  trap "rm -f $(_q "$tmp"); rmdir $(_q "$f.lock") 2>/dev/null" EXIT
+  trap "rm -f $(_q "$tmp"); rmdir $(_q "$f.lock") 2>/dev/null; exit 130" INT TERM
   if cp -p "$f" "$tmp" 2>/dev/null &&
      jq --arg k "$w" 'if (.projects // {} | type) == "object"
                       then .projects[$k] = ((.projects[$k] // {}) + {hasTrustDialogAccepted: true})
@@ -961,6 +967,7 @@ _pretrust() {
     rm -f "$tmp"; say "dispatch: could not write $f — $w not pre-trusted; the session may ask"
   fi
   rmdir "$f.lock" 2>/dev/null
+  trap - EXIT INT TERM
   return 0
 }
 
@@ -982,7 +989,7 @@ _launch_screen() {
 
 # _launch_watch <via> <target>: watch a new session's screen, up to HI_LAUNCH_READS reads
 # (default 10) a second apart. Exit 6 when it shows a dialog: the session waits for an answer
-# nobody gives (highness#9, #22). The screen tail is left in _SEND_SCREEN, and _LAUNCH_TRUST=1
+# nobody gives (highness#9). The screen tail is left in _SEND_SCREEN, and _LAUNCH_TRUST=1
 # when the dialog is folder trust. Exit 0 once a turn runs, or when no dialog was seen.
 _LAUNCH_TRUST=''
 _launch_watch() {
@@ -1135,7 +1142,7 @@ EOF
 $rdirs
 EOF
   dirs="$dirs --settings $(_q "$(_deny_edits "$wt" "$rdirs")")"
-  _pretrust "$wt" "$cfg"
+  _pretrust "$wt" "$cfg" "$kind"
   if [ -n "$resume" ]; then
     uuid=$(printf '%s' "$resume" | LC_ALL=C tr '[:upper:]' '[:lower:]')
     line="$wrap$env$(_q "$CLAUDE") $dirs --resume $uuid${DISPATCH_FLAGS:+ $DISPATCH_FLAGS} $(_q "Read $dst and follow it.")"
@@ -1169,8 +1176,9 @@ EOF
   printf '%s\t%s\t%s\n' "$uuid" "$via" "$handle"
   [ "$via" = print ] && printf 'cd %s && %s\n' "$(_q "$wt")" "$line"
   say "dispatched \"$name\" ($via) — resume: cd $wt && ${cfg:+CLAUDE_CONFIG_DIR=$(_q "$cfg") }claude --resume $uuid"
-  # A started terminal is not a working session: one that opens on a dialog (folder trust, a
-  # read outside the workspace, an MCP server's question) sits there until someone looks.
+  # A started terminal is not a working session: one that opens on a dialog (folder trust, an
+  # MCP server's question) sits there until someone looks. A dialog the turn opens later (a
+  # read outside the workspace) is past this watch, which ends at the first running turn.
   case "$via" in orca|tmux) ;; *) return 0 ;; esac
   if [ -n "$wrap" ]; then
     say "  it starts once gortex has indexed — look at that terminal then; dispatch cannot watch it for a dialog"

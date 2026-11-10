@@ -80,6 +80,21 @@ assert_eq "lock held: not written" false "$(trusted "$CJ" "$PP")"
 assert_contains "lock held: said" "$(cat "$SANDBOX/err")" ".lock is held"
 assert_eq "lock held: left in place" yes "$([ -d "$CJ.lock" ] && echo yes || echo no)"
 rmdir "$CJ.lock"
+# an empty .config.json beside a non-empty .claude.json is not the one read
+D4="$SANDBOX/acct4"; mkdir -p "$D4"; : > "$D4/.config.json"; cfg "$D4/.claude.json" "$O"
+go --config-dir "$D4" >/dev/null
+assert_eq "empty .config.json: .claude.json written" true "$(trusted "$D4/.claude.json" "$PP")"
+# a review tree holds someone else's branch: another worktree's trust is not borrowed for it,
+# only the main checkout's (here from the dispatcher's own config into another account's)
+RV=$(col "$(bash "$WT" create --kind review --key 9 --name 'review 9' --detach "$(git -C "$R" rev-parse HEAD)" 2>/dev/null)" 1)
+RVP=$(cd "$RV" && pwd -P)
+cfg "$CJ" "$O"
+HI_TMUX=none bash "$WT" dispatch "$RV" --brief "$SANDBOX/brief.md" >/dev/null 2>"$SANDBOX/err"
+assert_eq "review: a sibling's trust is not borrowed" false "$(trusted "$CJ" "$RVP")"
+assert_contains "review: says the session will ask" "$(cat "$SANDBOX/err")" "will ask whether to trust $RVP"
+D5="$SANDBOX/acct5"; mkdir -p "$D5"; cfg "$D5/.claude.json"; cfg "$CJ" "$RP"
+HI_TMUX=none bash "$WT" dispatch "$RV" --brief "$SANDBOX/brief.md" --config-dir "$D5" >/dev/null 2>&1
+assert_eq "review: the main checkout's trust is copied" true "$(trusted "$D5/.claude.json" "$RVP")"
 # no config file: none created
 rm -f "$CJ"
 go >/dev/null

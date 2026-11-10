@@ -48,8 +48,9 @@ changes them. A directory that holds the workspace, or sits inside it, is left o
 watching a dispatched terminal answers. Trust stays the person's decision: when the repo's main
 checkout or another of its worktrees is already trusted, the new workspace is trusted in the
 config of the account the session runs under (`--config-dir`, else the caller's
-`CLAUDE_CONFIG_DIR`, else `~/.claude.json`); a repo never trusted is left to ask. A new session
-that still opens on a dialog makes dispatch exit 6 with the screen it shows.
+`CLAUDE_CONFIG_DIR`, else `~/.claude.json`); a repo never trusted is left to ask, and a review
+workspace counts only its main checkout's trust. A new session that still opens on a dialog makes
+dispatch exit 6 with the screen it shows.
 
 For a team repo that cannot carry `.claude/highness.json`, the personal file can set keys per repo,
 by `origin`'s owner or owner/repo (host ignored): `"repos": {"acme": {"docs": {"conventions":
