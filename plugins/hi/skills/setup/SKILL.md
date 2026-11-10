@@ -46,7 +46,9 @@ file a repo tracks is a printed proposal, as in `/hi:repo-setup`'s `local` mode.
 
       CLAUDE_CONFIG_DIR='<profile from the detail>' claude plugin install <name>@highness --scope user
 
-  If it says the marketplace is unknown, first
+  When the plugin is already installed there but disabled (`claude plugin list` shows it with
+  `enabled: false`), the fix is `CLAUDE_CONFIG_DIR='<profile>' claude plugin enable <id>` instead.
+  If install says the marketplace is unknown, first
   `CLAUDE_CONFIG_DIR='<profile>' claude plugin marketplace add metheoryt/highness`. Plugins and
   hooks load at session start: say that the running sessions keep the old set.
 - `plugins unknown`: `claude` is missing or `claude plugin list --json` failed; say so, and that
