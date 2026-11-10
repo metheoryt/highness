@@ -96,6 +96,9 @@ Several tickets: run steps 1–7 for each, then end the turn once.
   user's.
 - **`worker_done`**: show the outcome, the PR link, what is left for a person. Record what became
   known (`bash "$C" record <KEY> '{"pr":"<url>","head":"<sha>"}'`).
+  A subject starting `already done:` means the worker found the work landed already and opened
+  no PR: show its evidence, and offer to close the ticket (if the worker left it open) and
+  `bash "$C" close <KEY>`.
 - **A `status` from the watch** (body starts `hi-crew watch:`; the subject is `<KEY>: <what>`):
   a PR merged or closed, CI failed, or people commented. Then `bash "$C" events --ack`, and
   handle it as `hi-crew:agenda` does: merged or closed → offer to close the facts; CI failed or
@@ -109,3 +112,11 @@ Several tickets: run steps 1–7 for each, then end the turn once.
 
 When the ticket is settled (PR merged or closed), `bash "$C" close <KEY>` and offer to release the
 workspace.
+
+## Work done outside a worker
+
+If this session does work that belongs to an open ticket, its own or another one, comment on that
+ticket before the session ends: what was done and the commit, starting with the marker. A ticket
+whose work is done but not recorded stays open, and the next worker started on it does the work
+again. Workers follow the same rule (their spec says so) and check, before building, that their
+ticket is not already done.
