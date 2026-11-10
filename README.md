@@ -33,9 +33,23 @@ it runs the repo's own tests, code any clone already carries.
   "guard": { "deny_patterns": ["terraform apply"], "exempt_commands": [], "checks": [] },
   "repo_setup": { "mode": "local" },
   "land": { "test": "bash tests/run.sh </dev/null" },
+  "dispatch": { "read_dirs": ["~/plugins/team-skills"] },
   "docs": { "conventions": "docs/writing.md" }
 }
 ```
+
+`dispatch.read_dirs` (personal file only) lists directories a worker started by `wt.sh dispatch`
+may read but never edit — another plugin's skills or reference files, a team checkout outside
+the workspace. Each becomes an `--add-dir` with an Edit deny rule beside it, as the hi plugin's own
+directory already is, so the worker neither stops on "read outside working directory" nor
+changes them. A directory that holds the workspace, or sits inside it, is left out.
+
+`wt.sh dispatch` also keeps a new session off Claude Code's folder-trust dialog, which nobody
+watching a dispatched terminal answers. Trust stays the person's decision: when the repo's main
+checkout or another of its worktrees is already trusted, the new workspace is trusted in the
+config of the account the session runs under (`--config-dir`, else the caller's
+`CLAUDE_CONFIG_DIR`, else `~/.claude.json`); a repo never trusted is left to ask. A new session
+that still opens on a dialog makes dispatch exit 6 with the screen it shows.
 
 For a team repo that cannot carry `.claude/highness.json`, the personal file can set keys per repo,
 by `origin`'s owner or owner/repo (host ignored): `"repos": {"acme": {"docs": {"conventions":
