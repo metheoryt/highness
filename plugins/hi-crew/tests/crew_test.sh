@@ -77,6 +77,17 @@ case "$out" in *'Line & two with {{KEY}} literal.'*) ok 'brief copied verbatim' 
 case "$out" in *'start with `ABC-9: `'*) ok 'key in commit rule' ;; *) no 'key in commit rule' ;; esac
 case "$out" in *'`(agent)`, so people'*) ok 'default marker' ;; *) no 'default marker' ;; esac
 case "$out" in *'(none configured'*) ok 'default process' ;; *) no 'default process' ;; esac
+case "$out" in *'Change files with the Edit/Write tools, never with a python/sed/perl heredoc in Bash.'*) ok 'edit-not-heredoc rule' ;; *) no 'edit-not-heredoc rule' ;; esac
+# The already-done check comes before the worker takes the ticket or changes anything.
+case "$out" in *'check it is not already done (below) before'*'## Already done?'*'## Asking'*) ok 'already-done check, before taking the ticket' ;; *) no 'already-done check, before taking the ticket' ;; esac
+case "$out" in *'Only landed work counts'*'An open pull request, or a branch from an earlier attempt at this ticket, is'*) ok 'only landed work counts as done' ;; *) no 'only landed work counts as done' ;; esac
+case "$out" in *'**All of it is done:** open no pull request.'*'subject that starts `already done:`'*) ok 'already done: no PR, reported as such' ;; *) no 'already done: no PR, reported as such' ;; esac
+case "$out" in *'If you do work that belongs to another open ticket, comment on that ticket'*) ok 'out-of-band work recorded on its ticket' ;; *) no 'out-of-band work recorded on its ticket' ;; esac
+# The coordinator recognizes an already-done report by the subject prefix the spec gives.
+for s in start agenda; do
+  if grep -q '`already done:`' "$HERE/../skills/$s/SKILL.md"; then ok "$s skill reads the already-done subject"; else no "$s skill reads the already-done subject"; fi
+done
+if grep -q 'If this session does work that belongs to an open ticket' "$HERE/../skills/start/SKILL.md"; then ok 'coordinator: out-of-band work rule'; else no 'coordinator: out-of-band work rule'; fi
 printf '{"crew":{"process":"Use the team-task skill.\\nThen the team-pr skill at {{ROOT}}/pr.py.","marker":"[bot]"}}' >"$HIGHNESS_CONFIG"
 out=$(cd "$T" && bash "$C" spec --key ABC-9 --title 'T' --brief-file "$T/brief")
 case "$out" in *'Use the team-task skill.'*'Then the team-pr skill at '*) ok 'process from config' ;; *) no 'process from config' ;; esac
@@ -209,5 +220,43 @@ check 'gh_state' "$GS" '{"state":"open","draft":false,"head":"abc","ci":"failure
 QR=$(bash -c 'source /dev/stdin <<<"$(sed -n "/^q()/p" "$1")"; q "it'"'"'s a b"' _ "$C")
 check 'q quotes one shell word' "$(eval "printf %s $QR")" "it's a b"
 unset ORCA_CLI_COMMAND
+
+# --- setup-status: what /hi:setup shows for hi-crew (#25)
+cat >"$T/bin/setuporca" <<'EOF'
+#!/bin/sh
+case "$1 $2" in
+  "orchestration run-list") [ -n "${FAKE_ORCH_OFF:-}" ] && { echo '{"ok":false,"error":{"message":"orchestration is not enabled"}}'; exit 1; }
+                            echo '{"ok":true,"result":{"runs":[]}}' ;;
+  "skills installed") if [ -n "${FAKE_NO_SKILL:-}" ]; then echo '{"ok":true,"result":{"skills":[{"name":"other"}]}}'
+                      else echo '{"ok":true,"result":{"skills":[{"name":"orchestration"}]}}'; fi ;;
+  "automations list") printf '%s\n' "${FAKE_AUTOS:-{\"ok\":true,\"result\":{\"automations\":[]}}}" ;;
+esac
+EOF
+chmod +x "$T/bin/setuporca"
+ss() { ORCA_CLI_COMMAND="$T/bin/setuporca" bash "$C" setup-status; }
+r() { printf '%s\n' "$1" | awk -F'\t' -v n="$2" '$1 == n { print $2 }'; }
+rm -f "$HIGHNESS_CONFIG"
+out=$(ss)
+check 'setup-status: orchestration on' "$(r "$out" orchestration)" on
+check 'setup-status: orca skill ok' "$(r "$out" orca-skill)" ok
+check 'setup-status: no automation → watch missing' "$(r "$out" watch)" missing
+check 'setup-status: crew.agent unset' "$(r "$out" crew.agent)" unset
+check 'setup-status: crew.model unset' "$(r "$out" crew.model)" unset
+out=$(FAKE_ORCH_OFF=1 FAKE_NO_SKILL=1 ss)
+check 'setup-status: orchestration off' "$(r "$out" orchestration)" off
+case "$out" in *'orchestration is not enabled'*) ok "setup-status: off carries Orca's message" ;; *) no "setup-status: off carries Orca's message" ;; esac
+check 'setup-status: orca skill missing' "$(r "$out" orca-skill)" missing
+SELF="$(cd "$HERE/../lib" && pwd)/crew.sh"
+out=$(FAKE_AUTOS="$(jq -nc --arg p "sh -lic 'bash \"$SELF\" watch'" '{ok:true,result:{automations:[{name:"hi-crew watch",enabled:true,rrule:"*/10 * * * *",precheck:$p}]}}')" ss)
+check 'setup-status: watch runs this crew.sh → ok' "$(r "$out" watch)" ok
+out=$(FAKE_AUTOS='{"ok":true,"result":{"automations":[{"name":"hi-crew watch","enabled":true,"precheck":"bash /gone/crew.sh watch"}]}}' ss)
+check 'setup-status: watch runs another crew.sh → stale' "$(r "$out" watch)" stale
+out=$(FAKE_AUTOS='{"ok":true,"result":{"automations":[{"name":"hi-crew watch","enabled":false,"precheck":""}]}}' ss)
+check 'setup-status: watch turned off → disabled' "$(r "$out" watch)" disabled
+printf '{"crew":{"agent":"codex","model":null}}\n' >"$HIGHNESS_CONFIG"
+out=$(ss)
+check 'setup-status: crew.agent set' "$(r "$out" crew.agent)" set
+check 'setup-status: crew.model null → default on purpose' "$(r "$out" crew.model)" default
+rm -f "$HIGHNESS_CONFIG"
 
 exit $fail

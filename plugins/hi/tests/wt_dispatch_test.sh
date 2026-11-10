@@ -6,6 +6,9 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 . "$HERE/_wt_fixture.sh"
 col() { printf '%s\n' "$1" | cut -f"$2"; }
 U=11111111-2222-3333-4444-555555555555
+# The dispatcher's own CLAUDE_CONFIG_DIR is named on the launch line (wt_dispatch_dialogs_test.sh);
+# these tests read the lines without it.
+unset CLAUDE_CONFIG_DIR
 
 mk_repo; cd "$R"
 row=$(bash "$WT" create --kind ticket --key AB-101 --name 'AB-101 · Retry lock ordering' \
@@ -27,7 +30,7 @@ assert_status "tmux: exit 0" 0 "$rc"
 assert_eq "tmux: stdout uuid/via/handle" "$U	tmux	hi:AB-101 · Retry lock ordering" "$out"
 L=$(logged)
 assert_contains "tmux: session created" "$L" "tmux new-session -d -s hi"
-assert_contains "tmux: window argv" "$L" "tmux new-window -d -t hi: -n AB-101 · Retry lock ordering -c $P claude $AD --session-id $U --name 'AB-101 · Retry lock ordering' 'Read $B and follow it.'"
+assert_contains "tmux: window argv" "$L" "tmux new-window -d -P -F #{window_id} -t hi: -n AB-101 · Retry lock ordering -c $P claude $AD --session-id $U --name 'AB-101 · Retry lock ordering' 'Read $B and follow it.'"
 assert_eq "brief copied into the store" "Start AB-101." "$(cat "$B")"
 assert_eq "record: session" "$U" "$(bash "$WT" rec get --ticket AB-101 session)"
 assert_eq "record: dispatched" tmux "$(bash "$WT" rec get --ticket AB-101 dispatched)"

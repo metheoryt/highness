@@ -94,14 +94,17 @@ the options "Remove the <n> safe ones" (recommended, only the 🗑 rows), "Let m
   `--no-parent`, a bare `git worktree add`): it loses its lineage in the sidebar and in this table.
 
   When the user also said what to do there, write that as a brief (Write tool, a temp file) and run
-  `bash "$L/wt.sh" dispatch <path> --brief <file>` (returns at once, or within ~25 s when a live
+  `bash "$L/wt.sh" dispatch <path> --brief <file>` (a new session: returns within ~10 s, once its
+  hooks or its screen show the turn running, or its screen a dialog; within ~25 s when a live
   session there gets the brief: `via=send` once Orca, the session's hooks or the terminal's screen
   show the turn started; exit 5, `via=unconfirmed`: typed in but not seen taken — show the user the
   screen tail stderr prints and never resend blindly, it could submit twice; exit 3: it is mid-turn
   or on a dialog waiting for an answer, by its hooks (hi-crew) or else its screen (stderr says
   which and shows it),
   `via=busy`, or an Orca chat is open there, `via=chat`: Orca cannot type into a chat, so tell the
-  user to paste the line stderr names into it). Stdout:
+  user to paste the line stderr names into it; exit 6: the new session opened on a dialog — most
+  often Claude Code's folder trust, when nothing of the repo is trusted yet — show the user the
+  screen tail and the terminal; it waits there until someone answers). Stdout:
   `session<TAB>via<TAB>handle`; `via=print` → line 2 is the command for the user to run.
 - **"Land it"** (a `ticket` or `work` workspace whose branch goes straight onto the trunk, no PR) →
   `bash "$L/wt.sh" land <path>`. It merges `origin/<trunk>` into the branch, runs the test command,

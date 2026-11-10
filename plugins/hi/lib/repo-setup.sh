@@ -6,6 +6,8 @@
 # Usage:
 #   repo-setup.sh mode                local | commit
 #   repo-setup.sh status              one row per item: name<TAB>state<TAB>detail
+#   repo-setup.sh launcher            the launcher row alone; needs no repo
+#   repo-setup.sh board               the board row alone; needs no repo
 #   repo-setup.sh guard <path>        exit 0 when this mode allows writing <path>; 1 + reason
 #   repo-setup.sh delegate-path       where the worktree delegate goes in this mode
 #   repo-setup.sh scaffold-delegate   copy the template there; never overwrites
@@ -320,6 +322,21 @@ row_launcher() {
   else _row launcher stale "$f → ${t:-?} (gone; the next session start rewrites it)"; fi
 }
 
+# The Orca board columns hi moves workspaces between (board.sh): ok, missing (the labels this
+# box's Orca lacks, comma-separated; wt.sh board skips a move to any of them), or unknown (the
+# set could not be read — never "all missing"). Orca's CLI has no command that adds a column.
+row_board() {
+  local m err
+  err=$(mktemp "${TMPDIR:-/tmp}/hi-rs.XXXXXX") || err=/dev/null
+  if m=$(bash "$HERE/board.sh" missing 2>"$err"); then
+    if [ -z "$m" ]; then _row board ok 'every column hi uses'
+    else _row board missing "$(printf '%s\n' "$m" | awk 'NR > 1 { printf ", " } { printf "%s", $0 }')"; fi
+  else
+    _row board unknown "$(sed -n 's/^board: //p' "$err" | head -1)"
+  fi
+  [ "$err" = /dev/null ] || rm -f "$err"
+}
+
 TEMPLATE="$HERE/../reference/worktree-setup.template.sh"
 CANDIDATES='.orca/worktree-setup.sh docker/worktree-setup.sh .worktree/setup.sh scripts/worktree-setup.sh'
 
@@ -408,7 +425,9 @@ row_delegate() {
 
 case "${1:-}" in
   mode|status|guard|delegate-path|scaffold-delegate) ;;
-  *) echo 'usage: repo-setup.sh mode | status | guard <path> | delegate-path | scaffold-delegate' >&2; exit 2 ;;
+  launcher) row_launcher; exit 0 ;;
+  board)    row_board; exit 0 ;;
+  *) echo 'usage: repo-setup.sh mode | status | guard <path> | delegate-path | scaffold-delegate | launcher | board' >&2; exit 2 ;;
 esac
 _repo || exit 3
 _mode
@@ -416,7 +435,7 @@ case "$1" in
   mode) printf '%s\n' "$MODE" ;;
   status)
     _row mode "$MODE" "$MODE_WHY"
-    row_gortex; row_wiring; row_checker; row_ann; row_launcher; row_yaml; rows_orca; row_delegate ;;
+    row_gortex; row_wiring; row_checker; row_ann; row_launcher; row_yaml; rows_orca; row_delegate; row_board ;;
   guard)             shift; cmd_guard "$@" ;;
   delegate-path)     cmd_delegate_path ;;
   scaffold-delegate) cmd_scaffold ;;

@@ -61,7 +61,8 @@ usage: wt.sh [--repo PATH] <verb> …   (--repo: run as if from PATH, e.g. a clo
        wt.sh dispatch <path> --brief <file> [--name N] [--resume ID] [--config-dir D]
                     (a live agent session there gets the brief; else a new terminal, which
                     waits out gortex indexing itself; exit 3: that session is mid-turn;
-                    exit 5: typed into it, but not seen taken — look before resending)
+                    exit 5: typed into it, but not seen taken — look before resending;
+                    exit 6: the new session opened on a dialog, e.g. folder trust — answer it)
        wt.sh land [<path>] [--test CMD]   (merge origin/<trunk>, test, check, fast-forward and push
                     the trunk; loops while the trunk moves. CMD default: config land.test)
        wt.sh remove-if-safe <path> | remove-if-landed <path> | remove <path> | sweep
@@ -72,6 +73,7 @@ usage: wt.sh [--repo PATH] <verb> …   (--repo: run as if from PATH, e.g. a clo
 exit: 0 ok · 1 not found or failed · 2 usage, not in a git work tree, or create in an umbrella
       · 3 refused (remove-if-safe; dispatch: a session is mid-turn there; land: a dirty main checkout, a review tree, no test command) · 4 removed, but the directory survived
       · 5 dispatch: the brief was typed into a live session, but no turn start was seen
+      · 6 dispatch: the new session shows a dialog (folder trust, a permission) nobody answers
 U
   exit 2
 }
@@ -766,28 +768,11 @@ _tui_idle() {
        jq -r '.ok // false' 2>/dev/null)" = true ]
 }
 
-# _screen_echo <handle> <prompt>: read that terminal's rendered screen once and set
-# _ECHO to `<where> <count> <state>`: where is `composer` when the prompt sits in the composer (the box between
-# the last two rule lines — a swallowed Enter), else `out`, or `none` when there is no rendered
-# screen or no composer box; count is how often the prompt shows outside the composer; state is
-# what this one read shows — `blocked` (a dialog), `working` (the mode line says a turn runs),
-# `idle`, or `none` with no rendered screen. A running turn is told by motion instead (_moved).
-# Whitespace is dropped before comparing, so a prompt wrapped over several rows still matches.
-# The rows above the composer (all rows, when there is none) are left in _ABOVE for _moved, and
-# the last few non-blank rows in _SEND_SCREEN for the report. Globals, not stdout: a command
-# substitution would lose them.
-_SEND_SCREEN='' _ECHO='' _ABOVE=''
-_screen_echo() {
-  local js want out
-  _ECHO='none 0 none' _ABOVE=''
-  want=$(printf '%s' "$2" | tr -d ' \t\n')
-  js=$("$ORCA" terminal read --terminal "$1" --screen --json 2>/dev/null </dev/null) || return 0
-  # Only a rendered screen counts: an accumulated stream has no composer box to tell apart.
-  [ "$(printf '%s' "$js" | jq -r '.result.terminal.source // ""' 2>/dev/null)" = screen ] || return 0
-  _SEND_SCREEN=$(printf '%s' "$js" | jq -r '.result.terminal.tail // [] | .[]' 2>/dev/null |
-                 awk 'NF { l[++k] = $0 } END { for (i = (k > 8 ? k - 7 : 1); i <= k; i++) print l[i] }')
-  out=$(printf '%s' "$js" | jq -r '.result.terminal.tail // [] | .[]' 2>/dev/null |
-    awk -v want="$want" '
+# _screen_awk <want>: reads a rendered screen's rows on stdin and prints `<where> <count> <state>`
+# as _screen_echo describes them, then the rows above the composer (all rows, when there is
+# none). want must not be empty; pass a byte the screen never shows to ask only for the state.
+_screen_awk() {
+  awk -v want="$1" '
       { line[NR] = $0; t = $0; gsub(/[ \t]/, "", t); r = t; gsub(/─/, "", r)
         if (t != "" && r == "") { a = b; b = NR }
         if (t != "") nb[++k] = NR }
@@ -821,7 +806,30 @@ _screen_echo() {
         for (i = (k > 12 ? k - 11 : 1); i <= k; i++) { s = line[nb[i]]
           if (s ~ /^[ \t]*(⏸|⏵).*esc to interrupt([ \t]|·|$)/) return "working" }
         return "idle"
-      }')
+      }'
+}
+
+# _screen_echo <handle> <prompt>: read that terminal's rendered screen once and set
+# _ECHO to `<where> <count> <state>`: where is `composer` when the prompt sits in the composer (the box between
+# the last two rule lines — a swallowed Enter), else `out`, or `none` when there is no rendered
+# screen or no composer box; count is how often the prompt shows outside the composer; state is
+# what this one read shows — `blocked` (a dialog), `working` (the mode line says a turn runs),
+# `idle`, or `none` with no rendered screen. A running turn is told by motion instead (_moved).
+# Whitespace is dropped before comparing, so a prompt wrapped over several rows still matches.
+# The rows above the composer (all rows, when there is none) are left in _ABOVE for _moved, and
+# the last few non-blank rows in _SEND_SCREEN for the report. Globals, not stdout: a command
+# substitution would lose them.
+_SEND_SCREEN='' _ECHO='' _ABOVE=''
+_screen_echo() {
+  local js want out
+  _ECHO='none 0 none' _ABOVE=''
+  want=$(printf '%s' "$2" | tr -d ' \t\n')
+  js=$("$ORCA" terminal read --terminal "$1" --screen --json 2>/dev/null </dev/null) || return 0
+  # Only a rendered screen counts: an accumulated stream has no composer box to tell apart.
+  [ "$(printf '%s' "$js" | jq -r '.result.terminal.source // ""' 2>/dev/null)" = screen ] || return 0
+  _SEND_SCREEN=$(printf '%s' "$js" | jq -r '.result.terminal.tail // [] | .[]' 2>/dev/null |
+                 awk 'NF { l[++k] = $0 } END { for (i = (k > 8 ? k - 7 : 1); i <= k; i++) print l[i] }')
+  out=$(printf '%s' "$js" | jq -r '.result.terminal.tail // [] | .[]' 2>/dev/null | _screen_awk "$want")
   _ECHO=${out%%"$NL"*}
   case "$out" in *"$NL"*) _ABOVE=${out#*"$NL"} ;; esac
   [ -n "$_ECHO" ] || _ECHO='none 0 none'
@@ -899,8 +907,29 @@ _plugin_dir() {
   (cd "$HERE/.." && pwd -P)
 }
 
-# _deny_edits <workspace>: the `--settings` JSON that denies Edit and Write (an Edit rule covers
-# both) under the plugin root and under the repo's main checkout (highness#14). --add-dir grants
+# _read_dirs <workspace>: the extra read-only dirs a dispatched worker gets (highness#22), one
+# physical path per line, from the config key dispatch.read_dirs — the user's own file only:
+# it opens reads outside the workspace, and a repo's file comes with any clone. `~/` is expanded.
+# A dir that is missing, holds the workspace or lies inside it is left out, and said: the edit
+# deny that comes with it would cover the worker's own tree.
+_read_dirs() {
+  local w d p
+  w=$(cd "$1" 2>/dev/null && pwd -P) || w=$1
+  while IFS= read -r d; do
+    [ -n "$d" ] || continue
+    case "$d" in '~') d=$HOME ;; '~/'*) d="$HOME/${d#'~/'}" ;; esac
+    p=$(cd "$d" 2>/dev/null && pwd -P) || { say "dispatch: dispatch.read_dirs: $d is not a directory — left out"; continue; }
+    case "$w/" in "$p/"*) say "dispatch: dispatch.read_dirs: $p holds the workspace — left out"; continue ;; esac
+    case "$p/" in "$w/"*) say "dispatch: dispatch.read_dirs: $p is inside the workspace — left out"; continue ;; esac
+    printf '%s\n' "$p"
+  done <<EOF
+$(bash "$HERE/config.sh" list --user '.dispatch.read_dirs' 2>/dev/null)
+EOF
+}
+
+# _deny_edits <workspace> [<read dirs>]: the `--settings` JSON that denies Edit and Write (an Edit
+# rule covers both) under the plugin root, the repo's main checkout (highness#14) and each extra
+# read-only dir (newline-separated, from _read_dirs; highness#22). --add-dir grants
 # writes as well as reads: a worker in highness itself, whose plugin root IS the main checkout,
 # edited it with no prompt. A deny rule holds in every permission mode, bypass included (measured
 # 2026-10-09; on a path with a space 2026-11-09). A dir that holds the workspace is left out, or
@@ -908,12 +937,130 @@ _plugin_dir() {
 _deny_edits() {
   local w d rules=''
   w=$(cd "$1" 2>/dev/null && pwd -P) || w=$1
-  for d in "$(_plugin_dir)" "$(cd "$MAIN" 2>/dev/null && pwd -P)"; do
+  while IFS= read -r d; do
     [ -n "$d" ] || continue
     case "$w/" in "$d/"*) continue ;; esac
     rules="$rules${rules:+,}$(jq -cn --arg d "$d" '"Edit(/" + $d + "/**)"')"
-  done
+  done <<EOF
+$(_plugin_dir)
+$(cd "$MAIN" 2>/dev/null && pwd -P)
+${2:-}
+EOF
   printf '{"permissions":{"deny":[%s]}}' "$rules"
+}
+
+# _claude_json <config dir or empty>: the global config file a Claude Code session started with
+# that CLAUDE_CONFIG_DIR reads — where it keeps folder trust. As Claude Code 2.1.322 picks it:
+# <dir>/.config.json (an older layout) when it is a non-empty file, or an empty one with no
+# non-empty .claude.json beside it; else <dir>/.claude.json. With no dir, the first is
+# ~/.claude/.config.json and the second ~/.claude.json. A symlinked file is followed one level,
+# so the write below replaces its target, not the link.
+_claude_json() {
+  local f t c="${1:-$HOME/.claude}/.config.json" j="${1:-$HOME}/.claude.json"
+  if [ -s "$c" ] || { [ -f "$c" ] && [ ! -s "$j" ]; }; then f=$c; else f=$j; fi
+  if [ -L "$f" ] && t=$(readlink "$f"); then
+    case "$t" in /*) f=$t ;; *) f="$(dirname "$f")/$t" ;; esac
+  fi
+  printf '%s' "$f"
+}
+
+# _pretrust <workspace> <config dir or empty> <kind>: make sure the new session there does not stop on
+# Claude Code's folder-trust dialog ("Is this a project you created or one you trust?",
+# highness#9), which nobody watching a dispatched terminal answers. Measured on Claude Code
+# 2.1.322: trust is projects[<path>].hasTrustDialogAccepted in the config file above, keyed by the
+# physical path; a worktree counts as trusted when its own path or its repo's main checkout is;
+# a trusted folder above a git repo does not count. Trust is the person's decision about this
+# repo's code, so it is copied, never made: the workspace's key is written only when the main
+# checkout or another worktree of the repo is already trusted — in the session's config or in
+# the dispatcher's own. A review tree holds someone else's branch, whose .claude/ settings the
+# dialog guards: for it only the main checkout's trust counts, as it does for Claude Code itself.
+# Otherwise the session asks, and dispatch reports the dialog. The write takes the lock Claude
+# Code and Orca take (<file>.lock, a directory; Orca treats it as stale only after days, so it is
+# removed on any exit) and keeps the file's mode.
+_pretrust() {
+  local w f own keys k tmp n=0
+  w=$(cd "$1" 2>/dev/null && pwd -P) || return 0
+  f=$(_claude_json "$2"); own=$(_claude_json "${CLAUDE_CONFIG_DIR:-}")
+  [ -f "$f" ] || { say "dispatch: no Claude Code config at $f — the session may stop on the folder-trust dialog"; return 0; }
+  keys=$( { printf '%s\n' "$MAIN"
+            [ "${3:-}" = review ] ||
+            git -C "$MAIN" worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p' |
+              while IFS= read -r k; do (cd "$k" 2>/dev/null && pwd -P); done; } |
+          jq -Rsc 'split("\n") | map(select(. != "")) | unique')
+  _trust_has "$f" "$(jq -cn --arg w "$w" --arg m "$MAIN" '[$w, $m]')" && return 0
+  _trust_has "$f" "$keys" || { [ "$own" != "$f" ] && [ -f "$own" ] && _trust_has "$own" "$keys"; } || {
+    say "dispatch: this repo is not trusted in $f — the session will ask whether to trust $w"
+    return 0
+  }
+  while ! mkdir "$f.lock" 2>/dev/null; do
+    n=$((n + 1))
+    [ "$n" -ge "${HI_TRUST_TRIES:-10}" ] && { say "dispatch: $f.lock is held — $w not pre-trusted; the session may ask"; return 0; }
+    sleep 0.2
+  done
+  tmp="$f.hi-trust.$$"
+  trap "rm -f $(_q "$tmp"); rmdir $(_q "$f.lock") 2>/dev/null" EXIT
+  trap "rm -f $(_q "$tmp"); rmdir $(_q "$f.lock") 2>/dev/null; exit 130" INT TERM
+  if cp -p "$f" "$tmp" 2>/dev/null &&
+     jq --arg k "$w" 'if (.projects // {} | type) == "object"
+                      then .projects[$k] = ((.projects[$k] // {}) + {hasTrustDialogAccepted: true})
+                      else error("projects is not an object") end' "$f" > "$tmp" 2>/dev/null &&
+     mv "$tmp" "$f"; then
+    say "dispatch: trusted $w in $f, as its repo already is"
+  else
+    rm -f "$tmp"; say "dispatch: could not write $f — $w not pre-trusted; the session may ask"
+  fi
+  rmdir "$f.lock" 2>/dev/null
+  trap - EXIT INT TERM
+  return 0
+}
+
+# _trust_has <config file> <JSON array of paths>: exit 0 when any of them is trusted there.
+_trust_has() {
+  jq -e --argjson ks "$2" '. as $r | any($ks[]; . as $k | $r.projects[$k].hasTrustDialogAccepted? == true)' \
+    "$1" >/dev/null 2>&1
+}
+
+# _launch_screen <via> <target>: the rows a new session's terminal shows now, or nothing — an
+# Orca terminal's rendered screen (never its accumulated stream), or a tmux pane.
+_launch_screen() {
+  case "$1" in
+    orca) "$ORCA" terminal read --terminal "$2" --screen --json 2>/dev/null </dev/null |
+            jq -r 'select(.result.terminal.source == "screen") | .result.terminal.tail // [] | .[]' 2>/dev/null ;;
+    tmux) "${HI_TMUX:-tmux}" capture-pane -p -t "$2" 2>/dev/null </dev/null ;;
+  esac
+}
+
+# _launch_watch <via> <target>: watch a new session's screen, up to HI_LAUNCH_READS reads
+# (default 10) a second apart. Exit 6 when it shows a dialog: the session waits for an answer
+# nobody gives (highness#9). The screen tail is left in _SEND_SCREEN, and _LAUNCH_TRUST=1
+# when the dialog is folder trust. Exit 0 once a turn runs — the session's hook line
+# (<workspace> <session id>, written at or after <started-at>) says working, or the screen's
+# mode line does — or when no dialog was seen. Folder trust comes before any hook runs, so the
+# screen is read either way.
+_LAUNCH_TRUST=''
+_launch_watch() {
+  local n=0 reads=${HI_LAUNCH_READS:-10} scr st hs
+  _LAUNCH_TRUST='' _SEND_SCREEN=''
+  [ -n "$2" ] || return 0
+  while [ "$n" -lt "$reads" ]; do
+    [ "$n" -gt 0 ] && sleep 1
+    n=$((n + 1))
+    if [ -n "${3:-}" ] && hs=$(_hook_state "$3" "${4:-}"); then
+      [ "$(_col "$hs" 1)" = working ] && [ "$(_col "$hs" 2)" -ge "${5:-0}" ] 2>/dev/null && return 0
+    fi
+    scr=$(_launch_screen "$1" "$2")
+    [ -n "$scr" ] || continue
+    st=$(printf '%s\n' "$scr" | _screen_awk "$(printf '\001')" | sed -n '1s/^[^ ]* [^ ]* //p')
+    case "$st" in
+      working) return 0 ;;
+      blocked)
+        _SEND_SCREEN=$(printf '%s\n' "$scr" | awk 'NF { l[++k] = $0 } END { for (i = (k > 8 ? k - 7 : 1); i <= k; i++) print l[i] }')
+        printf '%s\n' "$scr" | tr '[:upper:]' '[:lower:]' |
+          grep -Eq 'trust this folder|a project you created or one you trust' && _LAUNCH_TRUST=1
+        return 6 ;;
+    esac
+  done
+  return 0
 }
 
 # Shell-quote for a line a human reads (and may paste): bare when safe, single-quoted otherwise.
@@ -932,7 +1079,7 @@ _uuid() {
 }
 
 cmd_dispatch() {
-  local before hs src above where sent sstate path="${1:-}" brief='' name='' resume='' cfg='' env='' row wt sel kind key dst dirs uuid line via=print handle='' js T rc tmp wrap state
+  local before hs src above where sent sstate path="${1:-}" brief='' name='' resume='' cfg='' env='' row wt sel kind key dst dirs rdirs d uuid line via=print handle='' wid='' js T rc tmp wrap state
   [ -n "$path" ] || { say 'dispatch: <path> is required'; return 2; }
   shift
   while [ $# -gt 0 ]; do
@@ -950,10 +1097,15 @@ cmd_dispatch() {
   fi
   # --config-dir runs the session on another Claude account;
   # `env` works whether the terminal runs the line through a shell or execs it.
+  # Without it, the session runs on the dispatcher's own account: a tmux window gets the tmux
+  # server's environment, not the caller's (measured on tmux 3.8), so a CLAUDE_CONFIG_DIR the
+  # caller has is named on the line — and folder trust is read from that account's config.
   if [ -n "$cfg" ]; then
     [ -d "$cfg" ] || { say "dispatch: --config-dir $cfg is not a directory"; return 2; }
-    env="env CLAUDE_CONFIG_DIR=$(_q "$cfg") "
+  elif [ -n "${CLAUDE_CONFIG_DIR:-}" ] && [ -d "$CLAUDE_CONFIG_DIR" ]; then
+    cfg=$CLAUDE_CONFIG_DIR
   fi
+  [ -n "$cfg" ] && env="env CLAUDE_CONFIG_DIR=$(_q "$cfg") "
   row=$(_find --path "$path") || { say "dispatch: $path is not a workspace of this repo"; return 1; }
   wt=$(_col "$row" 1); sel=$(_col "$row" 2); kind=$(_col "$row" 5); key=$(_col "$row" 6)
   [ -n "$name" ] || name=$(_col "$row" 7)
@@ -1053,8 +1205,17 @@ EOF
   # both outside its workspace: with blockReadsOutsideWorkingDirectories
   # each one is a permission prompt nobody watches. --add-dir takes several values, so
   # it goes before --session-id/--resume: an option ends its list, the prompt would not.
-  # Both are read, never written: --settings denies edits there (_deny_edits).
-  dirs="--add-dir $(_q "$STORE/briefs") --add-dir $(_q "$(_plugin_dir)") --settings $(_q "$(_deny_edits "$wt")")"
+  # Both are read, never written: --settings denies edits there (_deny_edits). So are the
+  # extra read-only dirs of dispatch.read_dirs (another plugin's files, highness#22).
+  rdirs=$(_read_dirs "$wt")
+  dirs="--add-dir $(_q "$STORE/briefs") --add-dir $(_q "$(_plugin_dir)")"
+  while IFS= read -r d; do
+    [ -n "$d" ] && dirs="$dirs --add-dir $(_q "$d")"
+  done <<EOF
+$rdirs
+EOF
+  dirs="$dirs --settings $(_q "$(_deny_edits "$wt" "$rdirs")")"
+  _pretrust "$wt" "$cfg" "$kind"
   if [ -n "$resume" ]; then
     uuid=$(printf '%s' "$resume" | LC_ALL=C tr '[:upper:]' '[:lower:]')
     line="$wrap$env$(_q "$CLAUDE") $dirs --resume $uuid${DISPATCH_FLAGS:+ $DISPATCH_FLAGS} $(_q "Read $dst and follow it.")"
@@ -1064,6 +1225,7 @@ EOF
     line="$wrap$env$(_q "$CLAUDE") $dirs --session-id $uuid --name $(_q "$name")${DISPATCH_FLAGS:+ $DISPATCH_FLAGS} $(_q "Read $dst and follow it.")"
   fi
 
+  sent=$(date +%s)
   if [ -n "$sel" ] && [ -n "$ORCA" ]; then
     js=$("$ORCA" terminal create --worktree "$(_osel "$sel" "$wt")" --title "$name" --command "$line" --json 2>/dev/null)
     if [ "$(printf '%s' "$js" | jq -r '.ok // false' 2>/dev/null)" = true ]; then
@@ -1076,7 +1238,7 @@ EOF
   T=${HI_TMUX:-tmux}
   if [ "$via" = print ] && [ "$T" != none ] && command -v "$T" >/dev/null 2>&1; then
     "$T" has-session -t hi 2>/dev/null || "$T" new-session -d -s hi -c "$HOME" 2>/dev/null || T=none
-    if [ "$T" != none ] && "$T" new-window -d -t hi: -n "$name" -c "$wt" "$line" 2>/dev/null; then
+    if [ "$T" != none ] && wid=$("$T" new-window -d -P -F '#{window_id}' -t hi: -n "$name" -c "$wt" "$line" 2>/dev/null); then
       via=tmux; handle="hi:$name"
     fi
   fi
@@ -1088,7 +1250,23 @@ EOF
   printf '%s\t%s\t%s\n' "$uuid" "$via" "$handle"
   [ "$via" = print ] && printf 'cd %s && %s\n' "$(_q "$wt")" "$line"
   say "dispatched \"$name\" ($via) — resume: cd $wt && ${cfg:+CLAUDE_CONFIG_DIR=$(_q "$cfg") }claude --resume $uuid"
-  return 0
+  # A started terminal is not a working session: one that opens on a dialog (folder trust, an
+  # MCP server's question) sits there until someone looks. A dialog the turn opens later (a
+  # read outside the workspace) is past this watch, which ends at the first running turn.
+  case "$via" in orca|tmux) ;; *) return 0 ;; esac
+  if [ -n "$wrap" ]; then
+    say "  it starts once gortex has indexed — look at that terminal then; dispatch cannot watch it for a dialog"
+    return 0
+  fi
+  [ "$via" = tmux ] && handle=${wid:-$handle}
+  _launch_watch "$via" "$handle" "$wt" "$uuid" "$sent" && return 0
+  if [ -n "$_LAUNCH_TRUST" ]; then
+    say "dispatch: the new session in $wt stopped on Claude Code's folder-trust dialog — nothing runs until someone answers it in that terminal (or trusts the repo once, then dispatches again)"
+  else
+    say "dispatch: the new session in $wt opened a dialog and waits for an answer — look at that terminal"
+  fi
+  [ -n "$_SEND_SCREEN" ] && say "  screen tail:" && printf '%s\n' "$_SEND_SCREEN" | sed 's/^/    /' >&2
+  return 6
 }
 
 # _pr <kind> <key> <branch>: state<TAB>number<TAB>headRefOid (state lowercased), or none/unknown.

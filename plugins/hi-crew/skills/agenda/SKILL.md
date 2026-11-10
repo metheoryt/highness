@@ -49,7 +49,9 @@ One short list, most urgent first, each item with its next step in words:
    dialog (since when, which tool), stopped workers, people's new comments on a
    PR, PRs whose review loop finished and that wait for a person to resolve threads and merge.
 2. **Running** — what each worker is doing, from its last report.
-3. **Done since last time** — merged or closed; propose closing the facts.
+3. **Done since last time** — merged or closed, and reports whose subject starts `already done:`
+   (the worker found the work landed and opened no PR; show its evidence); propose closing the
+   facts.
 
 Then `bash "$C" events --ack`, propose where to start, and go one topic at a time.
 
