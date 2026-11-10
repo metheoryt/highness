@@ -78,6 +78,16 @@ case "$out" in *'start with `ABC-9: `'*) ok 'key in commit rule' ;; *) no 'key i
 case "$out" in *'`(agent)`, so people'*) ok 'default marker' ;; *) no 'default marker' ;; esac
 case "$out" in *'(none configured'*) ok 'default process' ;; *) no 'default process' ;; esac
 case "$out" in *'Change files with the Edit/Write tools, never with a python/sed/perl heredoc in Bash.'*) ok 'edit-not-heredoc rule' ;; *) no 'edit-not-heredoc rule' ;; esac
+# The already-done check comes before the worker takes the ticket or changes anything.
+case "$out" in *'check it is not already done (below) before'*'## Already done?'*'## Asking'*) ok 'already-done check, before taking the ticket' ;; *) no 'already-done check, before taking the ticket' ;; esac
+case "$out" in *'Only landed work counts'*'An open pull request, or a branch from an earlier attempt at this ticket, is'*) ok 'only landed work counts as done' ;; *) no 'only landed work counts as done' ;; esac
+case "$out" in *'**All of it is done:** open no pull request.'*'subject that starts `already done:`'*) ok 'already done: no PR, reported as such' ;; *) no 'already done: no PR, reported as such' ;; esac
+case "$out" in *'If you do work that belongs to another open ticket, comment on that ticket'*) ok 'out-of-band work recorded on its ticket' ;; *) no 'out-of-band work recorded on its ticket' ;; esac
+# The coordinator recognizes an already-done report by the subject prefix the spec gives.
+for s in start agenda; do
+  if grep -q '`already done:`' "$HERE/../skills/$s/SKILL.md"; then ok "$s skill reads the already-done subject"; else no "$s skill reads the already-done subject"; fi
+done
+if grep -q 'If this session does work that belongs to an open ticket' "$HERE/../skills/start/SKILL.md"; then ok 'coordinator: out-of-band work rule'; else no 'coordinator: out-of-band work rule'; fi
 printf '{"crew":{"process":"Use the team-task skill.\\nThen the team-pr skill at {{ROOT}}/pr.py.","marker":"[bot]"}}' >"$HIGHNESS_CONFIG"
 out=$(cd "$T" && bash "$C" spec --key ABC-9 --title 'T' --brief-file "$T/brief")
 case "$out" in *'Use the team-task skill.'*'Then the team-pr skill at '*) ok 'process from config' ;; *) no 'process from config' ;; esac
