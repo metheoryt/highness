@@ -311,8 +311,8 @@ cmd_watch() {
       if [ "$(cat "$w/$key.prompt" 2>/dev/null)" != "$since" ]; then
         printf '%s\n' "$since" >"$w/$key.prompt"
         event "$key" "$run" "${pr:-$(printf '%s' "$t" | jq -r '.workspace')}" \
-          "$(case "$kind" in input) echo 'waits on an MCP input dialog' ;; question) echo 'waits on a question form' ;;
-               *) echo 'waits on a permission dialog' ;; esac)${tool:+ for $tool}"
+          "$(case "$kind" in (input) echo 'waits on an MCP input dialog' ;; (question) echo 'waits on a question form' ;;
+               (*) echo 'waits on a permission dialog' ;; esac)${tool:+ for $tool}"
       fi
     fi
     # A tool call open too long: told once per call. Stillness never says "hung"; age does.

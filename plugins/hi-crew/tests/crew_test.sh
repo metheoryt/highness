@@ -214,7 +214,7 @@ cat <<'JSON'
 JSON
 EOF
 chmod +x "$W/bin/gh"
-GS=$(PATH="$W/bin:$PATH" bash -c 'source <(sed -n "/^gh_state()/,/^}/p" "$1"); gh_state x "(agent)"' _ "$C")
+GS=$(PATH="$W/bin:$PATH" bash -c 'eval "$(sed -n "/^gh_state()/,/^}/p" "$1")"; gh_state x "(agent)"' _ "$C")
 check 'gh_state' "$GS" '{"state":"open","draft":false,"head":"abc","ci":"failure","people_at":"2026-01-02T00:00:00Z","people":2}'
 
 QR=$(bash -c 'source /dev/stdin <<<"$(sed -n "/^q()/p" "$1")"; q "it'"'"'s a b"' _ "$C")

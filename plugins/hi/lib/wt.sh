@@ -1154,9 +1154,9 @@ EOF
       rm -f "$tmp"
       printf '%s\t%s\t%s\n' "$uuid" busy ''
       if [ "$state" = blocked ]; then
-        say "dispatch: the session in $wt (terminal $handle) $(case "$src" in hooks) echo 'is on a dialog (its hooks say so)' ;; veto) echo 'shows a dialog its hooks did not report' ;; *) echo 'shows a dialog' ;; esac) waiting for an answer — not typing into it; answer it, then rerun dispatch; brief: $dst"
+        say "dispatch: the session in $wt (terminal $handle) $(case "$src" in (hooks) echo 'is on a dialog (its hooks say so)' ;; (veto) echo 'shows a dialog its hooks did not report' ;; (*) echo 'shows a dialog' ;; esac) waiting for an answer — not typing into it; answer it, then rerun dispatch; brief: $dst"
       else
-        say "dispatch: a session is mid-turn in $wt ($(case "$src" in hooks) echo 'its hooks say a turn runs' ;; veto) echo 'its screen shows a turn its hooks did not report' ;; *) echo 'its screen shows a turn running' ;; esac), terminal $handle) — not starting a second one; give it $dst when it is idle, or rerun dispatch then"
+        say "dispatch: a session is mid-turn in $wt ($(case "$src" in (hooks) echo 'its hooks say a turn runs' ;; (veto) echo 'its screen shows a turn its hooks did not report' ;; (*) echo 'its screen shows a turn running' ;; esac), terminal $handle) — not starting a second one; give it $dst when it is idle, or rerun dispatch then"
       fi
       [ -n "$_SEND_SCREEN" ] && say "  screen tail:" && printf '%s\n' "$_SEND_SCREEN" | sed 's/^/    /' >&2
       return 3
@@ -1347,6 +1347,14 @@ _trunk() { git -C "$MAIN" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/de
 
 # _in_trunk <sha>: exit 0 when <sha> is reachable from the remote trunk, or its tree is (a squash
 # merge), so nothing on it is lost.
+# _landed_past <pr head> <HEAD>: HEAD descends from the PR's final head and is itself in trunk.
+_landed_past() {
+  local t
+  [ -n "$1" ] && t=$(_trunk) || return 1
+  git -C "$MAIN" merge-base --is-ancestor "$1" "$2" 2>/dev/null &&
+    git -C "$MAIN" merge-base --is-ancestor "$2" "$t" 2>/dev/null
+}
+
 _in_trunk() {
   local t
   t=$(_trunk) || return 1
@@ -1423,9 +1431,11 @@ _state() {
   [ "$pushed" = no ] && reasons="$reasons;unpushed"
   # A merged or closed PR finishes the work only at its own final head: a reused branch name
   # (a bounced ticket, an adopted branch, commits pushed after the merge) carries an old PR.
+  # Past that head is fine when HEAD still holds it and HEAD is in trunk: `land` merges the trunk
+  # into the branch and fast-forwards the trunk to that merge without pushing the branch.
   case "$pr" in
     merged#*|closed#*) [ "$kind" != review ] && [ "$pushed" = yes ] && [ "$h" != "$oid" ] &&
-                       reasons="$reasons;pr-stale" ;;
+                       ! _landed_past "$oid" "$h" && reasons="$reasons;pr-stale" ;;
   esac
   [ "$memory" = unique ] && reasons="$reasons;memory"
   case "$term" in busy) reasons="$reasons;busy" ;; open) reasons="$reasons;open-window" ;; esac

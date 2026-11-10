@@ -144,6 +144,21 @@ assert_eq "old PR on a reused branch: not safe" no "$(col "$s" 17)"
 assert_contains "old PR on a reused branch: reason pr-stale" "$(col "$s" 18)" pr-stale
 assert_contains "old PR on a reused branch: the owner reads why" "$(bash "$WT" remove-if-safe "$P" 2>/dev/null)" "PR #18 is merged, but HEAD"
 
+# 15. landed by `wt.sh land`: HEAD is a merge of trunk past the PR's head, trunk was fast-forwarded
+# to it and the branch was not pushed again → not stale, safe
+P=$(mk AB-109 landed); (cd "$P" && git commit -q --allow-empty -m work && git push -q origin HEAD)
+PH=$(git -C "$P" rev-parse HEAD); pr task/dev/AB-109-landed MERGED 19 "$PH"
+(cd "$P" && git fetch -q origin && git checkout -q --detach origin/main &&
+  git commit -q --allow-empty -m 'trunk moved' && git push -q origin HEAD:main &&
+  git checkout -q task/dev/AB-109-landed && git fetch -q origin &&
+  git merge -q --no-ff --no-edit origin/main && git push -q origin HEAD:main) 2>/dev/null
+git -C "$R" fetch -q origin
+assert_eq "landed past the PR head: setup merged past it" yes \
+  "$([ "$(git -C "$P" rev-parse HEAD)" != "$PH" ] && git -C "$R" merge-base --is-ancestor "$(git -C "$P" rev-parse HEAD)" origin/main && echo yes || echo no)"
+s=$(st AB-109-landed)
+assert_eq "landed past the PR head: no pr-stale" "" "$(col "$s" 18 | grep -o pr-stale)"
+assert_eq "landed past the PR head: safe" yes "$(col "$s" 17)"
+
 # 13. a command that reads stdin must not eat the remaining rows
 n=$(bash "$WT" list | grep -c .)
 touch "$FX/gh.drain"
