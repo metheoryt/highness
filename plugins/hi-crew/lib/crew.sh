@@ -484,7 +484,7 @@ cmd_setup_status() {
       printf 'watch\tmissing\tno "%s" automation\n' "$WATCH_NAME"
     elif [ "$(printf '%s' "$a" | jq -r '.enabled')" != true ]; then
       printf 'watch\tdisabled\t"%s" is turned off\n' "$WATCH_NAME"
-    elif ! printf '%s' "$a" | jq -e --arg s "$self" '(.precheck // "") | contains($s)' >/dev/null 2>&1; then
+    elif ! printf '%s' "$a" | jq -e --arg s "$self" '(.precheck | if type == "object" then .command else . end // "") | contains($s)' >/dev/null 2>&1; then
       printf 'watch\tstale\tits precheck does not run %s\n' "$self"
     else
       printf 'watch\tok\t%s\n' "$(printf '%s' "$a" | jq -r '.rrule // ""')"

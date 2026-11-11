@@ -249,6 +249,11 @@ check 'setup-status: orca skill missing' "$(r "$out" orca-skill)" missing
 SELF="$(cd "$HERE/../lib" && pwd)/crew.sh"
 out=$(FAKE_AUTOS="$(jq -nc --arg p "sh -lic 'bash \"$SELF\" watch'" '{ok:true,result:{automations:[{name:"hi-crew watch",enabled:true,rrule:"*/10 * * * *",precheck:$p}]}}')" ss)
 check 'setup-status: watch runs this crew.sh → ok' "$(r "$out" watch)" ok
+# Orca 1.4.256 lists the precheck as {command, timeoutSeconds}, not a string.
+out=$(FAKE_AUTOS="$(jq -nc --arg p "sh -lic 'bash \"$SELF\" watch'" '{ok:true,result:{automations:[{name:"hi-crew watch",enabled:true,rrule:"*/10 * * * *",precheck:{command:$p,timeoutSeconds:600}}]}}')" ss)
+check 'setup-status: watch precheck as an object → ok' "$(r "$out" watch)" ok
+out=$(FAKE_AUTOS='{"ok":true,"result":{"automations":[{"name":"hi-crew watch","enabled":true,"precheck":{"command":"bash /gone/crew.sh watch","timeoutSeconds":600}}]}}' ss)
+check 'setup-status: watch precheck object, another crew.sh → stale' "$(r "$out" watch)" stale
 out=$(FAKE_AUTOS='{"ok":true,"result":{"automations":[{"name":"hi-crew watch","enabled":true,"precheck":"bash /gone/crew.sh watch"}]}}' ss)
 check 'setup-status: watch runs another crew.sh → stale' "$(r "$out" watch)" stale
 out=$(FAKE_AUTOS='{"ok":true,"result":{"automations":[{"name":"hi-crew watch","enabled":false,"precheck":""}]}}' ss)
