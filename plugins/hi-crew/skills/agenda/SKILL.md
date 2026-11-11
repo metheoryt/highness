@@ -1,6 +1,6 @@
 ---
 name: agenda
-description: Show what the hi-crew ticket workers wait on the person for — their open questions, people's new comments on their PRs, PRs ready to merge — and what is still running, most urgent first; then work through it, relaying the person's answers to the workers. Use when the user asks "what are the agents waiting on", "agenda", "what's up with my tickets", "crew status", or opens a new session and wants to pick up the workers started from another one.
+description: Show what waits on the person — the hi-crew ticket workers' open questions, people's new comments on their PRs, PRs ready to merge, and the team's own sections (their tickets, their PRs, reviews waiting on them) when the team configured them — and what is still running, most urgent first; then work through it, relaying the person's answers to the workers. Use when the user asks "what are the agents waiting on", "agenda", "what's on me", "what's up with my tickets", "crew status", or opens a new session and wants to pick up the workers started from another one.
 ---
 
 # hi-crew:agenda
@@ -18,7 +18,14 @@ this skill" printed above, two levels up.
 ## 1. Gather
 
 1. `bash "$C" list`: one line per open ticket (facts: key, title, repo, workspace, dispatch, pr…).
-   Empty: say there are no hi-crew workers and stop.
+   **The team's sections**: `bash "$C" sections` — what the team set under `agenda.sections` in
+   `.claude/highness.json` (its tracker and forge: the person's tickets, PRs, reviews waiting),
+   one JSON object per line: `section`, `group` (`you` waits on the person, `others` waits on
+   someone else, `done`), `title`, `next`, `url`, `since`; or `section` and `error` when that
+   source failed (say so in one line, do not guess its content). A ticket the workers already
+   carry shows once, under the worker.
+   No open tickets: skip steps 2–6. No tickets and no sections: say there is nothing on the
+   person from hi-crew and stop.
 2. **What blocks a worker**: `bash "$C" asks` — open questions, decision gates, and escalations
    (a worker that stopped without reporting), across the Runs of all open tickets, each with its
    Run. `$O orchestration inbox --limit 100 --full --json` gives the full text.
@@ -47,11 +54,13 @@ One short list, most urgent first, each item with its next step in words:
 
 1. **Waiting on you** — open questions and gates (with the worker's proposals), workers on a
    dialog (since when, which tool), stopped workers, people's new comments on a
-   PR, PRs whose review loop finished and that wait for a person to resolve threads and merge.
-2. **Running** — what each worker is doing, from its last report.
+   PR, PRs whose review loop finished and that wait for a person to resolve threads and merge;
+   then the sections' `you` items, by section.
+2. **Running** — what each worker is doing, from its last report; then the sections' `others`
+   items (waiting on a reviewer, a bot, a teammate), one line each.
 3. **Done since last time** — merged or closed, and reports whose subject starts `already done:`
    (the worker found the work landed and opened no PR; show its evidence); propose closing the
-   facts.
+   facts. The sections' `done` items go here too.
 
 Then `bash "$C" events --ack`, propose where to start, and go one topic at a time.
 
@@ -67,6 +76,8 @@ and say in one line that Orca now wakes this session, not the other one, for tha
   round: `$O orchestration send --to dispatch:<dispatch> --subject … --body …`, saying what to
   change and how to reply. Record the new dispatch id from the receipt.
 - **Ready to merge**: that is the person's own step; give the link.
+- **A section item**: its `next` says what to do; do it with the team's own tools (the item's
+  `url`, the skill the team's process names). Starting a ticket on a worker is `/hi-crew:start`.
 - **Merged or closed**: `bash "$C" close <KEY>`; offer to release the workspace.
 
 End your turn when the topics are done; Orca wakes this session when a worker reports.

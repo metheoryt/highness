@@ -29,6 +29,16 @@ if bash "$C" record ABC-3 '[1]' 2>/dev/null; then no 'non-object refused'; else 
 mkdir -p "$T/bin"
 cat >"$T/bin/fakeorca" <<'EOF'
 #!/bin/sh
+if [ "$2" = worker-show ]; then
+  case " ${FAKE_SETTLED:-} " in
+    *" $4 "*) echo '{"ok":true,"result":{"state":"succeeded","stage":"settled"}}' ;;
+    *) case " ${FAKE_GONE:-} " in
+         *" $4 "*) echo '{"ok":false,"error":{"code":"dispatch_not_found"}}'; exit 1 ;;
+         *) echo '{"ok":true,"result":{"state":"running","stage":"running"}}' ;;
+       esac ;;
+  esac
+  exit 0
+fi
 if [ "$2" = run-current ]; then
   [ -n "${FAKE_CURRENT:-}" ] || { echo '{"ok":false}'; exit 1; }
   printf '{"ok":true,"result":{"runId":"%s"}}\n' "$FAKE_CURRENT"; exit 0
@@ -65,9 +75,26 @@ bash "$C" record ABC-4 '{"run":"run_def456"}'
 check 'runs: the open tickets'"'"' Runs' "$(bash "$C" runs | tr '\n' ' ')" 'run_abc123 run_def456 '
 check 'asks: open question, live escalation and gate of the open tickets'"'"' Runs only' "$(bash "$C" asks)" "$(printf 'msg_q2\tquestion\trun_abc123\tctx_b\t2026-01-01T11:00:00Z\tOpen one?\nmsg_e1\tescalation\trun_abc123\tctx_c\t2026-01-01T13:00:00Z\tStopped: no token\nmsg_g1\tdecision_gate\trun_def456\tctx_d\t2026-01-01T14:00:00Z\tDeploy to prod?')"
 check 'reports: latest worker_done per dispatch' "$(bash "$C" reports)" "$(printf 'run_abc123\tctx_a\t2026-01-01T09:30:00Z\tsucceeded\tDone A')"
+check 'asks: a settled worker'"'"'s question and gate drop out, its escalation stays' "$(FAKE_SETTLED='ctx_b ctx_c' FAKE_GONE=ctx_d bash "$C" asks | cut -f1 | tr '\n' ' ')" 'msg_e1 '
 bash "$C" close ABC-4
 check 'asks: a closed ticket'"'"'s Run drops out' "$(bash "$C" asks | cut -f1 | tr '\n' ' ')" 'msg_q2 msg_e1 '
 unset ORCA_CLI_COMMAND
+
+# --- the team's digest sections
+S="$T/secrepo"; mkdir -p "$S/.claude"; git -C "$S" init -q
+check 'sections: nothing without agenda.sections' "$(cd "$S" && bash "$C" sections)" ''
+cat >"$S/.claude/highness.json" <<'JSON'
+{"crew": {"marker": "(bot)"},
+ "agenda": {"sections": [
+  {"name": "Tickets", "command": "printf '%s\\n' '{\"group\":\"you\",\"title\":\"T-1\",\"next\":\"start\"}' 'noise' ; printf '{\"title\":\"%s %s\"}\\n' {{ROOT}} {{MARKER}}"},
+  {"name": "Broken", "command": "echo nope >&2; exit 3"},
+  {"name": "Quiet", "command": "true"}
+ ]}}
+JSON
+out=$(cd "$S" && bash "$C" sections)
+check 'sections: each object tagged with its section, placeholders filled' "$(printf '%s\n' "$out" | jq -r 'select(.section == "Tickets") | (.group // "-") + " " + .title' | tr '\n' '|')" "you T-1|- $(cd "$S" && git rev-parse --show-toplevel) (bot)|"
+check 'sections: a failing source shows as an error' "$(printf '%s\n' "$out" | jq -r 'select(.section == "Broken") | .error')" 'exit 3: nope'
+check 'sections: a quiet source gives nothing' "$(printf '%s\n' "$out" | jq -r 'select(.section == "Quiet")' )" ''
 
 # --- spec
 printf 'Line one of the brief.\nLine & two with {{KEY}} literal.\n' >"$T/brief"
@@ -105,6 +132,16 @@ WR=$(cd "$W/root" && git rev-parse --show-toplevel)
 export HIGHNESS_STATE="$W/state"
 cat >"$W/bin/orca" <<'EOF'
 #!/bin/sh
+if [ "$2" = worker-show ]; then
+  case " ${FAKE_SETTLED:-} " in
+    *" $4 "*) echo '{"ok":true,"result":{"state":"succeeded","stage":"settled"}}' ;;
+    *) case " ${FAKE_GONE:-} " in
+         *" $4 "*) echo '{"ok":false,"error":{"code":"dispatch_not_found"}}'; exit 1 ;;
+         *) echo '{"ok":true,"result":{"state":"running","stage":"running"}}' ;;
+       esac ;;
+  esac
+  exit 0
+fi
 if [ "$2" = run-current ]; then printf '{"ok":true,"result":{"runId":"run_w1"}}\n'; exit 0; fi
 printf '%s\n' "$*" >>"$SENT"
 EOF

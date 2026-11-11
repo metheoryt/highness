@@ -19,8 +19,9 @@
 #   crew.sh asks                      what blocks a worker in those Runs, TSV: message id, type
 #                                     (question | decision_gate | escalation), run id, dispatch id,
 #                                     created_at, first line. A question or gate is open while no
-#                                     message carries its id as thread_id; an escalation, while its
-#                                     dispatch has sent no later worker_done.
+#                                     message carries its id as thread_id and its dispatch is live
+#                                     (Orca closes the question of a settled or stopped worker); an
+#                                     escalation, while its dispatch has sent no later worker_done.
 #   crew.sh reports                   the latest worker_done per dispatch in those Runs, TSV:
 #                                     run id, dispatch id, created_at, outcome, subject
 #   crew.sh spec --key K --title T [--brief-file F]
@@ -64,6 +65,9 @@
 #                                     sessions in one workspace). A tool call open longer than
 #                                     HI_TOOL_STUCK minutes (default 30) is told by the watch once:
 #                                     a hung shell keeps a session "working", and only its age shows
+#   crew.sh sections                  the team's own digest sections (config agenda.sections), one
+#                                     JSON object per line: section, group (you | others | done),
+#                                     title, next, url, since; or section and error. See cmd_sections
 #   crew.sh orca                      the Orca executable this host should use
 #   crew.sh setup-status              what hi-crew needs on this machine and from this person, one
 #                                     row per item, name<TAB>state<TAB>detail (/hi:setup renders them):
@@ -201,7 +205,29 @@ cmd_asks() {
     | select(.type != "escalation" or
         (. as $e | [ $m[] | select(.type == "worker_done" and .dispatch == $e.dispatch
                                    and .created_at > $e.created_at) ] | length == 0))
-    | [ .id, .type, .run_id, .dispatch, .created_at, ((.body // .subject // "") | split("\n")[0]) ] | @tsv'
+    | [ .id, .type, .run_id, .dispatch, .created_at, ((.body // .subject // "") | split("\n")[0]) ] | @tsv' \
+    | while IFS=$'\t' read -r id type rest; do
+        d=$(printf '%s' "$rest" | cut -f2)
+        case "$type" in question|decision_gate) dispatch_live "$d" || continue ;; esac
+        printf '%s\t%s\t%s\n' "$id" "$type" "$rest"
+      done
+}
+
+# Whether a worker Dispatch can still take an answer. Orca closes a question whose Dispatch is
+# inactive (reply: dispatch_inactive), so asks drops it: a settled, stopped or vanished worker
+# asks nothing any more. A Dispatch Orca cannot be asked about (no id, an error other than
+# not-found) counts as live, so a question is never hidden on a guess.
+dispatch_live() {
+  [ -n "$1" ] || return 0
+  local out
+  out=$("$(orca_cmd)" orchestration worker-show --dispatch "$1" --json 2>/dev/null)
+  printf '%s' "$out" | jq -e '
+    if .ok == false then (.error.code // "") != "dispatch_not_found"
+    else (.result.stage // "") as $s | (.result.state // "") as $t
+      | ($s | test("^(settled|terminal_missing)$") | not)
+        and ($t | test("^(succeeded|failed|cancelled|canceled|abandoned|stopped)$") | not)
+    end' >/dev/null 2>&1
+  [ $? -ne 1 ]   # 1 is jq's false; no output or unreadable JSON leaves it live
 }
 
 cmd_reports() {
@@ -292,14 +318,49 @@ pr_state() { # <facts json>
   if [ -z "$cmd" ]; then
     case "$pr" in https://github.com/*) gh_state "$pr" "$marker"; return ;; *) return 1 ;; esac
   fi
-  line=$(PR=$(q "$pr") ROOT=$(q "$root") MARKER=$(q "$marker") awk '
+  line=$(PR=$(q "$pr") ROOT=$(q "$root") MARKER=$(q "$marker") fill <<<"$cmd")
+  (cd "$root" && sh -c "$line") 2>/dev/null
+}
+
+# stdin with {{PR}}, {{ROOT}} and {{MARKER}} replaced by $PR, $ROOT and $MARKER (each may be unset).
+fill() {
+  awk '
     function rep(s, ph, val,   out, i) {
       out = ""
       while ((i = index(s, ph)) > 0) { out = out substr(s, 1, i - 1) val; s = substr(s, i + length(ph)) }
       return out s
     }
-    { print rep(rep(rep($0, "{{PR}}", ENVIRON["PR"]), "{{ROOT}}", ENVIRON["ROOT"]), "{{MARKER}}", ENVIRON["MARKER"]) }' <<<"$cmd")
-  (cd "$root" && sh -c "$line") 2>/dev/null
+    { print rep(rep(rep($0, "{{PR}}", ENVIRON["PR"]), "{{ROOT}}", ENVIRON["ROOT"]), "{{MARKER}}", ENVIRON["MARKER"]) }'
+}
+
+# The team's own digest sections (config agenda.sections), so the digest covers more than the
+# workers without hi knowing the team's tracker or forge. Each section is {"name", "command"}; the
+# command runs from this git root with {{ROOT}} and {{MARKER}} filled in, and prints one JSON object
+# per line: {"group": "you|others|done", "title", "next", "url", "since"} (all but title optional).
+# Out: the same objects with "section" added; other lines are skipped. A section whose command fails
+# gives one line with "error" set instead, so a broken source shows rather than vanishes.
+cmd_sections() {
+  need_jq
+  local root secs n i name cmd line out rc
+  root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+  secs=$(cd "$root" && bash "$CONFIG" get '.agenda.sections') || secs=''
+  [ -n "$secs" ] && [ "$secs" != null ] || return 0
+  n=$(printf '%s' "$secs" | jq 'if type == "array" then length else 0 end' 2>/dev/null) || n=0
+  i=0
+  while [ "$i" -lt "${n:-0}" ]; do
+    name=$(printf '%s' "$secs" | jq -r ".[$i].name // \"section $i\"")
+    cmd=$(printf '%s' "$secs" | jq -r ".[$i].command // empty")
+    i=$((i + 1))
+    [ -n "$cmd" ] || continue
+    line=$(ROOT=$(q "$root") MARKER=$(q "$(cd "$root" && bash "$CONFIG" get '.crew.marker' 2>/dev/null || echo '(agent)')") fill <<<"$cmd")
+    out=$(cd "$root" && sh -c "$line" 2>&1); rc=$?
+    if [ "$rc" -ne 0 ]; then
+      jq -cn --arg s "$name" --arg e "$(printf '%s' "$out" | tail -1)" --argjson rc "$rc" \
+        '{section: $s, error: "exit \($rc): \($e)"}'
+      continue
+    fi
+    printf '%s\n' "$out" | jq -Rc --arg s "$name" 'fromjson? | select(type == "object") | {section: $s} + .'
+  done
 }
 
 cmd_watch() {
@@ -732,6 +793,7 @@ case "$sub" in
   events) cmd_events "$@" ;;
   prompts) cmd_prompts ;;
   states) cmd_states ;;
+  sections) cmd_sections ;;
   orca) orca_cmd ;;
   setup-status) cmd_setup_status ;;
   *) sed -n '2,/^set -uo/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; [ -z "$sub" ] || exit 2 ;;
