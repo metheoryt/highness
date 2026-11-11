@@ -10,7 +10,10 @@
 #
 # The marker is a `repos.txt` at the git toplevel of the cwd, and nothing else. Inside a
 # nested clone the toplevel is that clone, so a session there is not "in the umbrella".
-# repos.txt: one `<dir> <origin-url>` per line, `<dir>` relative to the umbrella's MAIN checkout;
+# repos.txt: one `<dir> <origin-url>` per line, `<dir>` relative to the umbrella's MAIN checkout,
+# or to `<main checkout>/<umbrella.dir>` when the umbrella's config sets `umbrella.dir` (an
+# umbrella whose bootstrap clones into a subdirectory: `api` listed, cloned at `repos/api`;
+# the committed `.claude/highness.json` says {"umbrella": {"dir": "repos"}}, see config.sh).
 # `#` comments and blank lines are ignored. A listed dir that is missing, or is not a git
 # toplevel of its own (an empty directory would otherwise answer with the umbrella's origin),
 # is skipped. owner/repo comes from the clone's ACTUAL origin, which is what a PR names; the
@@ -85,15 +88,19 @@ umb_home() {
 }
 
 umb_repos() {
-  local mode="${1:-}" root home dir url rest p top slug
+  local mode="${1:-}" root home base sub dir url rest p top slug
   case "$mode" in ''|--paths) ;; *) umb_usage; return 2 ;; esac
   root=$(umb_root) || { umb_say 'not in an umbrella repo (no repos.txt at the git toplevel)'; return 1; }
   home=$(umb_home) || home=$root
+  base=$home
+  sub=$(cd "$root" && bash "$_UMB_HERE/config.sh" get '.umbrella.dir' 2>/dev/null) || sub=''
+  sub=${sub%/}
+  case "$sub" in ''|.) ;; /*) base=$sub ;; *) base="$home/$sub" ;; esac
   while read -r dir url rest || [ -n "$dir" ]; do
     dir=${dir%$'\r'}; url=${url%$'\r'}
     case "$dir" in ''|'#'*) continue ;; esac
     dir=${dir%/}
-    case "$dir" in /*) p=$dir ;; *) p="$home/$dir" ;; esac
+    case "$dir" in /*) p=$dir ;; *) p="$base/$dir" ;; esac
     [ -d "$p" ] || continue
     p=$(cd "$p" 2>/dev/null && pwd -P) || continue
     [ "$p" != "$root" ] && [ "$p" != "$home" ] || continue   # the umbrella itself is never a nested repo

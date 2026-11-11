@@ -18,7 +18,8 @@ or `work` (a slug, for anything without a ticket). Its record (name, parent, ses
 in `<git-common-dir>/hi/`, shared by every worktree of the repo and never committed.
 
 In an umbrella repo (`bash "$L/umbrella.sh" root` succeeds: a `repos.txt` at the top lists nested
-clones) work on a nested clone runs per clone as `bash "$L/wt.sh" --repo <clone> …`, the clones
+clones; when they are cloned into a subdirectory, the umbrella's `.claude/highness.json` names it
+as `umbrella.dir`) work on a nested clone runs per clone as `bash "$L/wt.sh" --repo <clone> …`, the clones
 from `bash "$L/umbrella.sh" repos --paths`. The table is one table across clones (and the
 umbrella's own) with a repo column; a create goes to the clone the work belongs to (ask when that
 is unclear). Only a change to the umbrella's own files (`repos.txt`, its docs and config) gets a

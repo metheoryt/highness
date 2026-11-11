@@ -111,4 +111,20 @@ assert_contains "issue: says no clone matched" "$out" "0 clones"
 out=$(bash "$U" resolve --issue 'alpha' 2>&1); rc=$?
 assert_status "issue: not repo#n → exit 2" 2 "$rc"
 
+# --- umbrella.dir: the listed dirs live under a subdirectory the config names ---
+SUB="$SANDBOX/sub"
+git init -q -b main "$SUB"
+for c in one two; do
+  git init -q -b main "$SUB/repos/$c"
+  git -C "$SUB/repos/$c" remote add origin "git@github.com:someone/$c.git"
+done
+printf 'one git@github.com:someone/one.git\ntwo git@github.com:someone/two.git\n' > "$SUB/repos.txt"
+assert_eq "umbrella.dir: unset, a listed dir under repos/ is not found" "" "$(cd "$SUB" && bash "$U" repos)"
+mkdir -p "$SUB/.claude"
+printf '{"umbrella": {"dir": "repos/"}}\n' > "$SUB/.claude/highness.json"
+assert_eq "umbrella.dir: set, the listed dirs resolve under it" \
+  "$(printf '%s\tsomeone/one\n%s\tsomeone/two' "$SUB/repos/one" "$SUB/repos/two")" "$(cd "$SUB" && bash "$U" repos)"
+assert_eq "umbrella.dir: resolve --pr finds a clone under it" "$SUB/repos/two" \
+  "$(cd "$SUB" && bash "$U" resolve --pr someone/two#3)"
+
 assert_summary
