@@ -66,7 +66,7 @@
 #                                     HI_TOOL_STUCK minutes (default 30) is told by the watch once:
 #                                     a hung shell keeps a session "working", and only its age shows
 #   crew.sh sections                  the team's own digest sections (config agenda.sections), one
-#                                     JSON object per line: section, group (you | others | done),
+#                                     JSON object per line: section, group (you | others | later | done),
 #                                     title, next, url, since; or section and error. See cmd_sections
 #   crew.sh orca                      the Orca executable this host should use
 #   crew.sh setup-status              what hi-crew needs on this machine and from this person, one
@@ -336,7 +336,8 @@ fill() {
 # The team's own digest sections (config agenda.sections), so the digest covers more than the
 # workers without hi knowing the team's tracker or forge. Each section is {"name", "command"}; the
 # command runs from this git root with {{ROOT}} and {{MARKER}} filled in, and prints one JSON object
-# per line: {"group": "you|others|done", "title", "next", "url", "since"} (all but title optional).
+# per line: {"group": "you|others|later|done", "title", "next", "url", "since"} (all but title
+# optional).
 # Out: the same objects with "section" added; other lines are skipped. A section whose command fails
 # gives one line with "error" set instead, so a broken source shows rather than vanishes.
 cmd_sections() {

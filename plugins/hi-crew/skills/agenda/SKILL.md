@@ -21,7 +21,7 @@ this skill" printed above, two levels up.
    **The team's sections**: `bash "$C" sections` — what the team set under `agenda.sections` in
    `.claude/highness.json` (its tracker and forge: the person's tickets, PRs, reviews waiting),
    one JSON object per line: `section`, `group` (`you` waits on the person, `others` waits on
-   someone else, `done`), `title`, `next`, `url`, `since`; or `section` and `error` when that
+   someone else, `later` not started yet, `done`), `title`, `next`, `url`, `since`; or `section` and `error` when that
    source failed (say so in one line, do not guess its content). A ticket the workers already
    carry shows once, under the worker.
    No open tickets: skip steps 2–6. No tickets and no sections: say there is nothing on the
@@ -57,7 +57,8 @@ One short list, most urgent first, each item with its next step in words:
    PR, PRs whose review loop finished and that wait for a person to resolve threads and merge;
    then the sections' `you` items, by section.
 2. **Running** — what each worker is doing, from its last report; then the sections' `others`
-   items (waiting on a reviewer, a bot, a teammate), one line each.
+   items (waiting on a reviewer, a bot, a teammate), one line each. The `later` items only as a
+   count per section ("and 12 not started"), listed when the person asks.
 3. **Done since last time** — merged or closed, and reports whose subject starts `already done:`
    (the worker found the work landed and opened no PR; show its evidence); propose closing the
    facts. The sections' `done` items go here too.
