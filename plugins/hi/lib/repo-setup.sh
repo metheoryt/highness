@@ -322,7 +322,7 @@ row_launcher() {
   else _row launcher stale "$f → ${t:-?} (gone; the next session start rewrites it)"; fi
 }
 
-# The Orca board columns hi moves workspaces between (board.sh): ok, missing (the labels this
+# The Orca board columns hi itself moves workspaces to (board.sh missing): ok, missing (the labels this
 # box's Orca lacks, comma-separated; wt.sh board skips a move to any of them), or unknown (the
 # set could not be read — never "all missing"). Orca's CLI has no command that adds a column.
 row_board() {

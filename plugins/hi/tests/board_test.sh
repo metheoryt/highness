@@ -38,11 +38,14 @@ assert_status "set: no database fails" 1 "$?"
 printf 'todo\tTodo\nin-progress\tIn progress\nin-review\tIn review\ncompleted\tDone\n' > "$SANDBOX/defaults.tsv"
 out=$(HI_ORCA_BOARD="$SANDBOX/defaults.tsv" bash "$BOARD" missing); rc=$?
 assert_status "missing: exit 0" 0 "$rc"
-assert_eq "missing: Orca's four default columns lack exactly five" \
-  "$(printf 'Mains\nQA\nReview queue\nWaiting author\nNeeds me')" "$out"
+assert_eq "missing: of the columns hi moves to, Orca's defaults lack only Review queue" "Review queue" "$out"
+out=$(HI_ORCA_BOARD="$SANDBOX/defaults.tsv" bash "$BOARD" missing mains qa waiting_author needs_me)
+assert_eq "missing: named columns, for a plugin that moves to others" \
+  "$(printf 'Mains\nQA\nWaiting author\nNeeds me')" "$out"
+HI_ORCA_BOARD="$SANDBOX/defaults.tsv" bash "$BOARD" missing nope >/dev/null 2>&1
+assert_status "missing: an unknown column is a usage error" 2 "$?"
 out=$(HI_ORCA_BOARD= HI_ORCA_STATE_DB="$SNAP" bash "$BOARD" missing)
-assert_eq "missing: from the database" \
-  "$(printf 'In progress\nIn review\nDone\nReview queue\nWaiting author')" "$out"
+assert_eq "missing: from the database" "$(printf 'In progress\nReview queue')" "$out"
 out=$(HI_ORCA_BOARD= HI_ORCA_STATE_DB="$SANDBOX/none.db" bash "$BOARD" missing 2>/dev/null); rc=$?
 assert_status "missing: an unreadable set fails" 1 "$rc"
 assert_eq "missing: an unreadable set lists nothing" "" "$out"

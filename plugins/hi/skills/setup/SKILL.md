@@ -69,7 +69,8 @@ file a repo tracks is a printed proposal, as in `/hi:repo-setup`'s `local` mode.
 - `watch missing` / `disabled` / `stale`: `bash <hi-crew lib>/crew.sh watch-install` (the crew.sh
   next to the hi-crew the `plugin:hi-crew` row found). `stale`: the automation runs a crew.sh
   from another install; the same command repoints it.
-- `board missing <labels>`: the workspace board lacks columns hi moves workspaces to; `wt.sh
+- `board missing <labels>`: the workspace board lacks a column hi moves workspaces to (In
+  progress, Review queue); `wt.sh
   board` skips a move to a missing one, so a workspace waiting on the person never shows it.
   Orca's CLI cannot add a column (1.4.254: no command for it; `worktree set --workspace-status`
   only takes an existing id). The person adds each label by hand, spelled exactly: in Orca, open

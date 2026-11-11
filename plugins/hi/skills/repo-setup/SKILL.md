@@ -146,8 +146,10 @@ any change re-asks every teammate's trust.
 
 ### board
 
-The Orca board columns `wt.sh board` moves workspaces between, by label: Mains, In progress, In
-review, QA, Done, Review queue, Waiting author, Needs me. The set is per box, not per repo.
+The Orca board columns hi itself moves workspaces to, by label: **In progress** (`wt.sh create`
+puts every new workspace there) and **Review queue** (a review workspace). The set is per box,
+not per repo. `wt.sh board` knows more columns (Mains, In review, QA, Done, Waiting author, Needs
+me) for a plugin built on it, which checks those itself (`board.sh missing <column> ...`).
 
 - `missing <labels>`: a move to one of these is skipped (`board: Orca has no "<label>" column`).
   Orca's CLI cannot add a column, so the person adds each by hand, spelled exactly: open the

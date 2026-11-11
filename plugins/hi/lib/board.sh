@@ -16,9 +16,13 @@
 #   board.sh set          id<TAB>label<TAB>column, one per Orca column; column is the name
 #                         below whose label it carries, empty for any other column
 #   board.sh id <column>  the id of one of the columns below; exit 1 when the set lacks it
-#   board.sh missing      the label of each column below the set lacks, one per line (nothing
+#   board.sh missing [column ...]
+#                         the label of each named column the set lacks, one per line (nothing
 #                         when it has them all); exit 1 when the set cannot be read, so an
-#                         unreadable set never reads as "every column missing"
+#                         unreadable set never reads as "every column missing". No column named:
+#                         the ones hi itself moves workspaces to ($HI_COLUMNS: wt.sh create puts
+#                         a new workspace in active, a review one in review_queue). The other
+#                         columns are for a plugin built on wt.sh board, which checks its own.
 #
 # Columns (the label each one looks for):
 #   mains=Mains  active=In progress  in_review=In review  qa=QA  done=Done
@@ -31,6 +35,7 @@ set -uo pipefail
 say() { printf 'board: %s\n' "$*" >&2; }
 
 COLUMNS='mains active in_review qa done review_queue waiting_author needs_me'
+HI_COLUMNS='active review_queue'
 
 label_of_column() {
   case "$1" in
@@ -110,10 +115,13 @@ case "${1:-}" in
     [ -n "$id" ] || { say "Orca has no \"$want\" column"; exit 1; }
     printf '%s\n' "$id" ;;
   missing)
+    shift
+    [ $# -gt 0 ] || set -- $HI_COLUMNS
+    for c in "$@"; do label_of_column "$c" >/dev/null || { say "unknown column [$c]"; exit 2; }; done
     s=$(the_set) || exit 1
-    for c in $COLUMNS; do
+    for c in "$@"; do
       l=$(label_of_column "$c")
       printf '%s\n' "$s" | awk -F'\t' -v l="$l" '$2 == l { f = 1 } END { exit !f }' || printf '%s\n' "$l"
     done ;;
-  *) echo 'usage: board.sh set | id <column> | missing' >&2; exit 2 ;;
+  *) echo 'usage: board.sh set | id <column> | missing [column ...]' >&2; exit 2 ;;
 esac
