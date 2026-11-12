@@ -478,16 +478,54 @@ cmd_events() {
   return 0
 }
 
+# The physical path of an existing file: every symlink on the way resolved (the file's own too),
+# without readlink -f, which BSD lacks. Fails when the file or its directory does not exist.
+phys() { # <file>
+  local f=$1 d l n=0
+  while :; do
+    d=$(cd -P "$(dirname "$f")" 2>/dev/null && pwd -P) || return 1
+    f="$d/$(basename "$f")"
+    [ -L "$f" ] || break
+    n=$((n + 1)); [ "$n" -le 40 ] || return 1
+    l=$(readlink "$f") || return 1
+    case "$l" in /*) f=$l ;; *) f="$d/$l" ;; esac
+  done
+  [ -f "$f" ] || return 1
+  printf '%s\n' "$f"
+}
+
 # The plugin cache path carries the version and moves with each update; the marketplace clone
-# beside it does not, so the automation names that copy when there is one.
+# beside it does not, so the automation names that copy when there is one. The path is physical:
+# a profile that reaches the plugin through a symlink (skills/hi-crew -> a checkout), or several
+# profiles linking the same checkout, all name the same file, so the watch reads the same from each.
 stable_self() {
+  local s="$HERE/crew.sh" p
   case "$HERE" in
     */plugins/cache/*/lib)
-      local base=${HERE%%/plugins/cache/*} rest=${HERE#*/plugins/cache/} s
-      s="$base/plugins/marketplaces/${rest%%/*}/plugins/hi-crew/lib/crew.sh"
-      [ -f "$s" ] && { printf '%s\n' "$s"; return; } ;;
+      local base=${HERE%%/plugins/cache/*} rest=${HERE#*/plugins/cache/} m
+      m="$base/plugins/marketplaces/${rest%%/*}/plugins/hi-crew/lib/crew.sh"
+      [ -f "$m" ] && s=$m ;;
   esac
-  printf '%s\n' "$HERE/crew.sh"
+  p=$(phys "$s") && s=$p
+  printf '%s\n' "$s"
+}
+
+# The crew.sh a watch precheck runs: `bash "<path>" watch`, or the unquoted `bash <path> watch`.
+precheck_self() { # <precheck command>
+  local s
+  s=$(printf '%s\n' "$1" | sed -n 's/.*bash "\([^"]*\)" watch.*/\1/p' | head -1)
+  [ -n "$s" ] || s=$(printf '%s\n' "$1" | sed -n 's/.*bash \([^ "'"'"']*\) watch.*/\1/p' | head -1)
+  [ -n "$s" ] && printf '%s\n' "$s"
+}
+
+# Whether a precheck runs this crew.sh: the same text, or a path that resolves to the same file.
+precheck_runs() { # <precheck command> <self>
+  local s a b
+  case "$1" in *"$2"*) return 0 ;; esac
+  s=$(precheck_self "$1") || return 1
+  a=$(phys "$s") || return 1
+  b=$(phys "$2") || return 1
+  [ "$a" = "$b" ]
 }
 
 WATCH_NAME='hi-crew watch'
@@ -546,7 +584,7 @@ cmd_setup_status() {
       printf 'watch\tmissing\tno "%s" automation\n' "$WATCH_NAME"
     elif [ "$(printf '%s' "$a" | jq -r '.enabled')" != true ]; then
       printf 'watch\tdisabled\t"%s" is turned off\n' "$WATCH_NAME"
-    elif ! printf '%s' "$a" | jq -e --arg s "$self" '(.precheck | if type == "object" then .command else . end // "") | contains($s)' >/dev/null 2>&1; then
+    elif ! precheck_runs "$(printf '%s' "$a" | jq -r '.precheck | if type == "object" then .command else . end // ""')" "$self"; then
       printf 'watch\tstale\tits precheck does not run %s\n' "$self"
     else
       printf 'watch\tok\t%s\n' "$(printf '%s' "$a" | jq -r '.rrule // ""')"

@@ -266,7 +266,11 @@ case "$1 $2" in
                             echo '{"ok":true,"result":{"runs":[]}}' ;;
   "skills installed") if [ -n "${FAKE_NO_SKILL:-}" ]; then echo '{"ok":true,"result":{"skills":[{"name":"other"}]}}'
                       else echo '{"ok":true,"result":{"skills":[{"name":"orchestration"}]}}'; fi ;;
-  "automations list") printf '%s\n' "${FAKE_AUTOS:-{\"ok\":true,\"result\":{\"automations\":[]}}}" ;;
+  "automations list") if [ -n "${FAKE_AUTOS:-}" ]; then printf '%s\n' "$FAKE_AUTOS"
+                      else echo '{"ok":true,"result":{"automations":[]}}'; fi ;;
+  "automations create"|"automations edit")
+    while [ $# -gt 0 ]; do [ "$1" = --precheck ] && printf '%s\n' "$2" >"$FAKE_PRE_LOG"; shift; done
+    echo '{"ok":true}' ;;
 esac
 EOF
 chmod +x "$T/bin/setuporca"
@@ -295,6 +299,37 @@ out=$(FAKE_AUTOS='{"ok":true,"result":{"automations":[{"name":"hi-crew watch","e
 check 'setup-status: watch runs another crew.sh → stale' "$(r "$out" watch)" stale
 out=$(FAKE_AUTOS='{"ok":true,"result":{"automations":[{"name":"hi-crew watch","enabled":false,"precheck":""}]}}' ss)
 check 'setup-status: watch turned off → disabled' "$(r "$out" watch)" disabled
+
+# --- the watch through symlinks (#34): a profile's skills/hi-crew linking a checkout, and two
+# profiles linking the same one. Expected paths are physical: mktemp's dir may itself be a link.
+PLUG=$(cd -P "$HERE/.." && pwd -P)
+PSELF="$PLUG/lib/crew.sh"
+mkdir -p "$T/profile-a/skills" "$T/profile-b/skills" "$T/copy/lib"
+ln -s "$PLUG" "$T/profile-a/skills/hi-crew"
+ln -s "$PLUG" "$T/profile-b/skills/hi-crew"
+autos() { jq -nc --arg p "$1" '{ok:true,result:{automations:[{name:"hi-crew watch",enabled:true,rrule:"*/10 * * * *",precheck:{command:$p,timeoutSeconds:600}}]}}'; }
+ssv() { ORCA_CLI_COMMAND="$T/bin/setuporca" bash "$1/lib/crew.sh" setup-status; }
+out=$(FAKE_AUTOS="$(autos "sh -lic 'bash \"$PSELF\" watch'")" ssv "$T/profile-a/skills/hi-crew")
+check 'watch via a linked profile, precheck names the checkout → ok' "$(r "$out" watch)" ok
+out=$(FAKE_AUTOS="$(autos "sh -lic 'bash \"$T/profile-a/skills/hi-crew/lib/crew.sh\" watch'")" ssv "$PLUG")
+check 'watch from the checkout, precheck names a linked profile → ok' "$(r "$out" watch)" ok
+out=$(FAKE_AUTOS="$(autos "bash $T/profile-b/skills/hi-crew/lib/crew.sh watch")" ssv "$T/profile-a/skills/hi-crew")
+check 'watch: unquoted precheck path via another profile → ok' "$(r "$out" watch)" ok
+cp "$PLUG/lib/crew.sh" "$T/copy/lib/crew.sh"
+out=$(FAKE_AUTOS="$(autos "sh -lic 'bash \"$T/copy/lib/crew.sh\" watch'")" ssv "$T/profile-a/skills/hi-crew")
+check 'watch: a copy of crew.sh elsewhere → stale' "$(r "$out" watch)" stale
+export FAKE_PRE_LOG="$T/pre.log"
+rm -f "$FAKE_PRE_LOG"
+ORCA_CLI_COMMAND="$T/bin/setuporca" bash "$T/profile-a/skills/hi-crew/lib/crew.sh" watch-install >/dev/null
+PRE=$(cat "$FAKE_PRE_LOG" 2>/dev/null) || PRE=''
+case "$PRE" in *"bash \"$PSELF\" watch"*) ok 'watch-install from a linked profile writes the physical path' ;; *) no "watch-install writes the physical path: got [$PRE]" ;; esac
+case "$PRE" in *profile-a*) no 'watch-install names the profile it ran under' ;; *) ok 'watch-install names no profile' ;; esac
+out=$(FAKE_AUTOS="$(autos "$PRE")" ssv "$T/profile-b/skills/hi-crew")
+check 'watch installed from one profile reads ok from another' "$(r "$out" watch)" ok
+rm -f "$FAKE_PRE_LOG"
+ORCA_CLI_COMMAND="$T/bin/setuporca" bash "$T/profile-b/skills/hi-crew/lib/crew.sh" watch-install >/dev/null
+check 'watch-install writes the same precheck from either profile' "$(cat "$FAKE_PRE_LOG" 2>/dev/null)" "$PRE"
+unset FAKE_PRE_LOG
 printf '{"crew":{"agent":"codex","model":null}}\n' >"$HIGHNESS_CONFIG"
 out=$(ss)
 check 'setup-status: crew.agent set' "$(r "$out" crew.agent)" set
