@@ -338,12 +338,16 @@ fill() {
 # command runs from this git root with {{ROOT}} and {{MARKER}} filled in, and prints one JSON object
 # per line: {"group": "you|others|later|done", "title", "next", "url", "since"} (all but title
 # optional).
+# The open threads of the hi-threads journal come first, as section "threads" (with open_items,
+# status, waits_on and resume besides the usual fields), when the journal exists.
 # Out: the same objects with "section" added; other lines are skipped. A section whose command fails
 # gives one line with "error" set instead, so a broken source shows rather than vanishes.
 cmd_sections() {
   need_jq
   local root secs n i name cmd line out rc
   root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+  # The person's open work threads from the hi-threads journal, when that plugin keeps one here.
+  bash "$HERE/threads-read.sh" agenda 2>/dev/null | jq -c '{section: "threads"} + .' 2>/dev/null
   secs=$(cd "$root" && bash "$CONFIG" get '.agenda.sections') || secs=''
   [ -n "$secs" ] && [ "$secs" != null ] || return 0
   n=$(printf '%s' "$secs" | jq 'if type == "array" then length else 0 end' 2>/dev/null) || n=0

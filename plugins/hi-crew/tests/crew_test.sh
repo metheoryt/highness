@@ -96,6 +96,23 @@ check 'sections: each object tagged with its section, placeholders filled' "$(pr
 check 'sections: a failing source shows as an error' "$(printf '%s\n' "$out" | jq -r 'select(.section == "Broken") | .error')" 'exit 3: nope'
 check 'sections: a quiet source gives nothing' "$(printf '%s\n' "$out" | jq -r 'select(.section == "Quiet")' )" ''
 
+# The hi-threads journal, when there is one, comes first as section "threads": this project only.
+mkdir -p "$HIGHNESS_STATE/threads"
+SP=$(cd "$S" && pwd -P)
+jq -n --arg p "$SP" '{threads: [
+  {id: "t1", project: $p, title: "Login fix", status: "paused", waits_on: "agent", next: "add a test",
+   open_items: ["add a test"], ticket: "AB-1", pr: "", updated: "2020-01-02T00:00:00Z", updated_epoch: 2,
+   last_session: "s1", last_cwd: $p},
+  {id: "t2", project: $p, title: "Old", status: "done", waits_on: "none", next: "", open_items: [],
+   ticket: "", pr: "", updated: "2020-01-01T00:00:00Z", updated_epoch: 1},
+  {id: "t3", project: "/elsewhere", title: "Other", status: "active", waits_on: "agent", next: "",
+   open_items: [], ticket: "", pr: "", updated: "2020-01-01T00:00:00Z", updated_epoch: 1}]}' \
+  >"$HIGHNESS_STATE/threads/threads.json"
+out=$(cd "$S" && bash "$C" sections)
+check 'sections: open threads of this project first' "$(printf '%s\n' "$out" | head -1 | jq -r '[.section, .group, .title, .resume] | join("|")')" "threads|you|Login fix (AB-1)|cd '$SP' && claude --resume s1"
+check 'sections: no done or foreign threads' "$(printf '%s\n' "$out" | jq -r 'select(.section == "threads") | .title' | wc -l | tr -d ' ')" '1'
+rm -rf "$HIGHNESS_STATE/threads"
+
 # --- spec
 printf 'Line one of the brief.\nLine & two with {{KEY}} literal.\n' >"$T/brief"
 out=$(cd "$T" && bash "$C" spec --key ABC-9 --title 'Do the thing' --brief-file "$T/brief")

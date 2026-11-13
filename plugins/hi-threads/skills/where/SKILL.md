@@ -1,6 +1,6 @@
 ---
 name: where
-description: Show where the person's work stands across all their Claude Code sessions on this machine — every open thread (a task, a fix, a question, an idea) with what is left in it, who it waits on and which session to resume it in, most urgent first — then propose where to start and pick it up. Use when the user asks "where was I", "what was I doing", "what's left", "what did we leave unfinished", "what's open", "where are we", "что у нас висит", «на чём остановились», or opens a session not knowing which of their sessions holds what; and the first time, to build the journal from the sessions already on the machine.
+description: Only the work threads — for the whole picture with tickets, PRs and agents use /hi-crew:agenda, which shows these threads too. Show where the person's work stands across all their Claude Code sessions on this machine — every open thread (a task, a fix, a question, an idea) with what is left in it, who it waits on and which session to resume it in, most urgent first — then propose where to start and pick it up. Use when the user asks "where was I", "what was I doing", "what's left", "what did we leave unfinished", "what's open", "where are we", "что у нас висит", «на чём остановились», or opens a session not knowing which of their sessions holds what; and the first time, to build the journal from the sessions already on the machine.
 ---
 
 # /hi-threads:where

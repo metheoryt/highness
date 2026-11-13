@@ -1,6 +1,6 @@
 ---
 name: agenda
-description: Show what waits on the person — the hi-crew ticket workers' open questions, people's new comments on their PRs, PRs ready to merge, and the team's own sections (their tickets, their PRs, reviews waiting on them) when the team configured them — and what is still running, most urgent first; then work through it, relaying the person's answers to the workers. Use when the user asks "what are the agents waiting on", "agenda", "what's on me", "what's up with my tickets", "crew status", or opens a new session and wants to pick up the workers started from another one.
+description: Where the person's work stands and what waits on them, in one list, most urgent first — the threads they left unfinished in any session on this machine (from the hi-threads journal), the hi-crew ticket workers' open questions, people's new comments on their PRs, PRs ready to merge, and the team's own sections (their tickets, their PRs, reviews waiting on them) — then propose where to start and work through it, resuming a thread or relaying answers to the workers. The way to start the day or a new session. Use when the user asks "where was I", "where did we stop", "what's on me", "what's left", "agenda", "what are the agents waiting on", «на чём остановились», «что у меня», «с чего начать», «что висит», or opens a new session and wants to pick up their work or the workers started from another one.
 ---
 
 # hi-crew:agenda
@@ -24,8 +24,13 @@ this skill" printed above, two levels up.
    someone else, `later` not started yet, `done`), `title`, `next`, `url`, `since`; or `section` and `error` when that
    source failed (say so in one line, do not guess its content). A ticket the workers already
    carry shows once, under the worker.
+   **Threads** come first among the sections, as section `threads`, when the hi-threads plugin
+   keeps a journal on this machine: the work the person left in any session of this project, with
+   `status`, `waits_on`, `open_items` (what is left) and `resume` (the line that reopens the
+   session it was last worked in). A thread that names a ticket a worker carries shows once,
+   under the worker.
    No open tickets: skip steps 2–6. No tickets and no sections: say there is nothing on the
-   person from hi-crew and stop.
+   person and stop.
 2. **What blocks a worker**: `bash "$C" asks` — open questions, decision gates, and escalations
    (a worker that stopped without reporting), across the Runs of all open tickets, each with its
    Run. `$O orchestration inbox --limit 100 --full --json` gives the full text.
@@ -55,7 +60,8 @@ One short list, most urgent first, each item with its next step in words:
 1. **Waiting on you** — open questions and gates (with the worker's proposals), workers on a
    dialog (since when, which tool), stopped workers, people's new comments on a
    PR, PRs whose review loop finished and that wait for a person to resolve threads and merge;
-   then the sections' `you` items, by section.
+   then the sections' `you` items, by section. A thread left unfinished (`paused`) carries its
+   open items as a short sublist; no ids, paths or session ids unless asked.
 2. **Running** — what each worker is doing, from its last report; then the sections' `others`
    items (waiting on a reviewer, a bot, a teammate), one line each. The `later` items only as a
    count per section ("and 12 not started"), listed when the person asks.
@@ -77,6 +83,9 @@ and say in one line that Orca now wakes this session, not the other one, for tha
   round: `$O orchestration send --to dispatch:<dispatch> --subject … --body …`, saying what to
   change and how to reply. Record the new dispatch id from the receipt.
 - **Ready to merge**: that is the person's own step; give the link.
+- **A thread**: continue it here when this session can (same repo), or give its `resume` line to
+  reopen the session it lives in; its open items say what is left. The journal is a model's
+  notes: check a PR or ticket state before acting on it.
 - **A section item**: its `next` says what to do; do it with the team's own tools (the item's
   `url`, the skill the team's process names). Starting a ticket on a worker is `/hi-crew:start`.
 - **Merged or closed**: `bash "$C" close <KEY>`; offer to release the workspace.
