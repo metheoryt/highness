@@ -157,8 +157,8 @@ _scrub() {
 
 # A thread that went quiet (paused) or closed since the last comment gets one in its ticket.
 # threads.comment.commands (user config only: it runs code) is a list of
-#   {"match": "<regex on the ticket key>", "command": "<shell command>"}
-# the first match runs, with the ticket key in HI_THREAD_TICKET, the project in
+#   {"match": "<regex on the ticket key>", "project": "<regex on the project dir>", "command": "…"}
+# (either regex may be left out); the first match runs, with the ticket key in HI_THREAD_TICKET, the project in
 # HI_THREAD_PROJECT and the comment on stdin. threads.comment.lang: en (default) or ru.
 _comments() { # <iso of the apply>
   local cmds lang ids id th key cmd text
@@ -171,8 +171,9 @@ _comments() { # <iso of the apply>
     th=$(jq -c --arg id "$id" '.threads[] | select(.id == $id)' "$LEDGER")
     key=$(printf '%s' "$th" | jq -r '.ticket // ""')
     [ -n "$key" ] || continue
-    cmd=$(printf '%s' "$cmds" | jq -r --arg k "$key" \
-          '[.[] | select((.match // "") as $m | $k | test($m))][0].command // empty' 2>/dev/null)
+    cmd=$(printf '%s' "$cmds" | jq -r --arg k "$key" --arg p "$(printf '%s' "$th" | jq -r .project)" \
+          '[.[] | select((.match // "") as $m | $k | test($m))
+                | select((.project // "") as $r | $p | test($r))][0].command // empty' 2>/dev/null)
     [ -n "$cmd" ] || continue
     text=$(printf '%s' "$th" | jq -r --arg lang "$lang" '
       (if $lang == "ru" then {paused: "на паузе", done: "сделано", dropped: "отказались",

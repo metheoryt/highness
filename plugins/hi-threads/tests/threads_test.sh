@@ -105,7 +105,7 @@ n=0; while { [ ! -f "$DIR/cursors/s2" ] || [ -d "$DIR/s-s2.lock" ]; } && [ $n -l
 check 'hook-stop: starts the job in the background' "$([ -f "$DIR/cursors/s2" ] && echo yes)" 'yes'
 
 # Comments: a closed thread with a ticket gets one, with a token masked; replay posts none.
-jq -n --arg out "$T/comment" '{threads: {comment: {commands: [{match: "^AB-", command: ("{ echo \"$HI_THREAD_TICKET\"; cat; } > " + $out)}]}}}' >"$HIGHNESS_CONFIG"
+jq -n --arg out "$T/comment" '{threads: {comment: {commands: [{match: "^AB-", project: "/elsewhere$", command: "exit 1"}, {match: "^AB-", project: "/umb$", command: ("{ echo \"$HI_THREAD_TICKET\"; cat; } > " + $out)}]}}}' >"$HIGHNESS_CONFIG"
 a 'Done, tests pass.' >>"$TR"
 reply "{\"ops\":[{\"op\":\"close\",\"id\":\"$id\",\"note\":\"test added with key ghp_abcdefghijklmnop1234\"}]}"
 bash "$TH" process "$TR" s1 "$T/wt/svc-1"
