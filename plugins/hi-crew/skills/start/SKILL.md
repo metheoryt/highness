@@ -56,9 +56,9 @@ Below, `$O` stands for that executable.
   their questions. Keys and rules: `bash "$C"` (the `autostart` part of its help);
   `bash "$C" autostart --dry-run` shows the free slots and what would start. A slot frees when
   the worker's PR is merged or closed, or, with no PR, when the worker has reported. Each ticket is
-  tried once. Before a start the watch reads the plan usage the person's statusline keeps
-  (`crew.sh usage-save`); at or over `crew.autostart.max_usage_pct` (default 80) it starts nothing.
-  An unknown figure never blocks.
+  tried once. Before a start the watch asks `lib/budget.sh check` whether the account may
+  spend: the person keeps a reserve of each plan window (`crew.budget.*`, 50% of a fresh window),
+  shrinking toward its reset. Over it, or with no figure, nothing starts.
 
 ## Start a ticket
 

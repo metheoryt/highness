@@ -51,8 +51,8 @@ only, since it runs a command and starts agents:
 - `root`: the coordinator's git root. The team's `crew` settings are read there, the candidates
   command runs there, and workers start in it unless a ticket names a repo.
 - `candidates`: prints one JSON object per ready ticket, `{"key", "title", "url", "repo"?, "created"?}`.
-  Unset, it lists the root's GitHub issues with the label. Other keys: `repo`, `base`, `run`,
-  `max_usage_pct` (80), `usage_max_age_min` (30). `bash crew.sh` lists them all.
+  Unset, it lists the root's GitHub issues with the label. Other keys: `repo`, `base`, `run`.
+  `bash crew.sh` lists them all.
 - Workers join the Run of the coordinator session that last asked for its Run on this machine, so
   their questions go there. With no such session, nothing starts.
 - A slot is busy while a worker may still work: its PR is open, or it has no PR and has not
@@ -60,19 +60,30 @@ only, since it runs a command and starts agents:
 - Each ticket is tried once (`autostart/tried/<KEY>` in the state dir). One line per start or skip
   goes to `autostart/log`. `crew.sh autostart --dry-run` shows what it would do.
 
-**Usage check.** Before it starts anything, the watch reads the plan usage of the account Orca
-launches agents on. At or over `max_usage_pct` in the 5-hour or the weekly window, it starts
-nothing. Claude Code hands these figures only to a statusline, so yours has to keep them. Add one
-line to your statusline command, which gets the session JSON on stdin:
+**Usage check.** Before it starts anything, the watch asks `lib/budget.sh` whether the account
+Orca launches agents on may spend. You keep a reserve of each plan window for your own sessions,
+and it shrinks as the window nears its reset — a leftover about to reset is lost anyway:
+
+    agents may run while  used% < 100 - reserve × (time left / window length)
+
+The reserve is `crew.budget.five_hour_reserve` and `crew.budget.seven_day_reserve` in your own
+config, 50 by default: a fresh 5-hour window lets agents reach 50%, one with an hour left 90%.
+The figures come live from the plan's usage endpoint (no tokens spent, every machine on the account
+counted); a figure that cannot be read holds the start (`crew.budget.on_unknown: "go"` to change
+that). `bash lib/budget.sh check` prints the verdict. Other launchers of background agents can call
+it the same way: exit 0 is go, 1 is hold.
+
+When the endpoint cannot be reached, the figures your statusline keeps are used while they are
+fresh (`crew.budget.cache_max_age_min`, 30). For that, add one line to your statusline command,
+which gets the session JSON on stdin:
 
 ```sh
 printf '%s' "$input" | bash <marketplace clone>/plugins/hi-crew/lib/crew.sh usage-save
 ```
 
 Known gaps:
-- A figure that is missing, unreadable or older than 30 minutes counts as unknown. Unknown never
-  blocks a start.
-- The figure is only as fresh as the last statusline refresh on that account.
+- The usage endpoint is not documented; a change in its shape reads as unknown, which holds.
+- The check runs before a start only: a worker already running is not stopped.
 - Orca has no per-launch account choice, so the watch cannot move a start to a less-used account.
   It skips the start instead. Switching Orca's selected account would also move your own new
   sessions.

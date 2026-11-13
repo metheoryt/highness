@@ -627,8 +627,8 @@ cmd_setup_status() {
 #   crew.autostart.base          base branch (default origin/main)
 #   crew.autostart.run           the Run the started workers join (default: the hi-crew Run whose
 #                                coordinator last asked for it here; its terminal sends the start)
-#   crew.autostart.max_usage_pct the plan usage at or over which nothing starts (default 80)
-#   crew.autostart.usage_max_age_min  how old a usage figure may be (default 30)
+#   (usage)                      nothing starts while lib/budget.sh holds the account: the
+#                                person's reserve of each plan window, crew.budget.* (budget.sh)
 #
 # A slot is busy while an open ticket's worker may still work: its PR is not merged or closed,
 # and, with no PR, its dispatch has sent no worker_done. A merged PR frees the slot even when the
@@ -719,16 +719,11 @@ cmd_usage() {
   return 0
 }
 
-# Prints one line saying how the usage stands; exit 1 when it holds the pass.
+# Prints one line saying how the usage stands; exit 1 when it holds the pass (lib/budget.sh).
 as_usage() {
-  local max acc u over
-  max=$(as_num "$(as_get max_usage_pct)" 80)
+  local acc
   acc=${HI_ACCOUNT:-$(as_account)}
-  u=$(cmd_usage "$acc")
-  [ -n "$u" ] || { printf 'usage unknown on %s\n' "$acc"; return 0; }
-  over=$(printf '%s\n' "$u" | awk -F'\t' -v m="$max" '$2 + 0 >= m + 0 { printf "%s%s at %s%%", (n++ ? ", " : ""), $1, $2 }')
-  if [ -n "$over" ]; then printf '%s on %s (max %s%%)\n' "$over" "$acc" "$max"; return 1; fi
-  printf 'usage under %s%% on %s\n' "$max" "$acc"
+  bash "$HERE/budget.sh" check "$acc"
 }
 
 as_start() { # <candidate json> <root> <run> <handle> <dry>

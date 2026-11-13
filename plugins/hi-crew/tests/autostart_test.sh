@@ -6,6 +6,14 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 C="$HERE/../lib/crew.sh"
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 export HIGHNESS_STATE="$T/state" HIGHNESS_CONFIG="$T/user.json" HI_ACCOUNT="$T/acct"
+# The plan usage: a live answer under every line unless a test says otherwise (lib/budget.sh).
+export HI_BUDGET_REFRESH=0 HI_BUDGET_RESPONSE="$T/live.json"
+live() { # <5h %> <7d %> → the usage endpoint's answer, 5h resetting in 4 h, 7d in 6 days
+  jq -n --argjson p5 "$1" --argjson p7 "$2" --argjson now "$(date +%s)" '
+    def iso: todate | sub("Z$"; ".214621+00:00");
+    {five_hour: {utilization: $p5, resets_at: ($now + 14400 | iso)},
+     seven_day: {utilization: $p7, resets_at: ($now + 518400 | iso)}}' >"$T/live.json"; }
+command -v jq >/dev/null && live 20 20
 S="$T/state/crew"
 fail=0
 ok() { echo "  ok   $1"; }
@@ -123,31 +131,41 @@ check 'failed start: no facts' "$(bash "$C" get AB-1 >/dev/null 2>&1 && echo yes
 bash "$C" autostart >/dev/null
 check 'failed start: not retried' "$(started_keys)" 'AB-1 AB-2 AB-3 '
 
-# --- usage: under, over, unknown
+# --- usage: lib/budget.sh decides (its own rules are budget_test.sh)
 now=$(date +%s)
 usage() { jq -n --argjson now "$now" --argjson p5 "$1" --argjson p7 "$2" --argjson upd "${3:-$now}" \
   '{five_hour: {used_percentage: $p5, resets_at: ($now + 3600)}, seven_day: {used_percentage: $p7, resets_at: ($now + 86400)}, updated_at: $upd}' \
   >"$T/acct/highness-usage.json"; }
 reset; cfg '{}'; usage 40 60
-check 'usage: both windows read' "$(bash "$C" usage "$T/acct" | tr '\t\n' ': ')" 'five_hour:40 seven_day:60 '
+check 'usage: both windows read from the cache' "$(bash "$C" usage "$T/acct" | tr '\t\n' ': ')" 'five_hour:40 seven_day:60 '
+reset; cfg '{}'; live 20 20
 bash "$C" autostart >/dev/null
-check 'usage under the threshold: starts' "$(starts)" 2
-reset; cfg '{}'; usage 40 85
+check 'usage under the line: starts' "$(starts)" 2
+reset; cfg '{}'; live 20 70
 out=$(bash "$C" autostart)
-has 'usage over: one skip line naming the window' "$out" 'seven_day at 85% on '"$T/acct"' (max 80%); nothing started'
+has 'usage over: one skip line naming the window' "$out" '7d 70% (agents up to 57%, resets in '
+has 'usage over: marks the window' "$out" ') over on '
+has 'usage over: says it holds' "$out" 'hold; nothing started'
 check 'usage over: nothing starts' "$(starts)" 0
-reset; cfg '{"max_usage_pct": 90}'; usage 40 85
+reset; cfg '{}'; live 20 70; jq '.crew.budget = {seven_day_reserve: 20}' "$HIGHNESS_CONFIG" >"$T/c" && mv "$T/c" "$HIGHNESS_CONFIG"
 bash "$C" autostart >/dev/null
-check 'usage: the threshold is configurable' "$(starts)" 2
-reset; cfg '{}'; usage 95 95 $((now - 7200))
-bash "$C" autostart >/dev/null
-check 'usage stale: unknown, never blocks' "$(starts)" 2
-reset; cfg '{}'; echo 'not json' >"$T/acct/highness-usage.json"
-bash "$C" autostart >/dev/null
-check 'usage unreadable: unknown, never blocks' "$(starts)" 2
+check 'usage: the reserve is configurable' "$(starts)" 2
+reset; cfg '{}'
+HI_BUDGET_RESPONSE=fail bash "$C" autostart >/dev/null
+check 'usage unknown: holds' "$(starts)" 0
+reset; cfg '{}'; usage 10 10
+HI_BUDGET_RESPONSE=fail bash "$C" autostart >/dev/null
+check 'usage: the endpoint down, a fresh cache decides' "$(starts)" 2
+reset; cfg '{}'; usage 10 10 $((now - 7200))
+HI_BUDGET_RESPONSE=fail bash "$C" autostart >/dev/null
+check 'usage: a stale cache is unknown, holds' "$(starts)" 0
+reset; cfg '{}'; jq '.crew.budget = {on_unknown: "go"}' "$HIGHNESS_CONFIG" >"$T/c" && mv "$T/c" "$HIGHNESS_CONFIG"
+HI_BUDGET_RESPONSE=fail bash "$C" autostart >/dev/null
+check 'usage unknown with on_unknown go: starts' "$(starts)" 2
 reset; cfg '{}'
 jq -n --argjson now "$now" '{five_hour: {used_percentage: 99, resets_at: ($now - 10)}, updated_at: $now}' >"$T/acct/highness-usage.json"
 check 'usage: a window already reset is unknown' "$(bash "$C" usage "$T/acct")" ''
+live 20 20
 
 # --- usage-save keeps the statusline's rate_limits
 rm -f "$T/acct/highness-usage.json"
