@@ -1,0 +1,5 @@
+{
+  "name": "hi-threads",
+  "description": "A journal of work threads across every Claude Code session on the machine: after each turn a model notes what was done, what is left and who waits on whom; new sessions see the most urgent open threads, /hi-threads:where shows them all.",
+  "license": "MIT"
+}
