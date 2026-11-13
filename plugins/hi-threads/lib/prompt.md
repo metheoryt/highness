@@ -27,6 +27,10 @@ setup chore that finished in the same turn.
   is lost. Put each in `open_items` as one short imperative line.
 - **A switch**: the session moves on to another outcome while the first still has open items.
   Mark the first `paused`, not `done`.
+- **Stale tails are as harmful as lost ones.** On every update re-read each open item and `next`
+  of the threads this activity touches: drop an item the activity shows done, decided,
+  answered or replaced by another plan; rewrite `next` when its step was taken. `next` never
+  names a step that already happened.
 - **Done** only on evidence: the work was finished and verified, merged, or the person said it is
   done. Quiet is not done.
 - **Ideas**: an option the person or the agent proposed and nobody took up yet. One `idea`
@@ -47,6 +51,10 @@ Only a JSON object, no prose, no code fence:
   {"op": "close", "id": "<existing id>", "status": "done", "note": "..."}
 ]}
 
+- Closing a thread that still has live tails: move them first, with an update or create, to the
+  thread they belong to; a closed thread keeps no open items.
+- A thread waits on `person` only for what the person alone can give; a teammate's work or
+  review is `other`.
 - `status`: `active` (being worked in this session now), `paused` (left with open items),
   `waiting` (blocked on someone, see `waits_on`), `idea`, `done`, `dropped` (the person decided
   against it).

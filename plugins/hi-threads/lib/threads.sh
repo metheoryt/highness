@@ -136,6 +136,8 @@ _apply() { # <ops-json> <session> <cwd> <project>
           .threads |= map(if .id == $o.id then
                             (. + ($o | fields)
                              | if $o.op == "close" then .status = ($o.status // "done") else . end
+                             | if .status | IN("done", "dropped")
+                               then .waits_on = "none" | .next = "" | .open_items = [] else . end
                              | touch($o))
                           else . end)
         else . end)' "$LEDGER" >"$LEDGER.new" 2>>"$TH_DIR/log" || { rm -f "$LEDGER.new"; _unlock journal; return 1; }
