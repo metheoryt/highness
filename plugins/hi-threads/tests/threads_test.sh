@@ -118,4 +118,35 @@ bash "$TH" replay "$TR" s3 "$T/umb"
 check 'replay: no comment' "$([ -f "$T/comment" ] && echo sent || echo none)" 'none'
 check 'replay: cursor set at the end' "$(cat "$DIR/cursors/s3")" "$(wc -c <"$TR" | tr -d ' ')"
 
+# A session met for the first time with history: only the turn that just ended is read; the
+# history is backfill's, up to that point, and posts nothing.
+rm -f "$HIGHNESS_CONFIG"
+TR2="$T/t2.jsonl"; { u 'old work on AB-9'; a 'old answer'; u 'new question'; a 'new answer'; } >"$TR2"
+reply '{"ops":[]}'
+c0=$(calls); bash "$TH" process "$TR2" s4 "$T/umb"
+last=$(ls "$T/calls" | grep -v args | sort -n | tail -1)
+check 'first job: one call' "$(( $(calls) - c0 ))" '1'
+check 'first job: history left out' "$(grep -c 'old work' "$T/calls/$last")|$(grep -c 'new question' "$T/calls/$last")" '0|1'
+check 'first job: origin recorded' "$(cat "$DIR/origin/s4")" "$(head -2 "$TR2" | wc -c | tr -d ' ')"
+c0=$(calls); bash "$TH" replay "$TR2" s4 "$T/umb" "$(cat "$DIR/origin/s4")"
+last=$(ls "$T/calls" | grep -v args | sort -n | tail -1)
+check 'backfill replay: only the history' "$(( $(calls) - c0 ))|$(grep -c 'old work' "$T/calls/$last")|$(grep -c 'new question' "$T/calls/$last")" '1|1|0'
+check 'backfill replay: the live cursor kept' "$(cat "$DIR/cursors/s4")" "$(wc -c <"$TR2" | tr -d ' ')"
+check 'backfill replay: marked' "$([ -f "$DIR/backfilled/s4" ] && echo yes)" 'yes'
+
+# A paused thread is commented only after the quiet time, and once while nothing new happens.
+jq -n --arg out "$T/comment" '{threads: {comment: {quiet_minutes: 120, commands: [{match: "^AB-", command: ("cat >> " + $out)}]}}}' >"$HIGHNESS_CONFIG"
+rm -f "$T/comment"
+a 'Back on login.' >>"$TR"
+reply "{\"ops\":[{\"op\":\"update\",\"id\":\"$id\",\"status\":\"paused\",\"note\":\"paused again\"}]}"
+bash "$TH" process "$TR" s1 "$T/wt/svc-1"
+check 'paused: no comment before the quiet time' "$([ -f "$T/comment" ] && echo sent || echo none)" 'none'
+jq '.threads.comment.quiet_minutes = -1' "$HIGHNESS_CONFIG" >"$T/c" && mv "$T/c" "$HIGHNESS_CONFIG"
+a 'Still on docs.' >>"$TR"; reply '{"ops":[]}'
+bash "$TH" process "$TR" s1 "$T/wt/svc-1"
+check 'paused: commented once quiet' "$(grep -c 'paused again' "$T/comment" 2>/dev/null)" '1'
+a 'More docs.' >>"$TR"
+bash "$TH" process "$TR" s1 "$T/wt/svc-1"
+check 'paused: not again with nothing new' "$(grep -c 'Agent journal' "$T/comment")" '1'
+
 exit $fail

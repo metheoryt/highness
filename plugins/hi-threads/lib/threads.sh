@@ -10,6 +10,8 @@
 # State, under ${HIGHNESS_STATE:-${XDG_STATE_HOME:-~/.local/state}/highness}/threads/:
 #   threads.json        {"threads": [ … ]}, written only under the `journal` lock
 #   cursors/<session>   the transcript byte offset read so far
+#   origin/<session>    where the live hook started reading a session it met mid-way
+#   backfilled/<session>  the session's history was replayed
 #   events.jsonl        one line per status change: at, id, from, to, session
 #   log                 the jobs' stderr
 #
@@ -21,10 +23,11 @@
 #   threads.sh hook-start               SessionStart hook: the project's top open threads as context
 #   threads.sh process <transcript> <session> <cwd>
 #                                       read from the cursor to the end, update the journal
-#   threads.sh replay <transcript> <session> <cwd>
-#                                       the same, one turn at a time from byte 0 (backfill, measuring)
+#   threads.sh replay <transcript> <session> <cwd> [<end>]
+#                                       one turn at a time from byte 0 to <end>; posts no comments
+#                                       (backfill, measuring)
 #   threads.sh sessions [--days N]      this project's transcripts, oldest first (default 14 days)
-#   threads.sh backfill [--days N]      replay each of them that has no cursor yet
+#   threads.sh backfill [--days N]      replay the history of each not backfilled yet
 #   threads.sh digest <transcript> [<from>]   the cut-down text from byte <from>
 #   threads.sh list [--all | --project <dir>] [--json]   ranked threads (default: the cwd's project)
 #   threads.sh agenda                   the open threads as hi-crew agenda section lines (JSON)
@@ -157,18 +160,28 @@ _scrub() {
          -e 's/[A-Za-z0-9_+\/=-]{40,}/***/g'
 }
 
-# A thread that went quiet (paused) or closed since the last comment gets one in its ticket.
+# A thread that closed, or stayed paused for threads.comment.quiet_minutes (default 120), gets a
+# comment in its ticket with what happened since the last one; a paused thread with nothing new
+# gets none, so a thread going back and forth does not post twice.
 # threads.comment.commands (user config only: it runs code) is a list of
 #   {"match": "<regex on the ticket key>", "project": "<regex on the project dir>", "command": "…"}
-# (either regex may be left out); the first match runs, with the ticket key in HI_THREAD_TICKET, the project in
-# HI_THREAD_PROJECT and the comment on stdin. threads.comment.lang: en (default) or ru.
+# (either regex may be left out); the first match runs, with the ticket key in HI_THREAD_TICKET,
+# the project in HI_THREAD_PROJECT and the comment on stdin. The command decides whether the
+# ticket is one to comment on (the person's own, say) and exits 0 either way; a non-zero exit is
+# retried on the next job. threads.comment.lang: en (default) or ru.
 _comments() { # <iso of the apply>
-  local cmds lang ids id th key cmd text
+  local cmds lang quiet ids id th key cmd text
   [ -z "${HI_THREADS_NO_COMMENT:-}" ] || return 0   # replay and backfill: history is not news
   cmds=$(bash "$HERE/config.sh" get --user .threads.comment.commands 2>/dev/null) || return 0
   lang=$(_cfg .threads.comment.lang); lang=${lang:-en}
-  ids=$(jq -r --arg iso "$1" 'select(.at == $iso and (.to | IN("paused", "done", "dropped"))) | .id' \
-        "$TH_DIR/events.jsonl" 2>/dev/null | sort -u)
+  quiet=$(_cfg .threads.comment.quiet_minutes); quiet=${quiet:-120}
+  _lock comments 50 || return 0
+  ids=$( { jq -r --arg iso "$1" 'select(.at == $iso and (.to | IN("done", "dropped"))) | .id' \
+             "$TH_DIR/events.jsonl" 2>/dev/null
+           jq -r --argjson cut "$(( $(date +%s) - quiet * 60 ))" '.threads[]
+             | select(.status == "paused" and .updated_epoch < $cut
+                      and (.commented_epoch // 0) < .updated_epoch and (.ticket // "") != "") | .id' \
+             "$LEDGER" 2>/dev/null; } | sort -u)
   for id in $ids; do
     th=$(jq -c --arg id "$id" '.threads[] | select(.id == $id)' "$LEDGER")
     key=$(printf '%s' "$th" | jq -r '.ticket // ""')
@@ -177,6 +190,10 @@ _comments() { # <iso of the apply>
           '[.[] | select((.match // "") as $m | $k | test($m))
                 | select((.project // "") as $r | $p | test($r))][0].command // empty' 2>/dev/null)
     [ -n "$cmd" ] || continue
+    if [ "$(printf '%s' "$th" | jq -r '(.commented_epoch // 0) as $c
+          | [.history[] | select((.at | fromdateiso8601) > $c and .note != "")] | length')" = 0 ]; then
+      _mark_commented "$id"; continue
+    fi
     text=$(printf '%s' "$th" | jq -r --arg lang "$lang" '
       (if $lang == "ru" then {paused: "на паузе", done: "сделано", dropped: "отказались",
                               did: "Что сделано", left: "Осталось", next: "Дальше",
@@ -191,14 +208,18 @@ _comments() { # <iso of the apply>
            then "\n\n\($w.left):\n" + (.open_items | map("- " + .) | join("\n")) else "" end)
         + (if (.next // "") != "" and .status == "paused" then "\n\n\($w.next): \(.next)" else "" end)' | _scrub)
     if printf '%s\n' "$text" | (cd "$TH_DIR" && HI_THREAD_TICKET=$key HI_THREAD_PROJECT=$(printf '%s' "$th" | jq -r .project) \
-         sh -c "$cmd") >>"$TH_DIR/log" 2>&1; then
-      _lock journal && {
-        jq --arg id "$id" --argjson now "$(date +%s)" \
-          '.threads |= map(if .id == $id then .commented_epoch = $now else . end)' "$LEDGER" >"$LEDGER.new" \
-          && mv "$LEDGER.new" "$LEDGER"
-        _unlock journal; }
+         sh -c "$cmd") >>"$TH_DIR/log" 2>&1; then _mark_commented "$id"
     else _log "comment: command failed for $key"; fi
   done
+  _unlock comments
+}
+
+_mark_commented() { # <id>
+  _lock journal || return 0
+  jq --arg id "$1" --argjson now "$(date +%s)" \
+    '.threads |= map(if .id == $id then .commented_epoch = $now else . end)' "$LEDGER" >"$LEDGER.new" \
+    && mv "$LEDGER.new" "$LEDGER"
+  _unlock journal
 }
 
 # Give one digest to the model and apply its ops. Splits a digest larger than CHUNK_MAX.
@@ -225,6 +246,13 @@ th_process() { # <transcript> <session> <cwd>
   mkdir -p "$TH_DIR/cursors"
   _lock "s-$sid" 1 || return 0   # a job for this session is running; it loops until the end
   proj=$(th_project "$cwd")
+  if [ ! -f "$TH_DIR/cursors/$sid" ]; then
+    # A session met for the first time (a resumed or forked one, or the plugin is new): read from
+    # the turn that just ended; what came before is history, for backfill, which posts nothing.
+    mkdir -p "$TH_DIR/origin"
+    LC_ALL=C _turns "$tr" | tail -1 >"$TH_DIR/origin/$sid"
+    cp "$TH_DIR/origin/$sid" "$TH_DIR/cursors/$sid"
+  fi
   while :; do
     cur=$(cat "$TH_DIR/cursors/$sid" 2>/dev/null); cur=${cur:-0}
     chunk=$(mktemp); dig=$(mktemp)
@@ -245,11 +273,13 @@ _turns() { # <transcript>
          off += length($0) + 1 }' "$1"
 }
 
-th_replay() { # <transcript> <session> <cwd>
-  local tr=$1 sid=$2 cwd=$3 proj b prev=0 chunk dig t
+th_replay() { # <transcript> <session> <cwd> [<end byte>]
+  local tr=$1 sid=$2 cwd=$3 end=${4:-} proj b prev=0 chunk dig t
   proj=$(th_project "$cwd"); mkdir -p "$TH_DIR"
   export HI_THREADS_NO_COMMENT=1
-  t=$(mktemp); LC_ALL=C _turns "$tr" >"$t"; echo "$(wc -c <"$tr" | tr -d ' ')" >>"$t"
+  _lock "s-$sid" 600 || { _log "replay: $sid is locked by a live job"; return 1; }
+  [ -n "$end" ] || end=$(wc -c <"$tr" | tr -d ' ')
+  t=$(mktemp); LC_ALL=C _turns "$tr" | awk -v e="$end" '$1 < e' >"$t"; echo "$end" >>"$t"
   while IFS= read -r b; do
     [ "$b" -gt "$prev" ] || continue
     chunk=$(mktemp); dig=$(mktemp)
@@ -259,7 +289,10 @@ th_replay() { # <transcript> <session> <cwd>
     rm -f "$chunk" "$dig"; prev=$b
   done <"$t"
   rm -f "$t"
-  mkdir -p "$TH_DIR/cursors"; echo "$prev" >"$TH_DIR/cursors/$sid"
+  mkdir -p "$TH_DIR/cursors" "$TH_DIR/backfilled"
+  [ -f "$TH_DIR/cursors/$sid" ] || echo "$prev" >"$TH_DIR/cursors/$sid"
+  touch "$TH_DIR/backfilled/$sid"
+  _unlock "s-$sid"
 }
 
 # This project's sessions on the machine, oldest first: <transcript><TAB><session><TAB><cwd>.
@@ -278,13 +311,14 @@ th_sessions() { # [--days N]
   done | sort -n | cut -f2-
 }
 
-# Replay every session of this project that has no cursor yet.
+# Replay the history of every session of this project not backfilled yet: up to where the live
+# hook started reading it, or the whole transcript when the hook never ran there.
 th_backfill() { # [--days N]
   local f sid cwd
   th_sessions "$@" | while IFS="$(printf '\t')" read -r f sid cwd; do
-    [ -f "$TH_DIR/cursors/$sid" ] && continue
+    [ -f "$TH_DIR/backfilled/$sid" ] && continue
     _log "backfill: $sid"
-    th_replay "$f" "$sid" "$cwd"
+    th_replay "$f" "$sid" "$cwd" "$(cat "$TH_DIR/origin/$sid" 2>/dev/null)"
   done
 }
 
