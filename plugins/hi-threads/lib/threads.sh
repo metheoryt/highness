@@ -12,6 +12,7 @@
 #   cursors/<session>   the transcript byte offset read so far
 #   origin/<session>    where the live hook started reading a session it met mid-way
 #   backfilled/<session>  the session's history was replayed
+#   replayed/<session>  where a replay stopped when the model failed; the next one goes on there
 #   events.jsonl        one line per status change: at, id, from, to, session
 #   log                 the jobs' stderr
 #
@@ -76,8 +77,13 @@ _model() {
   model=${HI_THREADS_MODEL:-$(_cfg .threads.model)}; model=${model:-sonnet}
   out=$(cd "$TH_DIR" && HI_THREADS_INNER=1 claude -p --model "$model" --no-session-persistence \
         --tools '' --strict-mcp-config --settings '{"disableAllHooks":true}' \
-        --system-prompt "$(cat "$HERE/prompt.md")" <"$1" 2>>"$TH_DIR/log") || return 1
-  printf '%s\n' "$out" | sed '/^```/d' | jq -c 'select(type == "object" and (.ops | type) == "array")' 2>/dev/null | tail -1
+        --system-prompt "$(cat "$HERE/prompt.md")" <"$1" 2>>"$TH_DIR/log")
+  out=$(printf '%s\n' "$out" | sed '/^```/d')
+  if ! printf '%s\n' "$out" | jq -c 'select(type == "object" and (.ops | type) == "array")' 2>/dev/null | tail -1 | grep .; then
+    # Not JSON: a usage limit, an outage; its words go to the log, so the cause shows there.
+    _log "model said: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-200)"
+    return 1
+  fi
 }
 
 # The threads the model sees: the project's open ones, and the ones closed in the last two days.
@@ -247,11 +253,15 @@ _turns() { # <transcript>
          off += length($0) + 1 }' "$1"
 }
 
+# One turn at a time, from where an earlier replay of the session stopped (replayed/<session>).
+# The first turn the model fails on (a usage limit, an outage) stops it there, so a run of
+# failures does not mark a session done or burn through the rest; run it again later.
 th_replay() { # <transcript> <session> <cwd> [<end byte>]
-  local tr=$1 sid=$2 cwd=$3 end=${4:-} proj b prev=0 chunk dig t
-  proj=$(th_project "$cwd"); mkdir -p "$TH_DIR"
+  local tr=$1 sid=$2 cwd=$3 end=${4:-} proj b prev chunk dig t rc=0
+  proj=$(th_project "$cwd"); mkdir -p "$TH_DIR/replayed"
   export HI_THREADS_NO_COMMENT=1
   _lock "s-$sid" 600 || { _log "replay: $sid is locked by a live job"; return 1; }
+  prev=$(cat "$TH_DIR/replayed/$sid" 2>/dev/null); prev=${prev:-0}
   [ -n "$end" ] || end=$(wc -c <"$tr" | tr -d ' ')
   t=$(mktemp); LC_ALL=C _turns "$tr" | awk -v e="$end" '$1 < e' >"$t"; echo "$end" >>"$t"
   while IFS= read -r b; do
@@ -259,14 +269,22 @@ th_replay() { # <transcript> <session> <cwd> [<end byte>]
     chunk=$(mktemp); dig=$(mktemp)
     tail -c +"$((prev + 1))" "$tr" | head -c "$((b - prev))" >"$chunk"
     jq -r -f "$HERE/digest.jq" "$chunk" >"$dig" 2>/dev/null
-    _update "$dig" "$sid" "$cwd" "$proj" || _log "replay: turn at $prev failed"
+    if ! _update "$dig" "$sid" "$cwd" "$proj"; then
+      _log "replay: $sid stopped at byte $prev, the model failed"; rc=1
+      rm -f "$chunk" "$dig"; break
+    fi
     rm -f "$chunk" "$dig"; prev=$b
   done <"$t"
   rm -f "$t"
-  mkdir -p "$TH_DIR/cursors" "$TH_DIR/backfilled"
-  [ -f "$TH_DIR/cursors/$sid" ] || echo "$prev" >"$TH_DIR/cursors/$sid"
-  touch "$TH_DIR/backfilled/$sid"
+  if [ "$rc" = 0 ]; then
+    mkdir -p "$TH_DIR/cursors" "$TH_DIR/backfilled"
+    [ -f "$TH_DIR/cursors/$sid" ] || echo "$prev" >"$TH_DIR/cursors/$sid"
+    touch "$TH_DIR/backfilled/$sid"; rm -f "$TH_DIR/replayed/$sid"
+  else
+    echo "$prev" >"$TH_DIR/replayed/$sid"
+  fi
   _unlock "s-$sid"
+  return $rc
 }
 
 # This project's sessions on the machine, oldest first: <transcript><TAB><session><TAB><cwd>.
@@ -292,7 +310,8 @@ th_backfill() { # [--days N]
   th_sessions "$@" | while IFS="$(printf '\t')" read -r f sid cwd; do
     [ -f "$TH_DIR/backfilled/$sid" ] && continue
     _log "backfill: $sid"
-    th_replay "$f" "$sid" "$cwd" "$(cat "$TH_DIR/origin/$sid" 2>/dev/null)"
+    th_replay "$f" "$sid" "$cwd" "$(cat "$TH_DIR/origin/$sid" 2>/dev/null)" ||
+      { _log "backfill: stopped at $sid; run it again later, it goes on from there"; return 1; }
   done
 }
 

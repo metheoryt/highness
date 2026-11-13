@@ -149,4 +149,27 @@ a 'More docs.' >>"$TR"
 bash "$TH" process "$TR" s1 "$T/wt/svc-1"
 check 'paused: not again with nothing new' "$(grep -c 'Agent journal' "$T/comment")" '1'
 
+
+# A replay stops at the first turn the model fails on and goes on from there next time.
+rm -f "$HIGHNESS_CONFIG"
+TR3="$T/t3.jsonl"; { u 'turn one'; a 'a1'; u 'turn two'; a 'a2'; u 'turn three'; a 'a3'; } >"$TR3"
+reply '{"ops":[]}'
+cat >"$T/bin/claude" <<'EOF'
+#!/usr/bin/env bash
+n=$(ls "$FAKE_CALLS" | grep -vc args)
+cat >"$FAKE_CALLS/$n"
+printf '%s\n' "$*" >"$FAKE_CALLS/$n.args"
+if grep -q 'turn two' "$FAKE_CALLS/$n" && [ -f "$FAKE_LIMIT" ]; then echo "You've hit your usage limit"; exit 1; fi
+cat "$FAKE_REPLY"
+EOF
+export FAKE_LIMIT="$T/limit"; touch "$FAKE_LIMIT"
+c0=$(calls); bash "$TH" replay "$TR3" s5 "$T/umb"; rc=$?
+check 'replay: stops on the failing turn' "$rc|$(( $(calls) - c0 ))|$([ -f "$DIR/backfilled/s5" ] && echo marked || echo open)" '1|2|open'
+check 'replay: the reply is in the log' "$(grep -c 'model said: You.ve hit your usage limit' "$DIR/log")" '1'
+check 'replay: where it stopped' "$(cat "$DIR/replayed/s5")" "$(head -2 "$TR3" | wc -c | tr -d ' ')"
+rm -f "$FAKE_LIMIT"; c0=$(calls); bash "$TH" replay "$TR3" s5 "$T/umb"
+first=$(ls "$T/calls" | grep -v args | sort -n | sed -n "$((c0 + 1))p")
+check 'replay: goes on from there' "$(( $(calls) - c0 ))|$(grep -c 'turn one' "$T/calls/$first")|$(grep -c 'turn two' "$T/calls/$first")" '2|0|1'
+check 'replay: marked once through' "$([ -f "$DIR/backfilled/s5" ] && echo marked)|$([ -f "$DIR/replayed/s5" ] && echo left || echo gone)" 'marked|gone'
+
 exit $fail
