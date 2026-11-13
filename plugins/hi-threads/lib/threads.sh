@@ -117,7 +117,7 @@ _context() { # <project> <session>
 }
 
 _apply() { # <ops-json> <session> <cwd> <project>
-  local repo now iso
+  local repo now iso closed
   repo=$(_repo "$3"); now=$(date +%s); iso=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
   _lock journal || { _log "apply: journal lock busy, dropped ops for $2"; return 1; }
   [ -f "$LEDGER" ] || echo '{"threads":[]}' >"$LEDGER"
@@ -148,10 +148,13 @@ _apply() { # <ops-json> <session> <cwd> <project>
   jq -c -n --slurpfile a "$LEDGER" --slurpfile b "$LEDGER.new" --arg s "$2" --arg iso "$iso" '
     ($a[0].threads | map({key: .id, value: .status}) | from_entries) as $old
     | $b[0].threads[] | select(.status != ($old[.id] // "new"))
-    | {at: $iso, id, from: ($old[.id] // "new"), to: .status, session: $s}' >>"$TH_DIR/events.jsonl" 2>/dev/null
+    | {at: $iso, id, from: ($old[.id] // "new"), to: .status, session: $s}' >"$LEDGER.ev" 2>/dev/null
+  cat "$LEDGER.ev" >>"$TH_DIR/events.jsonl"
   mv "$LEDGER.new" "$LEDGER"
+  closed=$(jq -r 'select(.to | IN("done", "dropped")) | .id' "$LEDGER.ev" 2>/dev/null)
+  rm -f "$LEDGER.ev"
   _unlock journal
-  _comments "$iso"
+  _comments $closed
 }
 
 # Secrets never leave in a comment: token-shaped strings are masked.
@@ -169,18 +172,17 @@ _scrub() {
 # the project in HI_THREAD_PROJECT and the comment on stdin. The command decides whether the
 # ticket is one to comment on (the person's own, say) and exits 0 either way; a non-zero exit is
 # retried on the next job. threads.comment.lang: en (default) or ru.
-_comments() { # <iso of the apply>
+_comments() { # <ids of the threads this apply closed>
   local cmds lang quiet ids id th key cmd text
   [ -z "${HI_THREADS_NO_COMMENT:-}" ] || return 0   # replay and backfill: history is not news
   cmds=$(bash "$HERE/config.sh" get --user .threads.comment.commands 2>/dev/null) || return 0
   lang=$(_cfg .threads.comment.lang); lang=${lang:-en}
   quiet=$(_cfg .threads.comment.quiet_minutes); quiet=${quiet:-120}
   _lock comments 50 || return 0
-  ids=$( { jq -r --arg iso "$1" 'select(.at == $iso and (.to | IN("done", "dropped"))) | .id' \
-             "$TH_DIR/events.jsonl" 2>/dev/null
+  ids=$( { for id in "$@"; do printf '%s\n' "$id"; done
            jq -r --argjson cut "$(( $(date +%s) - quiet * 60 ))" '.threads[]
-             | select(.status == "paused" and .updated_epoch < $cut
-                      and (.commented_epoch // 0) < .updated_epoch and (.ticket // "") != "") | .id' \
+             | select(.status == "paused" and .updated_epoch < $cut and (.ticket // "") != ""
+                      and any(.history[]; (.sent // false) | not)) | .id' \
              "$LEDGER" 2>/dev/null; } | sort -u)
   for id in $ids; do
     th=$(jq -c --arg id "$id" '.threads[] | select(.id == $id)' "$LEDGER")
@@ -190,8 +192,7 @@ _comments() { # <iso of the apply>
           '[.[] | select((.match // "") as $m | $k | test($m))
                 | select((.project // "") as $r | $p | test($r))][0].command // empty' 2>/dev/null)
     [ -n "$cmd" ] || continue
-    if [ "$(printf '%s' "$th" | jq -r '(.commented_epoch // 0) as $c
-          | [.history[] | select((.at | fromdateiso8601) > $c and .note != "")] | length')" = 0 ]; then
+    if [ "$(printf '%s' "$th" | jq -r '[.history[] | select(((.sent // false) | not) and .note != "")] | length')" = 0 ]; then
       _mark_commented "$id"; continue
     fi
     text=$(printf '%s' "$th" | jq -r --arg lang "$lang" '
@@ -200,9 +201,8 @@ _comments() { # <iso of the apply>
                               head: "Журнал агента"}
        else {paused: "paused", done: "done", dropped: "dropped", did: "Done so far",
              left: "Left", next: "Next", head: "Agent journal"} end) as $w
-      | (.commented_epoch // 0) as $c
       | "\($w.head): «\(.title)» — \($w[.status])."
-        + ([.history[] | select((.at | fromdateiso8601) > $c) | .note | select(. != "")] as $n
+        + ([.history[] | select((.sent // false) | not) | .note | select(. != "")] as $n
            | if ($n | length) > 0 then "\n\n\($w.did):\n" + ($n | map("- " + .) | join("\n")) else "" end)
         + (if (.open_items | length) > 0 and .status == "paused"
            then "\n\n\($w.left):\n" + (.open_items | map("- " + .) | join("\n")) else "" end)
@@ -217,7 +217,7 @@ _comments() { # <iso of the apply>
 _mark_commented() { # <id>
   _lock journal || return 0
   jq --arg id "$1" --argjson now "$(date +%s)" \
-    '.threads |= map(if .id == $id then .commented_epoch = $now else . end)' "$LEDGER" >"$LEDGER.new" \
+    '.threads |= map(if .id == $id then .commented_epoch = $now | .history |= map(.sent = true) else . end)' "$LEDGER" >"$LEDGER.new" \
     && mv "$LEDGER.new" "$LEDGER"
   _unlock journal
 }
