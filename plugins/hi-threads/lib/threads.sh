@@ -78,8 +78,12 @@ _model() {
   out=$(cd "$TH_DIR" && HI_THREADS_INNER=1 claude -p --model "$model" --no-session-persistence \
         --tools '' --strict-mcp-config --settings '{"disableAllHooks":true}' \
         --system-prompt "$(cat "$HERE/prompt.md")" <"$1" 2>>"$TH_DIR/log")
-  out=$(printf '%s\n' "$out" | sed '/^```/d')
-  if ! printf '%s\n' "$out" | jq -c 'select(type == "object" and (.ops | type) == "array")' 2>/dev/null | tail -1 | grep .; then
+  # The reply is the ops object, at times with a sentence or a code fence around it: take the
+  # last {"ops": ...} that parses, from its brace to the last closing brace.
+  if ! printf '%s' "$out" | jq -Rsc '. as $t | [match("\\{\\s*\"ops\"\\s*:"; "g").offset]
+        | map($t[.:] | .[:rindex("}") + 1] | fromjson?
+              | select(type == "object" and (.ops | type) == "array"))
+        | last // empty' 2>/dev/null | grep .; then
     # Not JSON: a usage limit, an outage; its words go to the log, so the cause shows there.
     _log "model said: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-200)"
     return 1

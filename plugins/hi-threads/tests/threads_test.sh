@@ -172,4 +172,18 @@ first=$(ls "$T/calls" | grep -v args | sort -n | sed -n "$((c0 + 1))p")
 check 'replay: goes on from there' "$(( $(calls) - c0 ))|$(grep -c 'turn one' "$T/calls/$first")|$(grep -c 'turn two' "$T/calls/$first")" '2|0|1'
 check 'replay: marked once through' "$([ -f "$DIR/backfilled/s5" ] && echo marked)|$([ -f "$DIR/replayed/s5" ] && echo left || echo gone)" 'marked|gone'
 
+# A sentence or a code fence around the ops object does not lose the turn.
+TR6="$T/t6.jsonl"; u 'rename it' >"$TR6"; a 'Renamed.' >>"$TR6"
+reply "Обновляю нить.
+\`\`\`json
+{\"ops\":[{\"op\":\"create\",\"title\":\"Prose first\",\"status\":\"active\",\"waits_on\":\"agent\"}]}
+\`\`\`
+Готово."
+bash "$TH" process "$TR6" s6 "$T/umb"
+check 'model: ops after a sentence' "$(jq -r '[.threads[] | select(.title == "Prose first")] | length' "$DIR/threads.json")" '1'
+reply 'Session moved on. {"ops":[{"op":"create","title":"Same line","status":"idea","waits_on":"none"}]}'
+a 'More.' >>"$TR6"; u 'next' >>"$TR6"; a 'Done.' >>"$TR6"
+bash "$TH" process "$TR6" s6 "$T/umb"
+check 'model: ops after a sentence on the same line' "$(jq -r '[.threads[] | select(.title == "Same line")] | length' "$DIR/threads.json")" '1'
+
 exit $fail
