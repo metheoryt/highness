@@ -58,7 +58,9 @@ Below, `$O` stands for that executable.
   the worker's PR is merged or closed, or, with no PR, when the worker has reported. Each ticket is
   tried once. Before a start the watch asks `lib/budget.sh check` whether the account may
   spend: the person keeps a reserve of each plan window (`crew.budget.*`, 50% of a fresh window),
-  shrinking toward its reset. Over it, or with no figure, nothing starts.
+  shrinking toward its reset. Over it, or with no figure, nothing starts, and an autostarted
+  worker already running is paused at its next tool call until the account is back under the
+  line (`lib/hold.sh`; `bash lib/hold.sh held` lists the paused ones).
 
 ## Start a ticket
 

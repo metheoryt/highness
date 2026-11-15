@@ -408,6 +408,12 @@ cmd_watch() {
     fi
     printf '%s\n' "$now" >"$snap"
   done
+  # The budget hold (lib/hold.sh): pause the autostarted workers of an account over the person's
+  # reserve, resume them when it is back. Before the slot count, which returns early exactly when
+  # every slot holds a running worker. Only with autostart on, or while a worker is held.
+  if [ "$(as_get enabled)" = true ] || [ -n "$(bash "$HERE/hold.sh" held)" ]; then
+    bash "$HERE/hold.sh" pass "${HI_ACCOUNT:-$(as_account)}" >/dev/null 2>&1 || :
+  fi
   # Last, with the PR states just read: start labelled tickets into free slots (off by default).
   cmd_autostart >/dev/null 2>&1 || :
 }

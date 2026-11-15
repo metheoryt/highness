@@ -424,6 +424,16 @@ out=$(HI_PLUGIN_DIR="$PD" HI_TMUX=none bash "$WT" dispatch "$P" --brief "$SANDBO
 assert_not_contains "a dir holding the workspace is not denied" "$(printf '%s\n' "$out" | sed -n 2p)" "Edit(/$PD/**)"
 assert_contains "the main checkout is still denied" "$(printf '%s\n' "$out" | sed -n 2p)" "Edit(/$RP/**)"
 
+# --pretool: a PreToolUse hook in this session's own --settings, beside the edit denies
+# (the budget hold reaches an autostarted worker this way, highness#36)
+out=$(HI_TMUX=none bash "$WT" dispatch "$P" --brief "$SANDBOX/brief.md" --pretool "bash /opt/x/hold.sh hook --worker" 2>/dev/null)
+st=$(printf '%s\n' "$out" | sed -n 2p | sed -n "s/.*--settings '\([^']*\)'.*/\1/p")
+assert_eq "pretool: the hook command is in --settings" "bash /opt/x/hold.sh hook --worker" \
+  "$(printf '%s' "$st" | jq -r '.hooks.PreToolUse[0].hooks[0].command')"
+assert_eq "pretool: the edit denies stay" 2 "$(printf '%s' "$st" | jq -r '.permissions.deny | length')"
+out=$(HI_TMUX=none bash "$WT" dispatch "$P" --brief "$SANDBOX/brief.md" 2>/dev/null)
+assert_not_contains "no --pretool: no hooks in --settings" "$(printf '%s\n' "$out" | sed -n 2p)" '"hooks"'
+
 # guards
 bash "$WT" dispatch "$P" >/dev/null 2>&1;                               assert_status "no --brief: 2" 2 "$?"
 bash "$WT" dispatch "$P" --brief "$SANDBOX/none.md" >/dev/null 2>&1;    assert_status "missing brief file: 2" 2 "$?"

@@ -58,7 +58,7 @@ usage: wt.sh [--repo PATH] <verb> …   (--repo: run as if from PATH, e.g. a clo
        wt.sh find --branch B | --ticket K | --review N | --work S | --path P
        wt.sh create --kind ticket|review|work --key K --name N [--base REF] [--branch B | --adopt B] [--umbrella]
                     [--detach SHA] [--parent PATH (default: the workspace it runs in)] [--slug S] [--tests]
-       wt.sh dispatch <path> --brief <file> [--name N] [--resume ID] [--config-dir D]
+       wt.sh dispatch <path> --brief <file> [--name N] [--resume ID] [--config-dir D] [--pretool CMD]
                     (a live agent session there gets the brief; else a new terminal, which
                     waits out gortex indexing itself; exit 3: that session is mid-turn;
                     exit 5: typed into it, but not seen taken — look before resending;
@@ -1079,7 +1079,7 @@ _uuid() {
 }
 
 cmd_dispatch() {
-  local before hs src above where sent sstate path="${1:-}" brief='' name='' resume='' cfg='' env='' row wt sel kind key dst dirs rdirs d uuid line via=print handle='' wid='' js T rc tmp wrap state
+  local before hs src above where sent sstate path="${1:-}" brief='' name='' resume='' cfg='' pretool='' env='' row wt sel kind key dst dirs rdirs d uuid line via=print handle='' wid='' js T rc tmp wrap state
   [ -n "$path" ] || { say 'dispatch: <path> is required'; return 2; }
   shift
   while [ $# -gt 0 ]; do
@@ -1088,6 +1088,7 @@ cmd_dispatch() {
       --name)  name="${2:-}";  shift 2 ;;
       --resume) resume="${2:-}"; shift 2 ;;
       --config-dir) cfg="${2:-}"; shift 2 ;;
+      --pretool) pretool="${2:-}"; shift 2 ;;
       *) say "dispatch: unknown flag $1"; return 2 ;;
     esac
   done
@@ -1214,7 +1215,14 @@ EOF
   done <<EOF
 $rdirs
 EOF
-  dirs="$dirs --settings $(_q "$(_deny_edits "$wt" "$rdirs")")"
+  # --pretool <command>: a PreToolUse hook of this session only, in the same --settings — how the
+  # budget hold reaches an autostarted worker and never the person's own sessions (highness#36).
+  # A session it is typed into keeps the settings it was started with.
+  if [ -n "$pretool" ]; then
+    dirs="$dirs --settings $(_q "$(_deny_edits "$wt" "$rdirs" | jq -c --arg c "$pretool" '. + {hooks: {PreToolUse: [{hooks: [{type: "command", command: $c}]}]}}')")"
+  else
+    dirs="$dirs --settings $(_q "$(_deny_edits "$wt" "$rdirs")")"
+  fi
   _pretrust "$wt" "$cfg" "$kind"
   if [ -n "$resume" ]; then
     uuid=$(printf '%s' "$resume" | LC_ALL=C tr '[:upper:]' '[:lower:]')

@@ -73,6 +73,15 @@ counted); a figure that cannot be read holds the start (`crew.budget.on_unknown:
 that). `bash lib/budget.sh check` prints the verdict. Other launchers of background agents can call
 it the same way: exit 0 is go, 1 is hold.
 
+**Pausing a running worker.** Each watch pass also writes the verdict for the account as a flag
+(`<config dir>/highness-hold`, `lib/hold.sh pass`). While it is there, an autostarted worker's next
+tool call ends its turn: the session stays open and idle, its work in the tree as it was. When the
+account is back under its line, the watch types "continue" into exactly the sessions it stopped. Your
+own sessions are never stopped: the hook acts only on a session the autostart launched (a hi-crew
+record with `autostart: true` for its directory, or a session started with
+`wt.sh dispatch --pretool "bash <…>/lib/hold.sh hook --worker"`). `bash lib/hold.sh held` lists the
+stopped ones.
+
 When the endpoint cannot be reached, the figures your statusline keeps are used while they are
 fresh (`crew.budget.cache_max_age_min`, 30). For that, add one line to your statusline command,
 which gets the session JSON on stdin:
@@ -83,7 +92,10 @@ printf '%s' "$input" | bash <marketplace clone>/plugins/hi-crew/lib/crew.sh usag
 
 Known gaps:
 - The usage endpoint is not documented; a change in its shape reads as unknown, which holds.
-- The check runs before a start only: a worker already running is not stopped.
+- A worker is paused at its next tool call, not mid-call, and only as often as the watch runs: a
+  worker can spend past the line for up to one watch interval.
+- Taking over an autostarted hi-crew worker's session by hand does not exempt it from the pause
+  (the hook knows it by its directory).
 - Orca has no per-launch account choice, so the watch cannot move a start to a less-used account.
   It skips the start instead. Switching Orca's selected account would also move your own new
   sessions.
