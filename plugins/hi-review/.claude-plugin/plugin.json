@@ -1,0 +1,5 @@
+{
+  "name": "hi-review",
+  "description": "Review a GitHub pull request and submit it as one review: a read-only reviewer subagent drafts the findings, a second pass tries to break each one, one question picks the verdict.",
+  "license": "MIT"
+}
