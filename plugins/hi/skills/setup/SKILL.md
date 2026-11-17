@@ -88,6 +88,15 @@ as the whole new JSON before it happens, and keep every key it already has.
 - `crew.agent unset` / `crew.model unset`: workers then run `claude` with that agent's own default
   model, which differs per person. Ask: set it (an Orca agent id; a provider model id), or leave
   it to the default on purpose: `null` there, which reads as `default` from then on.
+- `tracker` (only when the repo or the person configures `tracker`): hi-crew's tracker adapter
+  asked the tracker who the person is. `no-token`: the person's file has no
+  `trackers["<host>"]` entry for the tracker's host, or its `token_env` / `token_command` gives
+  nothing. Offer the entry (`email` and `token_command` for Jira, `token_command` for YouTrack),
+  shown as the whole new file; the token itself is the person's to mint and store in their own
+  secret store or environment. Never ask them to paste it into the chat, and never write it to a
+  file a repo tracks. `rejected`: the tracker refused the token; it needs a new one. `config`: the
+  detail names the bad key (in the repo's file or the person's). `error`: the tracker did not
+  answer (network, a VPN); say so, nothing to fix here.
 - `overlay none`: the repo has no team `.claude/highness.json`, and the person's file has no
   `repos["<owner/repo>"]` or `repos["<owner>"]` block for it. Only when the team has settings
   (`crew.process`, `crew.marker`, …) that cannot be committed to the repo: offer that block in the

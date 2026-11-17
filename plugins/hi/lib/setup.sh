@@ -11,7 +11,8 @@
 #   machine  jq, orca, launcher, plugin:<name> (each highness plugin), hi-crew (its crew.sh),
 #            session-state (that hi-crew registers the session-state hooks),
 #            orchestration, orca-skill, watch (these three from `crew.sh setup-status`), board
-#   person   config, crew.agent, crew.model (from crew.sh), overlay
+#   person   config, crew.agent, crew.model, tracker (from crew.sh; tracker only when one is
+#            configured), overlay
 #   repo     orca-project, then every row of `repo-setup.sh status` except launcher and board,
 #            which the machine section already has. Only inside a git work tree.
 #
@@ -114,7 +115,7 @@ rows_machine() {
     else
       _row machine session-state old "this hi-crew registers no session-state hooks: dispatch and the watch read the screen only; update it"
     fi
-    printf '%s\n' "$CREW_ROWS" | awk -F'\t' 'NF >= 2 && $1 !~ /^crew\./ { print "machine\t" $0 }'
+    printf '%s\n' "$CREW_ROWS" | awk -F'\t' 'NF >= 2 && $1 !~ /^(crew\.|tracker$)/ { print "machine\t" $0 }'
   else
     CREW_ROWS=''
     _row machine hi-crew off 'hi-crew is not enabled for workers: no orchestration, watch or crew rows'
@@ -130,7 +131,7 @@ rows_person() {
   elif ! jq -e 'type == "object"' "$f" >/dev/null 2>&1; then _row person config invalid "$f is not a JSON object"
   else _row person config ok "$f"; fi
 
-  printf '%s\n' "$CREW_ROWS" | awk -F'\t' 'NF >= 2 && $1 ~ /^crew\./ { print "person\t" $0 }'
+  printf '%s\n' "$CREW_ROWS" | awk -F'\t' 'NF >= 2 && $1 ~ /^(crew\.|tracker$)/ { print "person\t" $0 }'
 
   [ -n "${TOP:-}" ] || return 0
   if [ -f "$TOP/.claude/highness.json" ]; then _row person overlay team-file "$TOP/.claude/highness.json"; return; fi

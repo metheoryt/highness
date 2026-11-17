@@ -193,4 +193,20 @@ PATH="$T/bin:$PATH" GH_LOG="$T/ghlog" bash "$C" autostart >/dev/null
 check 'default candidates: keyed <repo>-<number>' "$(started_keys)" 'widgets-7 '
 has 'default candidates: gh asked for the label' "$(cat "$T/ghlog")" '--label auto --state open'
 
+# --- with tracker.kind at the root, the default candidates come from the tracker adapter
+reset
+mkdir -p "$T/root/.claude"
+echo '{"tracker": {"kind": "github", "statuses": {"in-progress": "active"}}}' >"$T/root/.claude/highness.json"
+cat >"$T/bin/gh" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >"$GH_LOG"
+echo '[{"number":8,"title":"Eight","url":"https://github.com/acme/widgets/issues/8","state":"OPEN","labels":[{"name":"auto"}],"createdAt":"2026-01-01T00:00:00Z"},
+       {"number":9,"title":"Nine","url":"https://github.com/acme/widgets/issues/9","state":"OPEN","labels":[{"name":"auto"},{"name":"in-progress"}],"createdAt":"2026-01-01T00:00:00Z"}]'
+EOF
+jq -n --arg root "$T/root" '{crew: {autostart: {enabled: true, root: $root}}}' >"$HIGHNESS_CONFIG"
+PATH="$T/bin:$PATH" GH_LOG="$T/ghlog" bash "$C" autostart >/dev/null
+check 'tracker candidates: only the ready ones' "$(started_keys)" 'widgets-8 '
+has 'tracker candidates: the adapter asked for the label' "$(cat "$T/ghlog")" 'issue list -R acme/widgets --label auto --state open'
+rm -f "$T/root/.claude/highness.json"
+
 exit $fail
