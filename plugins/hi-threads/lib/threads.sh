@@ -33,10 +33,11 @@
 #   threads.sh list [--all | --project <dir>] [--json]   ranked threads (default: the cwd's project)
 #   threads.sh agenda                   the open threads as hi-crew agenda section lines (JSON)
 #   threads.sh project [<dir>]          the project a directory belongs to
+#   threads.sh relay <cwd> <session> <brief>   give a thread's own session the brief (threads-read.sh)
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CHUNK_MAX=${HI_THREADS_CHUNK_MAX:-60000}
-. "$HERE/threads-read.sh"   # th_project, _repo, th_list, th_agenda
+. "$HERE/threads-read.sh"   # th_project, _repo, th_list, th_agenda, th_relay
 
 _cfg() { bash "$HERE/config.sh" get "$1" 2>/dev/null; }
 _log() { mkdir -p "$TH_DIR" && printf '%s %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*" >>"$TH_DIR/log"; }
@@ -365,5 +366,6 @@ case "$cmd" in
   list) th_list "$@" ;;
   agenda) th_agenda ;;
   project) th_project "${1:-$PWD}" ;;
-  *) sed -n '2,28p' "$0" >&2; exit 2 ;;
+  relay) th_relay "$@" ;;
+  *) sed -n '2,36p' "$0" >&2; exit 2 ;;
 esac

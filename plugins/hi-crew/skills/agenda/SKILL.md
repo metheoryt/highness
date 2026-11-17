@@ -26,8 +26,8 @@ this skill" printed above, two levels up.
    carry shows once, under the worker.
    **Threads** come first among the sections, as section `threads`, when the hi-threads plugin
    keeps a journal on this machine: the work the person left in any session of this project, with
-   `status`, `waits_on`, `open_items` (what is left) and `resume` (the line that reopens the
-   session it was last worked in). A thread that names a ticket a worker carries shows once,
+   `status`, `waits_on`, `open_items` (what is left), `session` and `cwd` (the session it was
+   last worked in, and where) and `resume` (the line that reopens that session). A thread that names a ticket a worker carries shows once,
    under the worker.
    No open tickets: skip steps 2–6. No tickets and no sections: say there is nothing on the
    person and stop.
@@ -83,9 +83,34 @@ and say in one line that Orca now wakes this session, not the other one, for tha
   round: `$O orchestration send --to dispatch:<dispatch> --subject … --body …`, saying what to
   change and how to reply. Record the new dispatch id from the receipt.
 - **Ready to merge**: that is the person's own step; give the link.
-- **A thread**: continue it here when this session can (same repo), or give its `resume` line to
-  reopen the session it lives in; its open items say what is left. The journal is a model's
-  notes: check a PR or ticket state before acting on it.
+- **A thread**: its open items say what is left. The journal is a model's notes: check a PR or
+  ticket state before acting on it. Continue it here when this session can (same repo).
+  Otherwise, once the user has settled its open points here, relay the decisions to the thread's
+  own session; do not hand the user its `resume` line and a message to copy. Write a short brief
+  to a temporary file (what was decided, what to do next, in the thread's own terms), then make
+  one call with the row's `cwd` and `session`:
+
+  ```bash
+  bash "${CLAUDE_PLUGIN_ROOT}/lib/threads-read.sh" relay <cwd> <session> <brief file>
+  ```
+
+  It goes through hi's `wt.sh dispatch <worktree> --resume <session>`, as the budget hold's
+  resume does: first the live session in the thread's worktree, then a new terminal there. It
+  prints `<outcome><TAB><detail>`:
+  - `sent`: typed into the session running in the thread's worktree. Tell the user in one line
+    what was sent; a session they started by hand may ask once there to read the brief.
+  - `started`: no session ran there; `claude --resume` started in a new terminal of that
+    worktree with the decisions as its first prompt. Say so in one line.
+  - `unconfirmed`: typed, but not seen taken. The user looks at that terminal; never send it
+    again, a resend can submit it twice.
+  - `dialog`: resumed, but it opened on a dialog (folder trust, a permission) that the user
+    answers in that terminal. Give no `resume` line: a second resume runs the session twice.
+  - `busy`: a turn or a dialog runs there, or a chat is open; nothing was typed. Say so and
+    offer to retry or to paste by hand (the brief's text); do not wait in a loop.
+  - `manual`: neither worked (no hi plugin, no Orca or tmux, not a workspace). Only now give the
+    `resume` line (`<detail>`) and the decisions as a paste-ready message.
+
+  With nothing to carry, the `resume` line alone reopens it.
 - **A section item**: its `next` says what to do; do it with the team's own tools (the item's
   `url`, the skill the team's process names). Starting a ticket on a worker is `/hi-crew:start`.
 - **Merged or closed**: `bash "$C" close <KEY>`; offer to release the workspace.

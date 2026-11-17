@@ -186,4 +186,40 @@ a 'More.' >>"$TR6"; u 'next' >>"$TR6"; a 'Done.' >>"$TR6"
 bash "$TH" process "$TR6" s6 "$T/umb"
 check 'model: ops after a sentence on the same line' "$(jq -r '[.threads[] | select(.title == "Same line")] | length' "$DIR/threads.json")" '1'
 
+# relay: the decisions go to the thread's own session through hi's wt.sh dispatch, once; the
+# resume line comes back only when nothing was started or typed. A fake wt.sh records its argv,
+# prints FAKE_WT_OUT and exits with WT_RC.
+check 'agenda: a thread row carries its session and cwd' "$(cd "$T/umb" && bash "$TH" agenda | head -1 | jq -r 'has("session") and has("cwd")')" 'true'
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >>"%s/wt.log"\nprintf "%%b" "$FAKE_WT_OUT"\nexit "${WT_RC:-0}"\n' "$T" >"$T/wt.sh"
+printf 'Decided: keep the old API.\n' >"$T/decisions.md"
+mkdir -p "$T/wt/svc-1/sub"
+SID=0d1f2e3c-aaaa-bbbb-cccc-000000000001
+relay() { # <rc> <dispatch stdout> → "<stdout>|<exit>|<calls>"
+  local o r=0; rm -f "$T/wt.log"
+  o=$(HI_WT_SH="$T/wt.sh" WT_RC=$1 FAKE_WT_OUT=$2 bash "$TH" relay "$T/wt/svc-1/sub" "$SID" "$T/decisions.md" 2>/dev/null) || r=$?
+  printf '%s|%s|%s' "$o" "$r" "$( [ -f "$T/wt.log" ] && wc -l <"$T/wt.log" | tr -d ' ' || echo 0)"
+}
+TAB=$(printf '\t')
+check 'relay: typed into the live session' "$(relay 0 "$SID\tsend\tterm_1\n")" "sent${TAB}term_1|0|1"
+check 'relay: one dispatch of the worktree root, resuming the session, with the brief' "$(cat "$T/wt.log")" "dispatch $T/wt/svc-1 --resume $SID --brief $T/decisions.md"
+check 'relay: no live session, resumed in a new terminal' "$(relay 0 "$SID\torca\tterm_2\n")" "started${TAB}term_2|0|1"
+check 'relay: typed, not seen taken — no resend' "$(relay 5 "$SID\tunconfirmed\tterm_1\n")" "unconfirmed${TAB}term_1|0|1"
+check 'relay: resumed onto a dialog — no resume line' "$(relay 6 "$SID\torca\tterm_3\n")" "dialog${TAB}term_3|0|1"
+check 'relay: busy — said, one call, no wait' "$(relay 3 "$SID\tbusy\t\n")" "busy${TAB}busy|3|1"
+check 'relay: a chat open there is busy too' "$(relay 3 "$SID\tchat\t\n")" "busy${TAB}chat|3|1"
+check 'relay: nothing could start (no Orca, no tmux) — the resume line' "$(relay 0 "$SID\tprint\t\nline\n")" "manual${TAB}cd '$T/wt/svc-1/sub' && claude --resume $SID|1|1"
+check 'relay: dispatch failed — the resume line' "$(relay 1 '')" "manual${TAB}cd '$T/wt/svc-1/sub' && claude --resume $SID|1|1"
+rm -f "$T/wt.log"
+o=$(HI_WT_SH="$T/none.sh" bash "$TH" relay "$T/wt/svc-1" "$SID" "$T/decisions.md" 2>/dev/null); r=$?
+check 'relay: no hi plugin — the resume line, nothing run' "$o|$r|$([ -f "$T/wt.log" ] && echo ran || echo none)" "manual${TAB}cd '$T/wt/svc-1' && claude --resume $SID|1|none"
+o=$(HI_WT_SH="$T/wt.sh" bash "$TH" relay "$T/plain" "$SID" "$T/decisions.md" 2>/dev/null); r=$?
+check 'relay: not a git work tree — the resume line, nothing run' "$o|$r|$([ -f "$T/wt.log" ] && echo ran || echo none)" "manual${TAB}cd '$T/plain' && claude --resume $SID|1|none"
+HI_WT_SH="$T/wt.sh" bash "$TH" relay "$T/wt/svc-1" "$SID" "$T/missing.md" 2>/dev/null; r=$?
+check 'relay: no brief file is a usage error' "$r|$([ -f "$T/wt.log" ] && echo ran || echo none)" '2|none'
+
+# The skill relays first and gives the resume line last: sent, then started, then manual.
+SK="$HERE/../skills/where/SKILL.md"
+case "$(cat "$SK")" in *'"$TH" relay'*'`sent`'*'`started`'*'`manual`'*) ok 'where: relay, then new terminal, then the resume line' ;; *) no 'where: relay, then new terminal, then the resume line' ;; esac
+case "$(cat "$SK")" in *'`busy`'*'do not wait'*) ok 'where: busy is said, not waited out' ;; *) no 'where: busy is said, not waited out' ;; esac
+
 exit $fail
