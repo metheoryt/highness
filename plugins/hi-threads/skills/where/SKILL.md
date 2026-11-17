@@ -48,8 +48,32 @@ what the user said in this session.
 
 Do not show ids, paths or session ids unless asked. When the user picks a thread:
 
-- **Resume it where it was**: `cd <last_cwd> && claude --resume <last_session>` — give the line
-  for the user to run; or continue it here when this session can do it (same repo).
+- **Continue it here** when this session can do it (same repo).
+- **Settle it here, go on there**: when the user settles the thread's open points in this
+  session and the work goes on in the thread's own session, relay the decisions to that session;
+  do not hand the user a line to run and a message to copy. Write a short brief to a temporary
+  file (what was decided, what to do next, in the thread's own terms), then make one call:
+
+  ```bash
+  bash "$TH" relay <last_cwd> <last_session> <brief file>
+  ```
+
+  It goes through hi's `wt.sh dispatch <worktree> --resume <session>`: first the live session in
+  the thread's worktree, then a new terminal there. It prints `<outcome><TAB><detail>`:
+  - `sent`: typed into the session running in the thread's worktree. Tell the user in one line
+    what was sent.
+  - `started`: no session ran there; `claude --resume` started in a new terminal of that
+    worktree with the decisions as its first prompt. Say so in one line.
+  - `unconfirmed`: typed, but not seen taken. The user looks at that terminal; never send it
+    again, a resend can submit it twice.
+  - `dialog`: resumed, but it opened on a dialog (folder trust, a permission) that the user
+    answers in that terminal. Give no resume line: a second resume runs the session twice.
+  - `busy`: a turn or a dialog runs there, or a chat is open; nothing was typed. Say so and
+    offer to retry or to paste by hand (the brief's text); do not wait in a loop.
+  - `manual`: neither worked (no hi plugin, no Orca or tmux, not a workspace). Only now give the
+    resume line (`<detail>`) and the decisions as a paste-ready message.
+- **Only reopen it**, with nothing to carry: `cd <last_cwd> && claude --resume <last_session>`
+  for the user to run.
 - **Done or dropped**: say so and the journal updates by itself on this turn; no command needed.
 
 ## 3. Rules

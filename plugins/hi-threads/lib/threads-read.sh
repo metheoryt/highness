@@ -4,7 +4,8 @@
 #
 # Edit shared/threads-read.sh, then copy it into plugins/hi-threads/lib and plugins/hi-crew/lib
 # (tests/config_copies_test.sh checks the copies). hi-threads writes the journal and sources this
-# file; hi-crew's agenda only reads, so the digest shows the threads when hi-threads is installed.
+# file; hi-crew's agenda reads it, so the digest shows the threads when hi-threads is installed,
+# and both relay a thread's decisions to the thread's own session.
 #
 # The journal: ${HIGHNESS_STATE:-${XDG_STATE_HOME:-~/.local/state}/highness}/threads/threads.json
 #
@@ -12,7 +13,9 @@
 #                                                             cwd's project)
 #   threads-read.sh agenda     one JSON line per open thread, as hi-crew agenda.sections print
 #   threads-read.sh project [<dir>]
+#   threads-read.sh relay <cwd> <session> <brief file>   give a thread's own session the brief
 set -uo pipefail
+TR_HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TH_DIR="${HIGHNESS_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/highness}/threads"
 LEDGER="$TH_DIR/threads.json"
 
@@ -72,8 +75,45 @@ th_agenda() {
     next: ((.next // "") + (if (.open_items | length) > 0 then " [+\(.open_items | length) open]" else "" end)),
     open_items, status, waits_on,
     url: (.pr // ""), since: .updated,
+    session: (.last_session // ""), cwd: (.last_cwd // ""),
     resume: (if (.last_session // "") != "" and (.last_cwd // "") != ""
              then "cd \(.last_cwd | @sh) && claude --resume \(.last_session)" else "" end)}'
+}
+
+# th_relay <cwd> <session> <brief file>: give a thread's own session the brief (the decisions the
+# person settled elsewhere) through hi's `wt.sh dispatch <worktree> --resume <session>`, the path
+# hi-crew's hold.sh takes to resume a paused session: typed into the live idle agent of that
+# worktree, else `claude --resume <session>` in a new terminal there, the brief its first prompt.
+# One call, never a retry or a wait. One line on stdout, <outcome><TAB><detail>:
+#   sent <terminal>         typed into the live session                              exit 0
+#   started <terminal>      resumed in a new terminal of the worktree                exit 0
+#   unconfirmed <terminal>  typed, but not seen taken: look there, never resend      exit 0
+#   dialog <terminal>       resumed, but it waits on a dialog: answer it there       exit 0
+#   busy busy|chat          a turn or a dialog runs there, or a chat: nothing typed  exit 3
+#   manual <resume line>    neither worked: the line to run, and the brief to paste  exit 1
+# wt.sh's own words go to stderr. HI_WT_SH: wt.sh (default: the hi plugin beside this one).
+th_relay() {
+  local cwd="${1:-}" sid="${2:-}" brief="${3:-}" wt root out='' rc=0 via handle manual
+  [ -n "$cwd" ] && [ -n "$sid" ] && [ -f "$brief" ] || { echo 'relay: <cwd> <session> <brief file>' >&2; return 2; }
+  manual="cd $(jq -rn --arg c "$cwd" '$c | @sh') && claude --resume $sid"
+  wt="${HI_WT_SH:-$TR_HERE/../../hi/lib/wt.sh}"
+  if [ ! -f "$wt" ]; then
+    echo "relay: no hi plugin beside this one ($wt) — nothing started" >&2; rc=1
+  elif ! root=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null); then
+    echo "relay: $cwd is not a git work tree — nothing started" >&2; rc=1
+  else
+    out=$(bash "$wt" dispatch "$root" --resume "$sid" --brief "$brief" </dev/null) || rc=$?
+  fi
+  via=$(printf '%s\n' "$out" | head -1 | cut -f2); handle=$(printf '%s\n' "$out" | head -1 | cut -f3)
+  # 0 with `print`: no Orca and no tmux, so dispatch only printed a line — nothing started.
+  case "$rc:$via" in
+    0:send) printf 'sent\t%s\n' "$handle" ;;
+    0:orca|0:tmux) printf 'started\t%s\n' "$handle" ;;
+    5:*) printf 'unconfirmed\t%s\n' "$handle" ;;
+    6:*) printf 'dialog\t%s\n' "$handle" ;;
+    3:*) printf 'busy\t%s\n' "${via:-busy}"; return 3 ;;
+    *) printf 'manual\t%s\n' "$manual"; return 1 ;;
+  esac
 }
 
 # Run directly (hi-crew); sourced by threads.sh, which dispatches itself.
@@ -82,6 +122,7 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     list) shift; th_list "$@" ;;
     agenda) th_agenda ;;
     project) th_project "${2:-$PWD}" ;;
-    *) sed -n '2,16p' "$0" >&2; exit 2 ;;
+    relay) shift; th_relay "$@" ;;
+    *) sed -n '2,17p' "$0" >&2; exit 2 ;;
   esac
 fi
