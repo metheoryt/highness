@@ -24,7 +24,8 @@ for f in "$PLUGIN"/skills/*/SKILL.md "$PLUGIN"/agents/*.md; do
   done
 done
 
-# The reviewer is read-only by its tool list, not only by its prose.
+# The reviewer has no tool that writes a file or starts another agent. It keeps Bash (git diff,
+# git show), so no checkout and no posting rest on its prose, which the has-checks below pin.
 tools=$(fm "$PLUGIN/agents/reviewer.md" | sed -n 's/^tools: //p')
 case "$tools" in *Bash*) ok 'reviewer has Bash (git diff, git show)' ;; *) fail 'reviewer lacks Bash' ;; esac
 for t in Edit Write NotebookEdit Agent; do

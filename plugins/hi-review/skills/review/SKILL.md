@@ -41,12 +41,13 @@ this skill" printed above, two levels up. Every call runs from a checkout of the
 ## 2. Head and range
 
 ```bash
-H=$(bash "$R" head --pr <n> --base-ref <baseRefName>) || { surface its stderr; stop; }
+H=$(bash "$R" head --pr <n> --base-ref <baseRefName> --repo <o>/<r>) || { surface its stderr; stop; }
 BASE=$(printf '%s' "$H" | cut -f1); HEAD=$(printf '%s' "$H" | cut -f2)
 ```
 
 `HEAD` is the PR head under the private ref `refs/hi-review/<n>`; `BASE` its merge-base with the
-base branch, so the diff is the one GitHub shows. Nothing is checked out. Say the size in one line
+base branch, so the diff is the one GitHub shows. Both come from the remote that names `<o>/<r>`
+(a fork checkout's `upstream`), else `origin`. Nothing is checked out. Say the size in one line
 (`git diff --shortstat "$BASE" "$HEAD"`).
 
 ## 3. Intent
@@ -70,7 +71,8 @@ What the change was asked to do, before any finding:
    check's log when it is an Actions job (`gh run view --job <id> --log-failed`); otherwise the
    check's name alone.
 2. **Threads:** `bash "$R" threads <o>/<r> <n>` — one JSON object per thread, each comment marked
-   `bot` (a `[bot]` login, or one the team lists under `review.bots`).
+   `bot` (a `[bot]` login, or one the team lists under `review.bots`). A stderr line that the read
+   was cut, or a thread with `truncated: true`, is said above the cards.
 3. **The graph at the head**, when the `mcp__gortex__*` tools are present: this checkout's graph
    id from `mcp__gortex__workspace` (operation `info`, the `graph-…` id) gives
    `VIEW={kind: "commit", value: "<HEAD>", graph_id: "<id>"}`. Gortex absent or not answering →
@@ -105,7 +107,11 @@ verified. No findings → no verify pass.
    error and stop.
 3. **The person's own pending review:** `bash "$R" pending <o>/<r> <n> "$ME"` (exit 1: none). Its
    comments become `(your draft)` cards, part of what will be posted, and a new finding that
-   repeats one is dropped.
+   repeats one is dropped. Each goes through the same anchor check (its `side`, `start_line`):
+   one with no `line`, or a line no longer in the diff, is outdated — its card says
+   `⚠ line no longer in the diff (outdated) — goes into the body`, and its text folds into the
+   body as `<path>: <comment>`, so posting never drops it and GitHub never rejects the review
+   for it.
 
 ## 8. Cards and the one question
 
@@ -144,14 +150,17 @@ verified. No findings → no verify pass.
 
    A bare approve passes `--event APPROVE` alone. Exit 2 → its stderr names what GitHub would
    reject; fix it and build again.
-3. The person's pending review exists → its comments are already in the payload; delete it:
+3. The person's pending review exists → its comments are already in the payload. Keep it first,
+   `bash "$R" pending <o>/<r> <n> "$ME" > "$D/<n>.pending.json"`, then delete it (GitHub holds one
+   pending review per person per PR, so it must go before the post):
    `bash "$R" delete-pending <o>/<r> <n> <id>`.
 4. `bash "$R" post <o>/<r> <n> "$D/<n>.payload.json"`: one call that creates and submits the
    review with its verdict. Never a pending draft left behind, never a second call to submit it.
-   It fails → say what failed and that `$D/<n>.payload.json` holds everything; never retry
-   silently.
-5. Report the state and the `html_url` as the last thing on screen. Delete the three files in `$D`
-   once the state is `APPROVED`, `CHANGES_REQUESTED` or `COMMENTED`.
+   It fails → put the person's draft back when there was one
+   (`bash "$R" restore-pending <o>/<r> <n> "$D/<n>.pending.json"`), say what failed and that
+   `$D/<n>.payload.json` holds everything; never retry silently.
+5. Report the state and the `html_url` as the last thing on screen. Delete the files in `$D` for
+   this PR once the state is `APPROVED`, `CHANGES_REQUESTED` or `COMMENTED`.
 
 ## Writes
 

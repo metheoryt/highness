@@ -4,20 +4,24 @@
 # building and posting the one review. The model decides what to say; this decides what GitHub
 # will accept, so a test can pin it.
 #
-#   review.sh head --pr N --base-ref B         BASE<TAB>HEAD: the PR head fetched to refs/hi-review/N,
-#                                              and its merge-base with origin/B
+#   review.sh head --pr N --base-ref B [--repo O/R]
+#                                              BASE<TAB>HEAD: the PR head fetched to refs/hi-review/N,
+#                                              and its merge-base with <remote>/B, where <remote>
+#                                              is the one whose URL names O/R, else origin
 #   review.sh anchor <base> <head> <path> <line|start-end> [RIGHT|LEFT]
 #                                              exit 0 when GitHub can anchor a comment there: the
 #                                              line (or the whole span) sits in one hunk of the
 #                                              diff, on that side (RIGHT, the head, by default)
 #   review.sh threads <owner/repo> <n>         the PR's review threads, one JSON object per line:
-#                                              path, line, resolved, outdated, comments[] of
-#                                              {author, bot, body, createdAt, url}
+#                                              path, line, resolved, outdated, truncated,
+#                                              comments[] of {author, bot, body, createdAt, url}
 #   review.sh pending <owner/repo> <n> <login> the login's own PENDING review as one JSON object
 #                                              {id, body, comments[]}; exit 1 when there is none
 #   review.sh payload --event E [--body-file F] [--comments-file C]
 #                                              the review payload on stdout (see payload below)
 #   review.sh delete-pending <owner/repo> <n> <id>
+#   review.sh restore-pending <owner/repo> <n> <pending file>
+#                                              put a deleted pending review back after a failed post
 #   review.sh post <owner/repo> <n> <payload file>
 #                                              one POST that creates AND submits the review;
 #                                              prints {id, state, html_url}
@@ -34,25 +38,42 @@ say() { printf 'review.sh: %s\n' "$*" >&2; }
 # head: a PRIVATE ref (never a branch, so it cannot collide with anyone's), forced so a force-push
 # does not fail the review. Serves fork PRs too, through the base repo. The same ref hi's wt.sh
 # review-head writes, so a quick review and a review workspace share one fetch.
+#
+# The remote is the one whose URL names --repo (the PR's owner/repo), else origin: in a fork
+# checkout origin is the fork, which has no pull/N and a stale trunk.
+_remote_for() { # <owner/repo>
+  local want r u
+  want=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+  for r in $(git remote); do
+    u=$(git config --get "remote.$r.url") || continue
+    u=${u%/}; u=${u%.git}; u=${u##*:}
+    u=$(printf '%s\n' "$u" | awk -F/ 'NF >= 2 { print tolower($(NF-1) "/" $NF) }')
+    [ "$u" = "$want" ] && { printf '%s\n' "$r"; return 0; }
+  done
+  printf 'origin\n'
+}
+
 cmd_head() {
-  local pr='' base_ref='' out head base
+  local pr='' base_ref='' repo='' rem out head base
   while [ $# -gt 0 ]; do
     case "$1" in
       --pr)       pr="${2:-}";       shift 2 ;;
       --base-ref) base_ref="${2:-}"; shift 2 ;;
+      --repo)     repo="${2:-}";     shift 2 ;;
       *) say "head: unknown flag $1"; return 2 ;;
     esac
   done
   case "$pr" in ''|*[!0-9]*) say "head: --pr must be a plain PR number (got [$pr])"; return 2 ;; esac
   [ -n "$base_ref" ] || { say 'head: --base-ref <baseRefName> is required'; return 2; }
-  base_ref=${base_ref#origin/}
-  out=$(git fetch --quiet origin "+pull/$pr/head:refs/hi-review/$pr" 2>&1) || {
-    say "head: git fetch pull/$pr/head failed: $out"; return 3; }
-  git fetch --quiet origin "$base_ref" >/dev/null 2>&1 || true
+  rem=origin; [ -n "$repo" ] && rem=$(_remote_for "$repo")
+  base_ref=${base_ref#"$rem"/}
+  out=$(git fetch --quiet "$rem" "+pull/$pr/head:refs/hi-review/$pr" 2>&1) || {
+    say "head: git fetch $rem pull/$pr/head failed: $out"; return 3; }
+  git fetch --quiet "$rem" "$base_ref" >/dev/null 2>&1 || true
   head=$(git rev-parse --verify --quiet "refs/hi-review/$pr") || head=''
   [ -n "$head" ] || { say "head: refs/hi-review/$pr did not resolve"; return 3; }
-  base=$(git merge-base "$head" "origin/$base_ref" 2>/dev/null) || base=''
-  [ -n "$base" ] || { say "head: no merge-base between $head and origin/$base_ref"; return 3; }
+  base=$(git merge-base "$head" "$rem/$base_ref" 2>/dev/null) || base=''
+  [ -n "$base" ] || { say "head: no merge-base between $head and $rem/$base_ref"; return 3; }
   printf '%s\t%s\n' "$base" "$head"
 }
 
@@ -69,23 +90,40 @@ cmd_anchor() {
     *-*) lo=${spec%%-*}; hi=${spec#*-} ;;
     *)   lo=$spec; hi=$spec ;;
   esac
-  case "$lo$hi" in ''|*[!0-9]*) say "anchor: line must be N or N-M (got $spec)"; return 2 ;; esac
+  case "$lo" in ''|*[!0-9]*) say "anchor: line must be N or N-M (got $spec)"; return 2 ;; esac
+  case "$hi" in ''|*[!0-9]*) say "anchor: line must be N or N-M (got $spec)"; return 2 ;; esac
   [ "$lo" -le "$hi" ] || { say "anchor: span $spec runs backwards"; return 2; }
   # Buffered, not piped: a failing `git diff` behind a pipe reads as "not in the diff".
-  d=$(git diff --no-ext-diff --no-color -M -U3 "$base" "$head") || { say "anchor: git diff $base $head failed"; return 3; }
+  # quotePath=false keeps a non-ASCII name as is; a name with a space gets a trailing TAB on its
+  # `+++` line, stripped below.
+  d=$(git -c core.quotePath=false diff --no-ext-diff --no-color -M -U3 "$base" "$head") || {
+    say "anchor: git diff $base $head failed"; return 3; }
+  # Inside a hunk every line is content, even one that reads `+++ x` (an added `++ x`): the hunk's
+  # own counts say where it ends, and only outside one is a line a file header.
   printf '%s\n' "$d" | awk -v want="$path" -v lo="$lo" -v hi="$hi" -v side="$side" '
+    function span(r, which) {
+      s = r; l = 1
+      if (index(r, ",") > 0) { s = substr(r, 1, index(r, ",") - 1); l = substr(r, index(r, ",") + 1) }
+      if (which == "start") return s + 0
+      return l + 0
+    }
+    ol > 0 || nl > 0 {
+      c = substr($0, 1, 1)
+      if (c == " " || c == "") { ol--; nl-- } else if (c == "-") ol-- ; else if (c == "+") nl--
+      next
+    }
     /^diff --git / {
       rest = $0; p = ""
       while ((k = index(rest, " b/")) > 0) { rest = substr(rest, k + 3); p = rest }
       file = p; next
     }
-    /^\+\+\+ / { if ($0 != "+++ /dev/null") file = substr($0, 7); next }
-    /^@@ / && file == want {
+    /^\+\+\+ / { if ($0 != "+++ /dev/null") { file = substr($0, 7); sub(/\t$/, "", file) } next }
+    /^@@ / {
       o = $2; n = $3; sub(/^-/, "", o); sub(/^\+/, "", n)
+      ol = span(o, "len"); nl = span(n, "len")
+      if (file != want) next
       r = (side == "RIGHT") ? n : o
-      start = r; len = 1
-      if (index(r, ",") > 0) { start = substr(r, 1, index(r, ",") - 1); len = substr(r, index(r, ",") + 1) }
-      start += 0; len += 0
+      start = span(r, "start"); len = span(r, "len")
       if (len > 0 && lo >= start && hi <= start + len - 1) found = 1
     }
     END { exit found ? 0 : 1 }
@@ -102,13 +140,18 @@ cmd_threads() {
   raw=$("$GH" api graphql -F owner="${or%%/*}" -F name="${or#*/}" -F number="$n" -f query='
     query($owner: String!, $name: String!, $number: Int!) {
       repository(owner: $owner, name: $name) { pullRequest(number: $number) {
-        reviewThreads(first: 100) { nodes { isResolved isOutdated path line originalLine
-          comments(first: 50) { nodes { author { login } body createdAt url } } } } } } }') || {
+        reviewThreads(first: 100) { pageInfo { hasNextPage } nodes { isResolved isOutdated path line originalLine
+          comments(first: 50) { totalCount nodes { author { login } body createdAt url } } } } } } }') || {
     say "threads: gh api graphql failed for $or#$n"; return 3; }
+  # Past 100 threads or 50 comments in one thread the read is cut, and says so: on stderr for the
+  # threads, as `truncated` on the thread for its replies (a cut "still broken" reply matters).
+  printf '%s\n' "$raw" | jq -e '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage' >/dev/null 2>&1 &&
+    say "threads: $or#$n has more than 100 review threads; only the first 100 were read"
   printf '%s\n' "$raw" | jq -c --argjson bots "$bots" '
     def bot: . as $l | ($l == null) or ($l | endswith("[bot]")) or ($bots | any(. == $l));
     .data.repository.pullRequest.reviewThreads.nodes[]
     | {path, line: (.line // .originalLine), resolved: .isResolved, outdated: .isOutdated,
+       truncated: ((.comments.totalCount // 0) > (.comments.nodes | length)),
        comments: [.comments.nodes[] | {author: .author.login, bot: (.author.login | bot), body, createdAt, url}]}'
 }
 
@@ -166,19 +209,23 @@ cmd_payload() {
     COMMENT|REQUEST_CHANGES) [ -n "$body" ] || { say "payload: $event needs a body"; return 2; } ;;
   esac
   printf '%s' "$comments" | jq -c --arg event "$event" --arg body "$body" '
-    def bad: "payload: comment \(.i): \(.why)" | halt_error(2);
+    def bad: "payload: comment \(.i): \(.why)\n" | halt_error(2);
+    def posint: type == "number" and . >= 1 and . == floor;
     to_entries
     | map(.key as $i | .value
         | if (.path | type) != "string" or .path == "" then {i: $i, why: "no path"} | bad
-          elif (.line | type) != "number" then {i: $i, why: "no line"} | bad
+          elif (.line | posint | not) then {i: $i, why: "no line (a positive whole number)"} | bad
           elif (.body | type) != "string" or .body == "" then {i: $i, why: "no body"} | bad
           else . end
         | (.side // "RIGHT") as $side
-        | if ($side | IN("RIGHT", "LEFT") | not) then {i: $i, why: "side must be RIGHT or LEFT"} | bad else . end
+        | (.start_side // $side) as $sside
+        | if ($side | IN("RIGHT", "LEFT") | not) then {i: $i, why: "side must be RIGHT or LEFT"} | bad
+          elif ($sside | IN("RIGHT", "LEFT") | not) then {i: $i, why: "start_side must be RIGHT or LEFT"} | bad
+          else . end
         | {path, line, side: $side, body}
           + (if (.start_line // null) == null then {}
-             elif (.start_line | type) != "number" or .start_line >= .line then {i: $i, why: "start_line must be below line"} | bad
-             else {start_line, start_side: (.start_side // $side)} end))
+             elif (.start_line | posint | not) or .start_line >= .line then {i: $i, why: "start_line must be a positive whole number below line"} | bad
+             else {start_line, start_side: $sside} end))
     | {event: $event}
       + (if $body == "" then {} else {body: $body} end)
       + (if length == 0 then {} else {comments: .} end)'
@@ -189,6 +236,24 @@ cmd_delete_pending() {
   case "$or" in */*) ;; *) say 'usage: delete-pending <owner/repo> <n> <id>'; return 2 ;; esac
   case "$n$id" in ''|*[!0-9]*) say 'usage: delete-pending <owner/repo> <n> <id>'; return 2 ;; esac
   "$GH" api -X DELETE "repos/$or/pulls/$n/reviews/$id" >/dev/null || { say "delete-pending: deleting review $id failed"; return 3; }
+}
+
+# restore-pending: put back the person's pending review (as `pending` printed it) after a failed
+# post, as a PENDING review again: the same POST without an `event`. A draft comment with no line
+# (outdated) cannot be re-created on a line; it goes back into the body instead, so nothing the
+# person wrote is lost.
+cmd_restore_pending() {
+  local or="${1:-}" n="${2:-}" f="${3:-}" p
+  case "$or" in */*) ;; *) say 'usage: restore-pending <owner/repo> <n> <pending file>'; return 2 ;; esac
+  case "$n" in ''|*[!0-9]*) say 'usage: restore-pending <owner/repo> <n> <pending file>'; return 2 ;; esac
+  [ -f "$f" ] || { say "restore-pending: no file $f"; return 2; }
+  p=$(jq -c '
+    [.comments[] | select(.line == null) | "\(.path): \(.body)"] as $lost
+    | {body: ([(.body // ""), $lost[]] | map(select(. != "")) | join("\n\n"))}
+      + {comments: [.comments[] | select(.line != null) | with_entries(select(.value != null))]}
+    | if .body == "" then del(.body) else . end' "$f" 2>/dev/null) || { say "restore-pending: $f is not a pending review"; return 2; }
+  printf '%s\n' "$p" | "$GH" api -X POST "repos/$or/pulls/$n/reviews" --input - --jq '{id, state}' || {
+    say "restore-pending: the draft was not put back; its text is in $f"; return 3; }
 }
 
 cmd_post() {
@@ -210,6 +275,7 @@ case "$sub" in
   pending)        cmd_pending "$@" ;;
   payload)        cmd_payload "$@" ;;
   delete-pending) cmd_delete_pending "$@" ;;
+  restore-pending) cmd_restore_pending "$@" ;;
   post)           cmd_post "$@" ;;
-  *) sed -n '7,25p' "$0" | sed 's/^# *//' >&2; exit 2 ;;
+  *) awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0" >&2; exit 2 ;;
 esac
