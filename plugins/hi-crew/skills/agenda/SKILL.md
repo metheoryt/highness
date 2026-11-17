@@ -98,7 +98,7 @@ and say in one line that Orca now wakes this session, not the other one, for tha
   resume does: first the live session in the thread's worktree, then a new terminal there. It
   prints `<outcome><TAB><detail>`:
   - `sent`: typed into the session running in the thread's worktree. Tell the user in one line
-    what was sent.
+    what was sent; a session they started by hand may ask once there to read the brief.
   - `started`: no session ran there; `claude --resume` started in a new terminal of that
     worktree with the decisions as its first prompt. Say so in one line.
   - `unconfirmed`: typed, but not seen taken. The user looks at that terminal; never send it

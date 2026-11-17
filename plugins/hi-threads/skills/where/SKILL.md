@@ -61,7 +61,7 @@ Do not show ids, paths or session ids unless asked. When the user picks a thread
   It goes through hi's `wt.sh dispatch <worktree> --resume <session>`: first the live session in
   the thread's worktree, then a new terminal there. It prints `<outcome><TAB><detail>`:
   - `sent`: typed into the session running in the thread's worktree. Tell the user in one line
-    what was sent.
+    what was sent; a session they started by hand may ask once there to read the brief.
   - `started`: no session ran there; `claude --resume` started in a new terminal of that
     worktree with the decisions as its first prompt. Say so in one line.
   - `unconfirmed`: typed, but not seen taken. The user looks at that terminal; never send it
