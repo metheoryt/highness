@@ -113,9 +113,12 @@ RESP=''
 load_base() {
   BASE=$(cfg base_url) || die 4 "tracker.base_url is not set (kind $KIND)"
   BASE=${BASE%/}
+  # A whitelist, not a parse: the host must be the only thing curl could read as one. No user
+  # info, query or fragment, so "https://other#@tracker" can never pass for tracker's host.
+  printf '%s\n' "$BASE" | grep -Eq '^https?://[A-Za-z0-9.-]+(:[0-9]+)?(/[A-Za-z0-9._~%/-]*)?$' \
+    || die 4 "tracker.base_url '$BASE' is not a plain http(s) URL (scheme, host, optional port and path only)"
   local rest=${BASE#*://}
-  case "$BASE" in https://*|http://*) ;; *) die 4 "tracker.base_url '$BASE' is not an http(s) URL" ;; esac
-  rest=${rest%%/*}; rest=${rest##*@}
+  rest=${rest%%/*}
   HOST=$(printf '%s' "$rest" | tr 'A-Z' 'a-z')
 }
 

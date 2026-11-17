@@ -183,7 +183,8 @@ Exit codes: 1 no credential, 2 credential rejected, 3 usage, 4 config, 5 the tra
 
 The credential lives in your personal file only, at its top level, keyed by the tracker's host.
 The adapter sends a token only to the host you paired it with, so a cloned repo's `base_url`
-cannot redirect it, and it travels in curl's config on stdin, never in a command line:
+cannot redirect it (a `base_url` must be a plain scheme, host, port and path: no user info, query
+or fragment that could hide another host), and it travels in curl's config on stdin, never in a command line:
 
 ```json
 {"trackers": {"example.atlassian.net": {"email": "you@example.com", "token_command": "secret-tool lookup service jira"}}}

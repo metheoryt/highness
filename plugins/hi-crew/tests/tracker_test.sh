@@ -117,6 +117,16 @@ person '{"trackers": {"example.atlassian.net": {"email": "a@b", "token_env": "HI
 run status >/dev/null; check "plain http with allow_http" "$?" 0
 team "$JIRA"; person "$CRED"
 
+# A base_url that hides another host behind the credential's host never gets past the check.
+for u in 'https://evil.example#@example.atlassian.net' 'https://evil.example?@example.atlassian.net' \
+         'https://evil.example\@example.atlassian.net' 'https://user@example.atlassian.net'; do
+  reset; route GET rest/api/2/myself 200 myself.json
+  team "{\"tracker\": {\"kind\": \"jira\", \"base_url\": $(printf '%s' "$u" | jq -R .)}}"
+  run status 2>/dev/null; check "base_url $u → exit 4" "$?" 4
+  check "base_url $u: nothing is sent" "$([ -s "$FAKE/req" ] && echo sent || echo none)" none
+done
+team "$JIRA"
+
 team '{"tracker": {"kind": "jira", "base_url": "https://example.atlassian.net", "statuses": {"Open": "started"}}}'
 run status 2>"$T/err"; check "an unknown role in tracker.statuses → exit 4" "$?" 4
 team "$JIRA"
