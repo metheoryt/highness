@@ -43,4 +43,37 @@ if (cd "$T/mine" && HIGHNESS_CONFIG="$T/user2.json" bash "$C" get .crew.model >/
 if h mine .crew.agent; then check 'has: an absent key' yes no; else check 'has: an absent key' no no; fi
 if h other .crew.agent; then check 'has: through an owner overlay' yes yes; else check 'has: through an owner overlay' no yes; fi
 if h mine .nothing.deeper; then check 'has: under an absent parent' yes no; else check 'has: under an absent parent' no no; fi
+
+# An umbrella: a checkout with the team file and a repos.txt listing the clones inside it. A child
+# clone with no file of its own takes the umbrella's; one the umbrella does not list takes none.
+U="$T/umb"; repo umb 'git@github.com:someone/umb.git'
+mkdir -p "$U/.claude" && printf '{"x":"umbrella","deny":["m"]}' >"$U/.claude/highness.json"
+printf '# clones\nlisted/ git@github.com:someone/listed.git\r\n\nmine git@github.com:someone/mine2.git\n' >"$U/repos.txt"
+repo umb/listed   'git@github.com:someone/listed.git'
+repo umb/unlisted 'git@github.com:someone/unlisted.git'
+repo umb/mine     'git@github.com:someone/mine2.git'
+mkdir -p "$U/listed/src" "$U/mine/.claude" && printf '{"x":"own"}' >"$U/mine/.claude/highness.json"
+UP=$(cd "$U" && pwd -P)
+check 'umbrella: a listed child clone takes its file'   "$(g umb/listed get .x)" umbrella
+check 'umbrella: from a subdirectory of the clone too'  "$(g umb/listed/src get .x)" umbrella
+check 'umbrella: files names it'                        "$(g umb/listed files | head -1)" "$UP/.claude/highness.json"
+check 'umbrella: root is the umbrella'                  "$(g umb/listed root)" "$UP"
+check 'umbrella: an unlisted clone takes none'          "$(g umb/unlisted get .x)" top
+if g umb/unlisted root >/dev/null; then check 'umbrella: unlisted root exits 1' 0 1; else check 'umbrella: unlisted root exits 1' 1 1; fi
+check "umbrella: a clone's own file wins"               "$(g umb/mine get .x)" own
+check 'umbrella: root of a clone with its own file'     "$(g umb/mine root)" "$(cd "$U/mine" && pwd -P)"
+check '--user ignores the umbrella file'                "$(g umb/listed get --user .x)" top
+check 'umbrella: root itself takes its own file'        "$(g umb get .x)" umbrella
+# A linked worktree of the child clone, made elsewhere: its main checkout is the listed clone.
+git -C "$U/listed" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+git -C "$U/listed" worktree add -q "$T/listed-wt" 2>/dev/null
+check "umbrella: a worktree of a listed clone takes it" "$(g listed-wt get .x)" umbrella
+# umbrella.dir: the listed dirs live under a subdirectory the umbrella's file names.
+V="$T/umb2"; repo umb2 'git@github.com:someone/umb2.git'
+mkdir -p "$V/.claude" "$V/repos" && printf '{"x":"umbrella2","umbrella":{"dir":"repos/"}}' >"$V/.claude/highness.json"
+printf 'api git@github.com:someone/api.git\n' >"$V/repos.txt"
+repo umb2/repos/api 'git@github.com:someone/api.git'
+repo umb2/api       'git@github.com:someone/api.git'
+check 'umbrella.dir: a clone under it takes the file'   "$(g umb2/repos/api get .x)" umbrella2
+check 'umbrella.dir: the same name beside it does not'  "$(g umb2/api get .x)" top
 exit $fail
