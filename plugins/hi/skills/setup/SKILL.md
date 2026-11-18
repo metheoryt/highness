@@ -58,7 +58,10 @@ file a repo tracks is a printed proposal, as in `/hi:repo-setup`'s `local` mode.
   working copy: a local edit there changes every session without a release, and two copies run
   every hook twice. Ask which one stays (the marketplace copy, unless the person develops
   highness on this box). The fix for the link, on a yes: `rm '<profile>/skills/<name>'` (the link
-  only, never its target; check `[ -L ]` first). For the marketplace copy:
+  only, never its target; check `[ -L ]` first). When `<profile>/skills` is itself a link to a
+  shared dir (Orca's profile homes often share one), the removal reaches every profile that
+  shares it: check `[ -L '<profile>/skills' ]` and name those profiles before asking. For the
+  marketplace copy:
   `CLAUDE_CONFIG_DIR='<profile>' claude plugin uninstall <name>@<marketplace> --scope <scope>`.
 - `profile:<dir> gaps`: another Claude config dir Orca uses (it observed it, or it is an Orca
   account's profile home): if Orca switches to it, the plugins after `off:` silently go away, and
