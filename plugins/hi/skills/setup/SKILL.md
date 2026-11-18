@@ -97,6 +97,10 @@ as the whole new JSON before it happens, and keep every key it already has.
   file a repo tracks. `rejected`: the tracker refused the token; it needs a new one. `config`: the
   detail names the bad key (in the repo's file or the person's). `error`: the tracker did not
   answer (network, a VPN); say so, nothing to fix here.
+- `overlay team-file`: the detail names the team file that applies. From a clone with no file of
+  its own it is the umbrella's (an umbrella above the clone whose `repos.txt` lists it); nothing
+  to fix. When the user expected the umbrella's file and the row says `none`, the umbrella does
+  not list this clone in `repos.txt`.
 - `overlay none`: the repo has no team `.claude/highness.json`, and the person's file has no
   `repos["<owner/repo>"]` or `repos["<owner>"]` block for it. Only when the team has settings
   (`crew.process`, `crew.marker`, …) that cannot be committed to the repo: offer that block in the

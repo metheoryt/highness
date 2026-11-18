@@ -106,6 +106,8 @@ Known gaps:
 
 Optional JSON, read by every plugin: `~/.config/highness/config.json` (or `$HIGHNESS_CONFIG`) for one
 person, `.claude/highness.json` in a repo for a team. A repo key wins; lists from both add up.
+A clone with no `.claude/highness.json` of its own, inside an umbrella (a checkout whose `repos.txt`
+lists it), takes the umbrella's file; `config.sh root` names the directory whose file applies.
 `guard.exempt_commands` and `guard.checks` are read from the personal file only: a repo's file comes
 with every clone, so it may add deny patterns but never switch the guard off or run a program. One exception:
 `land.test`, the suite `wt.sh land` runs before it lands a branch, is read from the repo's file too —

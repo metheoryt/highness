@@ -122,7 +122,8 @@ check 'sections: open threads of this project first' "$(printf '%s\n' "$out" | h
 check 'sections: no done or foreign threads' "$(printf '%s\n' "$out" | jq -r 'select(.section == "threads") | .title' | wc -l | tr -d ' ')" '1'
 rm -rf "$HIGHNESS_STATE/threads"
 
-# --- spec
+# --- spec (the fake orca: spec asks this session's Run for a pinned root, and must not reach a real one)
+export ORCA_CLI_COMMAND="$T/bin/fakeorca"
 printf 'Line one of the brief.\nLine & two with {{KEY}} literal.\n' >"$T/brief"
 out=$(cd "$T" && bash "$C" spec --key ABC-9 --title 'Do the thing' --brief-file "$T/brief")
 case "$out" in *'Ticket ABC-9: Do the thing'*) ok 'spec title' ;; *) no 'spec title' ;; esac
@@ -170,6 +171,33 @@ case "$out" in *'Never resolve review threads, never force-push'*) ok 'on_green:
 printf '{"crew":{"merge":"always"}}' >"$HIGHNESS_CONFIG"
 if (cd "$T" && bash "$C" spec --key ABC-9 --title 'T' >/dev/null 2>&1); then no 'unknown crew.merge refused'; else ok 'unknown crew.merge refused'; fi
 printf '{}' >"$HIGHNESS_CONFIG"
+
+# --- an umbrella: a spec built from a child clone carries the umbrella's process, merge and root
+U="$T/umb"; mkdir -p "$U/.claude" && git -C "$U" init -q
+printf '{"crew":{"process":"Umbrella process at {{ROOT}}/tools.","merge":"on_green","marker":"[u]"}}' >"$U/.claude/highness.json"
+printf 'kid git@github.com:someone/kid.git\n' >"$U/repos.txt"
+mkdir -p "$U/kid" "$U/stray" && git -C "$U/kid" init -q && git -C "$U/stray" init -q
+UP=$(cd "$U" && pwd -P)
+out=$(cd "$U/kid" && bash "$C" spec --key ABC-9 --title 'T')
+case "$out" in *"Umbrella process at $UP/tools."*) ok 'umbrella: a child clone spec has its process, {{ROOT}} the umbrella' ;; *) no 'umbrella: a child clone spec has its process, {{ROOT}} the umbrella' ;; esac
+case "$out" in *'- Merge your own pull request once it is ready'*) ok "umbrella: a child clone spec has its merge line" ;; *) no "umbrella: a child clone spec has its merge line" ;; esac
+case "$out" in *'`[u]`, so people'*) ok 'umbrella: a child clone spec has its marker' ;; *) no 'umbrella: a child clone spec has its marker' ;; esac
+case "$out" in *'(none configured'*) no 'umbrella: no "none configured" from a child clone' ;; *) ok 'umbrella: no "none configured" from a child clone' ;; esac
+out=$(cd "$U/stray" && bash "$C" spec --key ABC-9 --title 'T')
+case "$out" in *'(none configured'*) ok 'umbrella: an unlisted clone gets no process' ;; *) no 'umbrella: an unlisted clone gets no process' ;; esac
+out=$(cd "$T" && bash "$C" spec --key ABC-9 --title 'T' --root "$U")
+case "$out" in *"Umbrella process at $U/tools."*) ok 'spec --root reads the settings there' ;; *) no 'spec --root reads the settings there' ;; esac
+# The root is pinned when the Run is registered; a later cd into a clone does not move it.
+(cd "$U" && bash "$C" run run_umb1)
+check 'root: pinned at the Run registration' "$(cd "$U/stray" && FAKE_CURRENT=run_umb1 bash "$C" root)" "$UP"
+out=$(cd "$U/stray" && FAKE_CURRENT=run_umb1 bash "$C" spec --key ABC-9 --title 'T')
+case "$out" in *"Umbrella process at $UP/tools."*) ok 'spec: the pinned root wins over the cwd' ;; *) no 'spec: the pinned root wins over the cwd' ;; esac
+(cd "$U/stray" && bash "$C" run run_umb1)
+check 'root: a second registration keeps the first pin' "$(FAKE_CURRENT=run_umb1 bash "$C" root)" "$UP"
+check 'root: with no Run, derived from the cwd' "$(cd "$U/kid" && bash "$C" root)" "$UP"
+check 'root: <dir> re-pins it' "$(FAKE_CURRENT=run_umb1 bash "$C" root "$U/stray")" "$(cd "$U/stray" && pwd -P)"
+if bash "$C" root "$U" 2>/dev/null; then no 'root <dir>: refused with no Run'; else ok 'root <dir>: refused with no Run'; fi
+unset ORCA_CLI_COMMAND
 
 # --- watch: a fake PR state command and an orca that records what it sends
 W="$T/w"; mkdir -p "$W/bin" "$W/root"; git -C "$W/root" init -q
