@@ -76,4 +76,11 @@ repo umb2/repos/api 'git@github.com:someone/api.git'
 repo umb2/api       'git@github.com:someone/api.git'
 check 'umbrella.dir: a clone under it takes the file'   "$(g umb2/repos/api get .x)" umbrella2
 check 'umbrella.dir: the same name beside it does not'  "$(g umb2/api get .x)" top
+# Not a checkout: a plain directory with both files that lists the clone is no umbrella.
+mkdir -p "$T/plaindir/.claude" && printf '{"x":"planted"}' >"$T/plaindir/.claude/highness.json"
+printf 'kid\n' >"$T/plaindir/repos.txt"; repo plaindir/kid 'git@github.com:someone/kid.git'
+check 'umbrella: a plain directory is not one'          "$(g plaindir/kid get .x)" top
+# The umbrella's file sits in the repo file's place: it wins over the person's overlay for the clone.
+printf '{"x":"top","repos":{"someone/listed":{"x":"overlay"}}}' >"$T/user3.json"
+check "umbrella: its file wins over the clone's overlay" "$(cd "$U/listed" && HIGHNESS_CONFIG="$T/user3.json" bash "$C" get .x)" umbrella
 exit $fail

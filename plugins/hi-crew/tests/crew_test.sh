@@ -104,6 +104,11 @@ out=$(cd "$S" && bash "$C" sections)
 check 'sections: each object tagged with its section, placeholders filled' "$(printf '%s\n' "$out" | jq -r 'select(.section == "Tickets") | (.group // "-") + " " + .title' | tr '\n' '|')" "you T-1|- $(cd "$S" && git rev-parse --show-toplevel) (bot)|"
 check 'sections: a failing source shows as an error' "$(printf '%s\n' "$out" | jq -r 'select(.section == "Broken") | .error')" 'exit 3: nope'
 check 'sections: a quiet source gives nothing' "$(printf '%s\n' "$out" | jq -r 'select(.section == "Quiet")' )" ''
+# From a child clone the umbrella lists: the umbrella's sections, run with {{ROOT}} the umbrella.
+printf 'kid\n' >"$S/repos.txt"; mkdir -p "$S/kid" && git -C "$S/kid" init -q
+out=$(cd "$S/kid" && bash "$C" sections)
+check 'sections: from a child clone, {{ROOT}} is the umbrella' "$(printf '%s\n' "$out" | jq -r 'select(.section == "Tickets" and .group == null) | .title')" "$(cd "$S" && pwd -P) (bot)"
+rm -rf "$S/kid" "$S/repos.txt"
 
 # The hi-threads journal, when there is one, comes first as section "threads": this project only.
 mkdir -p "$HIGHNESS_STATE/threads"

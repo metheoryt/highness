@@ -396,7 +396,7 @@ pr_state() { # <facts json>
   local pr root cmd marker line
   pr=$(printf '%s' "$1" | jq -r '.pr // empty')
   root=$(printf '%s' "$1" | jq -r '.root // empty')
-  [ -n "$root" ] && [ -d "$root" ] || root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+  [ -n "$root" ] && [ -d "$root" ] || root=$(derive_root)
   cmd=$(cd "$root" && bash "$CONFIG" get '.crew.pr_state') || cmd=''
   marker=$(cd "$root" && bash "$CONFIG" get '.crew.marker') || marker='(agent)'
   if [ -z "$cmd" ]; then
@@ -424,7 +424,8 @@ tracker_cmd() { printf 'bash %s --root %s' "$(q "$HERE/tracker.sh")" "$(q "$1")"
 
 # The team's own digest sections (config agenda.sections), so the digest covers more than the
 # workers without hi knowing the team's tracker or forge. Each section is {"name", "command"}; the
-# command runs from this git root with {{ROOT}}, {{MARKER}} and {{TRACKER}} filled in, and prints
+# command runs from the team file's root (derive_root: an umbrella, from a child clone it lists)
+# with {{ROOT}}, {{MARKER}} and {{TRACKER}} filled in, and prints
 # one JSON object per line: {"group": "you|others|later|done", "title", "next", "url", "since"}
 # (all but title optional). `{{TRACKER}} sections` is the person's tickets from the configured
 # tracker (lib/tracker.sh).
@@ -435,7 +436,7 @@ tracker_cmd() { printf 'bash %s --root %s' "$(q "$HERE/tracker.sh")" "$(q "$1")"
 cmd_sections() {
   need_jq
   local root secs n i name cmd line out rc
-  root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+  root=$(derive_root)
   # The person's open work threads from the hi-threads journal, when that plugin keeps one here.
   bash "$HERE/threads-read.sh" agenda 2>/dev/null | jq -c '{section: "threads"} + .' 2>/dev/null
   secs=$(cd "$root" && bash "$CONFIG" get '.agenda.sections') || secs=''

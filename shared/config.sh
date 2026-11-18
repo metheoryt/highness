@@ -83,9 +83,19 @@ _team_file() {
   while [ "$up" != / ] && [ -n "$up" ]; do
     up=$(dirname "$up")
     [ -f "$up/repos.txt" ] && [ -f "$up/.claude/highness.json" ] && _lists "$up" "$clone" \
-      && { printf '%s\n' "$up/.claude/highness.json"; return 0; }
+      && _is_umbrella "$up" && { printf '%s\n' "$up/.claude/highness.json"; return 0; }
   done
   return 1
+}
+
+# An umbrella is a checkout of its own (repos.txt at a git toplevel, as umbrella.sh marks it), and
+# its two files are the person's: a repo file's keys run commands, so a planted /tmp/repos.txt with
+# a file beside it must not decide for a clone under /tmp.
+_is_umbrella() {
+  local t
+  [ -O "$1/repos.txt" ] && [ -O "$1/.claude/highness.json" ] || return 1
+  t=$(git -C "$1" rev-parse --show-toplevel 2>/dev/null) || return 1
+  [ "$(cd "$t" 2>/dev/null && pwd -P)" = "$1" ]
 }
 
 _files() {
