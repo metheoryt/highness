@@ -108,6 +108,10 @@ Several tickets: run steps 1–7 for each, then end the turn once.
   read, and ask for their decision. Then relay it:
   `$O orchestration reply --id <message_id> --body "<the user's decisions>"`. Say that they are the
   user's.
+  Then record each point the user decided, so their choices can be read back across tickets:
+  `bash "$C" choice <KEY> '{"question":…,"options":[{"name":…,"loses":…,"leans_on":…}],"took":"option"|"own"|"reframed","picked":…,"reply":"<their words, verbatim>"}'`.
+  `took` is `own` when they wrote an option of their own and `reframed` when they rejected the
+  question's framing; those say the most about what the options missed.
 - **`worker_done`**: show the outcome, the PR link, what is left for a person. Record what became
   known (`bash "$C" record <KEY> '{"pr":"<url>","head":"<sha>"}'`).
   A subject starting `already done:` means the worker found the work landed already and opened

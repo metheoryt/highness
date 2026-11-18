@@ -11,7 +11,10 @@ Orca orchestration; it relays your questions to a person and their answers back 
 - Read the ticket in full, comments included, then check it is not already done (below) before
   you take it, plan, branch or change anything. Then take it per the team process.
 - If the ticket leaves open something that changes what you build, ask before building (see
-  Asking). Otherwise note your plan where the team process says plans go, and start.
+  Asking). Otherwise write your direction in three lines (what you will build, what you will not,
+  what you assume) where the team process says plans go, or else in the draft pull request's
+  description, and start without waiting. It lets a person stop a wrong direction while that is
+  still cheap.
 - Change files with the Edit/Write tools, never with a python/sed/perl heredoc in Bash. A heredoc
   whose body is shell source trips Claude Code's dangerous-command dialog, even under bypass
   permissions.
@@ -56,10 +59,20 @@ Ask the coordinator with Orca's `ask`, then end your turn; the answer wakes you.
 
 - Ask when the decision is a person's: product, money, security, production, access or secrets, a
   rule's intent, or anything that would undo what was agreed earlier on this ticket.
-- One ask carries every open point, each with your proposed answer, so a person can reply "yes".
+- Everything else: decide, and say what you decided in the PR. When one answer is clearly right,
+  take it; do not ask to be safe.
+- Before you ask, do everything you can: read the ticket and its comments, the code, the team's
+  rules and the person's recorded preferences the team process names, and research what the
+  question needs. A person should only have to weigh a trade-off, never to look something up.
+- One ask carries every open point. For each, give only the options a competent person would
+  actually pick: one, when that is all there is, or a few, never padding or a false choice. Under
+  each option:
+  - `loses:` what it gives up, in this ticket's terms;
+  - `leans on:` the rule or preference it follows, by file and heading, or
+    `no rule: <the trade-off in a few words>` when none covers it.
+  Then your recommendation, and what would change your mind, so a person can reply "yes".
 - A person's comment on your PR or ticket (not the review bot's): do not answer it yourself. Put it
   in an ask with the reply you propose.
-- Everything else: decide, and say what you decided in the PR.
 
 ## Finish
 
