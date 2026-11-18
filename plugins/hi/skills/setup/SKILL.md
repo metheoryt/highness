@@ -1,6 +1,6 @@
 ---
 name: setup
-description: Check and fix what a machine and a person need before the first /hi-crew:start — jq, Orca and its orchestration, the highness launcher, which highness plugins the Orca worker profile loads, the hi-crew watch, the board columns hi moves workspaces between, the person's highness config (crew.agent, crew.model, a repo overlay) — and then the repo in the cwd (an Orca project, plus every /hi:repo-setup row). One status table, then one proposed fix per gap, each run only on a yes. Never writes a file a repo tracks. Use on a fresh box, when the user asks to set up or check hi / hi-crew / highness, "why does hi-crew not work here", or before a first /hi-crew:start.
+description: Check and fix what a machine and a person need before the first /hi-crew:start — jq, Orca and its orchestration, the highness launcher, which highness plugins each Claude profile Orca uses loads (missing, loaded twice, stale project pins), the hi-crew watch, the board columns hi moves workspaces between, the person's highness config (crew.agent, crew.model, a repo overlay) — and then the repo in the cwd (an Orca project, plus every /hi:repo-setup row). One status table, then one proposed fix per gap, each run only on a yes. Never writes a file a repo tracks. Use on a fresh box, when the user asks to set up or check hi / hi-crew / highness, "why does hi-crew not work here", or before a first /hi-crew:start.
 ---
 
 # /hi:setup
@@ -41,8 +41,10 @@ file a repo tracks is a printed proposal, as in `/hi:repo-setup`'s `local` mode.
 - `plugin:<name> off`: the plugin is not enabled in the profile Orca starts workers under (the
   detail names it and why). A worker there runs without that plugin's skills and hooks: without
   `hi-crew` its permission-dialog marker and the watch's dialog wake-ups are dead; without
-  `hi-guard`, no `sudo` and deny-pattern guard. `hi` and `hi-crew` are needed; `hi-guard` is
-  recommended; `hi-docs` is optional (offer, do not push). The fix, on a yes:
+  `hi-guard`, no `sudo` and deny-pattern guard; without `hi-threads`, no journal of work threads
+  and no threads section in `/hi-crew:agenda`. `hi` and `hi-crew` are needed; `hi-guard` and
+  `hi-threads` are recommended; `hi-review` and `hi-docs` are optional (offer, do not push). The
+  fix, on a yes:
 
       CLAUDE_CONFIG_DIR='<profile from the detail>' claude plugin install <name>@highness --scope user
 
@@ -51,6 +53,32 @@ file a repo tracks is a printed proposal, as in `/hi:repo-setup`'s `local` mode.
   If install says the marketplace is unknown, first
   `CLAUDE_CONFIG_DIR='<profile>' claude plugin marketplace add metheoryt/highness`. Plugins and
   hooks load at session start: say that the running sessions keep the old set.
+- `plugin:<name> double`: the profile loads the plugin twice; the detail names each copy and its
+  source. A `link → <dir>` copy (`<id>@skills-dir`) is a link in the profile's `skills/` dir to a
+  working copy: a local edit there changes every session without a release, and two copies run
+  every hook twice. Ask which one stays (the marketplace copy, unless the person develops
+  highness on this box). The fix for the link, on a yes: `rm '<profile>/skills/<name>'` (the link
+  only, never its target; check `[ -L ]` first). When `<profile>/skills` is itself a link to a
+  shared dir (Orca's profile homes often share one), the removal reaches every profile that
+  shares it: check `[ -L '<profile>/skills' ]` and name those profiles before asking. For the
+  marketplace copy:
+  `CLAUDE_CONFIG_DIR='<profile>' claude plugin uninstall <name>@<marketplace> --scope <scope>`.
+- `profile:<dir> gaps`: another Claude config dir Orca uses (it observed it, or it is an Orca
+  account's profile home): if Orca switches to it, the plugins after `off:` silently go away, and
+  `double:` names a plugin it loads twice. One fix per plugin, the same commands as the
+  `plugin:<name>` rows above with `CLAUDE_CONFIG_DIR='<dir>'`. `profile:<dir> unknown`: its
+  plugin list failed; say it was not checked. `ok` needs nothing.
+- `pins:<file> stale`: project-scope pins of highness plugins whose project dir is gone (an old
+  worktree): a workspace reopened at that path loads the pinned, older code. `claude plugin
+  uninstall --scope project` cannot drop them (it only sees the project of its cwd, and needs
+  that project's own settings). The fix, one per pin and on a yes: copy the file to
+  `<file>.bak`, then drop that entry, shown before it runs:
+
+      jq --arg id '<id>' --arg pp '<dir>' '.plugins[$id] |= map(select(.projectPath != $pp))
+        | if (.plugins[$id] | length) == 0 then del(.plugins[$id]) else . end' '<file>' > '<file>.new' \
+        && mv '<file>.new' '<file>'
+
+  Say that running sessions keep what they loaded.
 - `plugins unknown`: `claude` is missing or `claude plugin list --json` failed; say so, and that
   the plugin rows were not checked.
 - `hi-crew off`: hi-crew is not enabled for workers, so there are no orchestration, watch or crew

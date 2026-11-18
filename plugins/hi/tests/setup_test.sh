@@ -26,13 +26,15 @@ case "$1 $2" in
   *) echo '{"ok":false}'; exit 1 ;;
 esac
 SH
-# A fake claude: `plugin list --json` prints $FAKE_PLUGINS, and logs the profile it was asked about.
+# A fake claude: `plugin list --json` prints the profile's own fake-plugins.json when it has one,
+# else $FAKE_PLUGINS, and logs each profile it was asked about.
 FAKE_CLAUDE="$SHIM/fake-claude"
 cat > "$FAKE_CLAUDE" <<SH
 #!/bin/sh
-printf '%s\n' "\$CLAUDE_CONFIG_DIR" > "$SANDBOX/claude-profile"
+printf '%s\n' "\$CLAUDE_CONFIG_DIR" >> "$SANDBOX/claude-profile"
 [ "\$1 \$2 \$3" = "plugin list --json" ] || exit 1
-printf '%s\n' "\${FAKE_PLUGINS:-[]}"
+if [ -f "\$CLAUDE_CONFIG_DIR/fake-plugins.json" ]; then cat "\$CLAUDE_CONFIG_DIR/fake-plugins.json"
+else printf '%s\n' "\${FAKE_PLUGINS:-[]}"; fi
 SH
 chmod +x "$FAKE_ORCA" "$FAKE_CLAUDE"
 export HI_ORCA="$FAKE_ORCA" HI_CLAUDE="$FAKE_CLAUDE"
@@ -77,14 +79,72 @@ assert_eq "profile: no Orca account → ~/.claude" "$HOME/.claude" "$(printf '%s
 P="$HOME/Library/Application Support/orca/claude-profiles/acc-1/home"; mkdir -p "$P"
 out=$(cd "$SANDBOX" && FAKE_ACCOUNT='"acc-1"' bash "$S" profile)
 assert_eq "profile: Orca's active account's dir" "$P" "$(printf '%s' "$out" | cut -f1)"
+rm -f "$SANDBOX/claude-profile"
 (cd "$SANDBOX" && FAKE_ACCOUNT='"acc-1"' bash "$S" status >/dev/null)
-assert_eq "plugins are listed for the worker profile" "$P" "$(cat "$SANDBOX/claude-profile")"
+assert_eq "plugins are listed for the worker profile" "$P" "$(head -1 "$SANDBOX/claude-profile")"
 out=$(cd "$SANDBOX" && FAKE_ACCOUNT='"acc-1"' bash "$S" status)
 assert_contains "plugin rows name the profile" "$(detail "$out" machine plugin:hi)" "$P"
 out=$(cd "$SANDBOX" && HI_CLAUDE_PROFILE=/elsewhere bash "$S" profile | cut -f1)
 assert_eq "profile: HI_CLAUDE_PROFILE wins" /elsewhere "$out"
 out=$(cd "$SANDBOX" && HI_CLAUDE="$SANDBOX/no-claude" bash "$S" status)
 assert_eq "plugins: no claude → unknown" unknown "$(row "$out" machine plugins)"
+
+# --- every highness plugin is checked: the list is the marketplace's (#60) ------------------
+MKT=$(cd "$HERE/../../.." && pwd -P)/.claude-plugin/marketplace.json
+want=$(jq -r '[.plugins[].name] | sort | join(" ")' "$MKT")
+have=$(sed -n "s/^PLUGINS='\(.*\)'$/\1/p" "$S" | tr ' ' '\n' | sort | tr '\n' ' ' | sed 's/ $//')
+assert_eq "setup.sh checks every plugin of the marketplace" "$want" "$have"
+out=$(cd "$SANDBOX" && bash "$S" status)
+assert_eq "plugin:hi-threads is checked" off "$(row "$out" machine plugin:hi-threads)"
+assert_eq "plugin:hi-review is checked" off "$(row "$out" machine plugin:hi-review)"
+
+# --- every Claude config dir Orca uses (#60) -------------------------------------------------
+# The worker profile acc-1 (P, above), a second Orca profile home, and one more dir Orca observed.
+ORCA_D="$HOME/Library/Application Support/orca"
+P2="$ORCA_D/claude-profiles/acc-2/home"; OBS="$SANDBOX/observed"; mkdir -p "$P2" "$OBS"
+printf '["%s", "%s"]\n' "$OBS" "$P" > "$ORCA_D/claude-observed-config-dirs.json"
+plugins hi@highness:user hi-crew@highness:user hi-guard@highness:user hi-threads@highness:user > "$P/fake-plugins.json"
+# acc-2 lacks hi-guard and hi-threads; the observed dir loads hi twice (a link and the marketplace).
+plugins hi@highness:user hi-crew@highness:user > "$P2/fake-plugins.json"
+mkdir -p "$SANDBOX/wc/hi" "$OBS/skills"; ln -s "$SANDBOX/wc/hi" "$OBS/skills/hi"
+jq -c --arg ip "$OBS/skills/hi" '. + [{id: "hi@skills-dir", scope: "user", enabled: true, installPath: $ip}]' \
+  "$P/fake-plugins.json" > "$OBS/fake-plugins.json"
+out=$(cd "$SANDBOX" && FAKE_ACCOUNT='"acc-1"' bash "$S" status)
+assert_eq "worker profile: hi once → on" on "$(row "$out" machine plugin:hi)"
+assert_contains "worker profile: names the marketplace source" "$(detail "$out" machine plugin:hi)" "marketplace highness"
+assert_eq "the worker profile has no profile: row" "" "$(row "$out" machine "profile:$P")"
+assert_eq "a profile missing plugins → gaps" gaps "$(row "$out" machine "profile:$P2")"
+assert_contains "gaps: names the missing plugins" "$(detail "$out" machine "profile:$P2")" "off: hi-guard, hi-threads"
+assert_not_contains "gaps: not a plugin the worker lacks too" "$(detail "$out" machine "profile:$P2")" "hi-docs"
+assert_eq "a double load → gaps" gaps "$(row "$out" machine "profile:$OBS")"
+d=$(detail "$out" machine "profile:$OBS")
+assert_contains "double: names the plugin" "$d" "double: hi twice"
+assert_contains "double: names the link and its target" "$d" "hi@skills-dir (user, link → $SANDBOX/wc/hi)"
+assert_contains "double: names the marketplace copy" "$d" "hi@highness (user, marketplace highness)"
+assert_eq "each config dir is listed once" 1 "$(printf '%s\n' "$out" | grep -c "	profile:$OBS	")"
+assert_eq "no stale pins → pins ok" ok "$(row "$out" machine pins)"
+
+# The same double load in the worker profile itself.
+cp "$OBS/fake-plugins.json" "$P/fake-plugins.json"
+out=$(cd "$SANDBOX" && FAKE_ACCOUNT='"acc-1"' bash "$S" status)
+assert_eq "worker profile: hi twice → double" double "$(row "$out" machine plugin:hi)"
+assert_contains "double: both sources" "$(detail "$out" machine plugin:hi)" "link → $SANDBOX/wc/hi"
+
+# Stale pins: a project pin of a highness plugin at a dir that is gone; acc-2 shares acc-1's
+# plugins dir through a link (as Orca's profile homes do), so the pin is listed once.
+LIVE="$SANDBOX/live-wt"; mkdir -p "$LIVE" "$P/plugins"; ln -s "$P/plugins" "$P2/plugins"
+jq -n --arg gone "$SANDBOX/gone-wt" --arg live "$LIVE" '{version: 2, plugins: {
+  "hi-crew@highness": [{scope: "user"}, {scope: "project", projectPath: $gone}],
+  "hi@highness": [{scope: "project", projectPath: $live}],
+  "other@elsewhere": [{scope: "project", projectPath: $gone}]}}' > "$P/plugins/installed_plugins.json"
+out=$(cd "$SANDBOX" && FAKE_ACCOUNT='"acc-1"' bash "$S" status)
+pins=$(printf '%s\n' "$out" | awk -F'\t' '$1 == "machine" && $2 ~ /^pins/')
+assert_eq "a stale pin: one row for the shared file" 1 "$(printf '%s\n' "$pins" | grep -c .)"
+assert_eq "a stale pin → stale" stale "$(printf '%s\n' "$pins" | cut -f3)"
+assert_contains "stale: names the plugin and the gone dir" "$(printf '%s\n' "$pins" | cut -f4)" "hi-crew@highness → $SANDBOX/gone-wt"
+assert_not_contains "stale: not a pin whose dir exists" "$(printf '%s\n' "$pins" | cut -f4)" "$LIVE"
+assert_not_contains "stale: not another marketplace's plugin" "$(printf '%s\n' "$pins" | cut -f4)" "other@"
+rm -rf "$P/fake-plugins.json" "$P/plugins" "$P2" "$OBS" "$ORCA_D/claude-observed-config-dirs.json"
 
 # --- hi-crew enabled: its crew.sh adds the orchestration, watch and crew rows ----------------
 out=$(cd "$SANDBOX" && FAKE_PLUGINS="$(plugins hi@skills-dir:user hi-crew@highness:user hi-guard@highness:user)" bash "$S" status)
