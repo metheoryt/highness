@@ -61,6 +61,13 @@
 #                                     --dry-run writes nothing: the slots, then would-start lines
 #   crew.sh usage [<config dir>]      the plan usage autostart checks, TSV: window, used percent;
 #                                     nothing when unknown
+#   crew.sh account                   the config dir autostart checks the budget of: Orca's active
+#                                     account, else the profile home claude-profiles/selected-host
+#                                     names, else crew.budget.config_dir, else the profile home with
+#                                     the freshest highness-usage.json (see as_account)
+#   crew.sh held                      "autostart held <N> h: <reason>" while every pass has stopped
+#                                     short of starting for over an hour (the budget, no coordinator,
+#                                     no root); nothing otherwise. The agenda shows it
 #   crew.sh usage-save                read Claude Code's statusline JSON on stdin and keep its
 #                                     rate_limits in <config dir>/highness-usage.json for `usage`
 #                                     (call it from your statusline command)
@@ -743,7 +750,31 @@ as_get() { bash "$CONFIG" get --user ".crew.autostart.$1"; }
 as_log() { # <kind> <key> <detail>
   if [ -n "${AS_DRY:-}" ]; then printf '%s\t%s\t%s\n' "$1" "$2" "$3"; return; fi
   mkdir -p "$AS_DIR"
+  [ "$1 $2" != 'skip -' ] || as_hold "$3"
   printf '%s\t%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" "$3" | tee -a "$AS_DIR/log"
+}
+
+# A pass that stopped short of the candidates (a skip of the whole pass: the budget, no
+# coordinator, no root) keeps $AS_DIR/held: since<TAB>reason, since kept from the first such pass.
+# A pass that gets past them, or autostart turned off, removes it. `crew.sh held` reads it.
+as_hold() { # <reason>
+  local since
+  since=$(cut -f1 "$AS_DIR/held" 2>/dev/null | head -1)
+  case "$since" in (''|*[!0-9]*) since=${HI_NOW:-$(date +%s)} ;; esac
+  printf '%s\t%s\n' "$since" "$1" >"$AS_DIR/held.$$" && mv "$AS_DIR/held.$$" "$AS_DIR/held"
+}
+as_unhold() { [ -n "${AS_DRY:-}" ] || rm -f "$AS_DIR/held"; }
+
+# held: "autostart held <N> h: <reason>" once a hold has lasted over an hour; nothing otherwise.
+# The agenda shows it: a hold makes no event, and starts nothing to look at.
+cmd_held() {
+  local since='' reason='' now
+  [ -f "$AS_DIR/held" ] || return 0
+  IFS="$(printf '\t')" read -r since reason <"$AS_DIR/held"
+  case "$since" in (''|*[!0-9]*) return 0 ;; esac
+  now=${HI_NOW:-$(date +%s)}
+  [ $((now - since)) -gt 3600 ] || return 0
+  printf 'autostart held %s h: %s\n' $(((now - since) / 3600)) "$reason"
 }
 
 as_num() { case "$1" in ''|*[!0-9.]*) printf '%s' "$2" ;; *) printf '%s' "$1" ;; esac; }
@@ -789,12 +820,61 @@ as_candidates() { # <root> <label>
   fi | jq -sc 'sort_by(.created // "", .key)[]'
 }
 
-# The config dir the next worker runs on: Orca's selected Claude account, else the person's own.
+# The dirs that hold Orca's Claude profiles (<dir>/<id>/home), one per line, those that exist:
+# HI_ORCA_PROFILES when set (it alone); else the parents of the homes `account list` names, of
+# CLAUDE_CONFIG_DIR when it is one, and Orca's data dir on Linux and macOS.
+as_profiles() { # <account list json>
+  local p
+  if [ -n "${HI_ORCA_PROFILES:-}" ]; then [ -d "$HI_ORCA_PROFILES" ] && printf '%s\n' "$HI_ORCA_PROFILES"; return 0; fi
+  {
+    printf '%s' "$1" | jq -r '(.result.claude // .result // {}) | (.accounts // [])[] | .home // empty' 2>/dev/null
+    printf '%s\n' "${CLAUDE_CONFIG_DIR:-}"
+  } | while IFS= read -r p; do
+    case "${p%/}" in (*/claude-profiles/*/home) p=${p%/}; p=${p%/home}; printf '%s\n' "${p%/*}" ;; esac
+  done
+  printf '%s\n' "${XDG_CONFIG_HOME:-$HOME/.config}/orca/claude-profiles" \
+    "$HOME/Library/Application Support/orca/claude-profiles" "$HOME/Library/Application Support/Orca/claude-profiles"
+} 2>/dev/null
+
+# The config dir the next worker runs on — the account whose plan the budget check reads:
+#   1. Orca's active Claude account (`account list`);
+#   2. else the profile home Orca launches on, named by <profiles>/selected-host (a path or an id);
+#   3. else crew.budget.config_dir from the person's own file;
+#   4. else the profile home (or CLAUDE_CONFIG_DIR) whose highness-usage.json is the freshest;
+#   5. else CLAUDE_CONFIG_DIR, or ~/.claude.
+# With an empty account list Orca still launches on a profile home, never on ~/.claude; that
+# dir's usage cache is frozen, and every pass would hold (highness#59).
 as_account() {
-  local h
-  h=$("$(orca_cmd)" account list --agent claude --json 2>/dev/null | jq -r '
-    .result.claude as $c | ($c.accounts // [])[] | select(.id == $c.activeAccountId) | .home // empty' 2>/dev/null | head -1) || h=''
-  [ -n "$h" ] && [ -d "$h" ] && { printf '%s\n' "$h"; return; }
+  local list profiles h p s d best='' bt=0 t
+  list=$("$(orca_cmd)" account list --agent claude --json 2>/dev/null) || list=''
+  h=$(printf '%s' "$list" | jq -r '(.result.claude // .result // {}) as $c
+    | ($c.accounts // [])[] | select(.id == $c.activeAccountId) | .home // empty' 2>/dev/null | head -1) || h=''
+  [ -n "$h" ] && [ -d "$h" ] && { printf '%s\n' "${h%/}"; return; }
+  profiles=$(as_profiles "$list" | awk 'NF && !seen[$0]++' | while IFS= read -r p; do [ -d "$p" ] && printf '%s\n' "$p"; done)
+  while IFS= read -r p; do
+    [ -n "$p" ] && [ -f "$p/selected-host" ] || continue
+    s=$(tr -d '\r\n' <"$p/selected-host" 2>/dev/null)
+    case "$s" in ('') continue ;; (/*) h=$s ;; (*/*) continue ;; (*) h="$p/$s/home" ;; esac
+    [ -d "$h" ] && { printf '%s\n' "${h%/}"; return; }
+  done <<EOF
+$profiles
+EOF
+  h=$(bash "$CONFIG" get --user '.crew.budget.config_dir' 2>/dev/null) || h=''
+  case "$h" in ("~"|"~/"*) h="$HOME${h#\~}" ;; esac
+  [ -n "$h" ] && [ -d "$h" ] && { printf '%s\n' "${h%/}"; return; }
+  while IFS= read -r d; do
+    [ -n "$d" ] && [ -f "$d/highness-usage.json" ] || continue
+    t=$(jq -r '.updated_at // 0 | floor' "$d/highness-usage.json" 2>/dev/null) || t=0
+    case "$t" in (''|*[!0-9]*) t=0 ;; esac
+    [ "$t" -gt "$bt" ] && { bt=$t; best=$d; }
+  done <<EOF
+$(printf '%s\n' "$profiles" | while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    for d in "$p"/*/home; do [ -d "$d" ] && printf '%s\n' "$d"; done
+  done
+  printf '%s\n' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}")
+EOF
+  [ -n "$best" ] && { printf '%s\n' "${best%/}"; return; }
   printf '%s\n' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 }
 
@@ -874,7 +954,7 @@ cmd_autostart() {
   [ "${1:-}" = --dry-run ] && dry=1
   AS_DRY=$dry
   if [ "$(as_get enabled)" != true ]; then
-    [ -n "$dry" ] || return 0
+    [ -n "$dry" ] || { as_unhold; return 0; }
     echo 'crew: autostart is off (crew.autostart.enabled is not true); showing what it would do' >&2
   fi
   root=$(as_get root) || { as_log skip - 'crew.autostart.root is not set'; return 0; }
@@ -886,7 +966,7 @@ cmd_autostart() {
   nbusy=0; [ -z "$busy" ] || nbusy=$(printf '%s\n' "$busy" | wc -l | tr -d ' ')
   free=$(( ${max%.*} - nbusy ))
   [ -z "$dry" ] || printf 'slots\t%s free of %s\tbusy: %s\n' "$free" "${max%.*}" "$(printf '%s' "$busy" | paste -sd, -)"
-  [ "$free" -gt 0 ] || return 0
+  [ "$free" -gt 0 ] || { as_unhold; return 0; }
   run=$(as_get run) || run=$(ls -t "$DIR/handles" 2>/dev/null | head -1)
   handle=$(cat "$DIR/handles/$run" 2>/dev/null) || handle=''
   if [ -z "$run" ] || [ -z "$handle" ]; then
@@ -899,6 +979,7 @@ cmd_autostart() {
     as_log skip - "$why; nothing started"
     [ -n "$dry" ] || return 0
   fi
+  as_unhold
   cands=$(as_candidates "$root" "$label") || { as_log skip - "the candidates command failed in $root"; return 0; }
   while IFS= read -r c; do
     [ -n "$c" ] || continue
@@ -933,6 +1014,8 @@ case "$sub" in
   watch-install) cmd_watch_install "$@" ;;
   autostart) cmd_autostart "$@" ;;
   usage) cmd_usage "$@" ;;
+  account) need_jq; as_account ;;
+  held) cmd_held ;;
   usage-save) cmd_usage_save ;;
   events) cmd_events "$@" ;;
   prompts) cmd_prompts ;;

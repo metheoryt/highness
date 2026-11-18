@@ -151,6 +151,13 @@ done
 # A thread's decisions go to its own session first; the resume line only when that failed.
 case "$(cat "$HERE/../skills/agenda/SKILL.md")" in *'threads-read.sh" relay'*'`sent`'*'`started`'*'`manual`'*) ok 'agenda: relay to the thread, then a new terminal, then the resume line' ;; *) no 'agenda: relay to the thread, then a new terminal, then the resume line' ;; esac
 case "$(cat "$HERE/../skills/agenda/SKILL.md")" in *'`busy`'*'do not wait'*) ok 'agenda: a busy thread session is said, not waited out' ;; *) no 'agenda: a busy thread session is said, not waited out' ;; esac
+# A held autostart is read in step 1, before the "nothing on the person" stop: a hold starts no
+# ticket, so the agenda of a box whose autostart is stuck has none (highness#59).
+case "$(sed -n '/^## 1\. Gather/,/^2\. /p' "$HERE/../skills/agenda/SKILL.md")" in
+  *'bash "$C" held'*'no held autostart: say there is'*) ok 'agenda: a held autostart is read before the empty stop' ;;
+  *) no 'agenda: a held autostart is read before the empty stop' ;;
+esac
+if grep -q 'a held autostart' "$HERE/../skills/agenda/SKILL.md"; then ok 'agenda: the held line is shown'; else no 'agenda: the held line is shown'; fi
 if grep -q 'If this session does work that belongs to an open ticket' "$HERE/../skills/start/SKILL.md"; then ok 'coordinator: out-of-band work rule'; else no 'coordinator: out-of-band work rule'; fi
 printf '{"crew":{"process":"Use the team-task skill.\\nThen the team-pr skill at {{ROOT}}/pr.py.","marker":"[bot]"}}' >"$HIGHNESS_CONFIG"
 out=$(cd "$T" && bash "$C" spec --key ABC-9 --title 'T' --brief-file "$T/brief")

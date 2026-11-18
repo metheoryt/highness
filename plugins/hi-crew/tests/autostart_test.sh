@@ -5,7 +5,7 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 C="$HERE/../lib/crew.sh"
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
-export HIGHNESS_STATE="$T/state" HIGHNESS_CONFIG="$T/user.json" HI_ACCOUNT="$T/acct"
+export HIGHNESS_STATE="$T/state" HIGHNESS_CONFIG="$T/user.json" HI_ACCOUNT="$T/acct" HI_ORCA_PROFILES="$T/profiles"
 # The plan usage: a live answer under every line unless a test says otherwise (lib/budget.sh).
 export HI_BUDGET_REFRESH=0 HI_BUDGET_RESPONSE="$T/live.json"
 live() { # <5h %> <7d %> → the usage endpoint's answer, 5h resetting in 4 h, 7d in 6 days
@@ -38,6 +38,8 @@ case "$1 $2" in
   "orchestration inbox")
     echo '{"ok":true,"result":{"messages":[{"id":"m1","run_id":"run_aaa111","type":"worker_done","created_at":"2026-01-01T00:00:00Z","subject":"done","payload":"{\"dispatchId\":\"ctx_done\",\"outcome\":\"succeeded\"}"}]}}' ;;
   "orchestration send") printf 'send %s\n' "$*" >>"$FAKE_LOG.send" ;;
+  "account list") if [ -n "${FAKE_ACCOUNTS:-}" ]; then cat "$FAKE_ACCOUNTS"
+    else echo '{"ok":true,"result":{"activeAccountId":null,"accounts":[]}}'; fi ;;
   *) echo '{"ok":false}'; exit 1 ;;
 esac
 EOF
@@ -166,6 +168,58 @@ reset; cfg '{}'
 jq -n --argjson now "$now" '{five_hour: {used_percentage: 99, resets_at: ($now - 10)}, updated_at: $now}' >"$T/acct/highness-usage.json"
 check 'usage: a window already reset is unknown' "$(bash "$C" usage "$T/acct")" ''
 live 20 20
+
+# --- a held autostart: kept with its first time, shown after an hour, cleared by a pass that goes
+reset; cfg '{}'
+HI_BUDGET_RESPONSE=fail bash "$C" autostart >/dev/null
+check 'hold: the marker keeps the reason' "$(cut -f2 "$S/autostart/held")" "usage unknown on $T/acct; hold; nothing started"
+since=$(cut -f1 "$S/autostart/held")
+check 'hold: under an hour, the agenda line is quiet' "$(bash "$C" held)" ''
+HI_NOW=$((since + 7300)) HI_BUDGET_RESPONSE=fail bash "$C" autostart >/dev/null
+check 'hold: a later pass keeps the first time' "$(cut -f1 "$S/autostart/held")" "$since"
+check 'hold: over an hour, the agenda line' "$(HI_NOW=$((since + 7300)) bash "$C" held)" \
+  "autostart held 2 h: usage unknown on $T/acct; hold; nothing started"
+rm -f "$S/handles/run_aaa111"
+bash "$C" autostart >/dev/null
+has 'hold: no coordinator is a hold too' "$(cut -f2 "$S/autostart/held")" 'no coordinator to start under'
+echo term_1 >"$S/handles/run_aaa111"
+HI_BUDGET_RESPONSE=fail bash "$C" autostart --dry-run >/dev/null 2>&1
+has 'hold: a dry run writes nothing' "$(cut -f2 "$S/autostart/held")" 'no coordinator to start under'
+bash "$C" autostart >/dev/null
+check 'hold: a pass that starts clears it' "$(ls "$S/autostart/held" 2>/dev/null; bash "$C" held)" ''
+HI_BUDGET_RESPONSE=fail bash "$C" autostart >/dev/null; cfg '{"enabled": false}'
+bash "$C" autostart >/dev/null
+check 'hold: autostart turned off clears it' "$(ls "$S/autostart/held" 2>/dev/null)" ''
+
+# --- the account: Orca's active one, else the profile Orca launches on (selected-host), else
+# crew.budget.config_dir, else the freshest usage cache among the profile homes
+P="$T/profiles"; mkdir -p "$P/p-one/home" "$P/p-two/home" "$T/own"
+acct() { (unset HI_ACCOUNT; CLAUDE_CONFIG_DIR="$T/own" bash "$C" account); }
+export FAKE_ACCOUNTS="$T/accounts.json"
+jq -n --arg h "$P/p-two/home" '{ok: true, result: {activeAccountId: "p-two", accounts: [{id: "p-one", home: "/nowhere"}, {id: "p-two", home: $h}]}}' >"$FAKE_ACCOUNTS"
+check 'account: Orca'"'"'s active account (the flat result Orca prints)' "$(acct)" "$P/p-two/home"
+jq '{ok, result: {claude: .result}}' "$FAKE_ACCOUNTS" >"$T/c" && mv "$T/c" "$FAKE_ACCOUNTS"
+check 'account: an active account nested under result.claude' "$(acct)" "$P/p-two/home"
+echo '{"ok":true,"result":{"activeAccountId":null,"accounts":[]}}' >"$FAKE_ACCOUNTS"
+printf '%s' "$P/p-one/home" >"$P/selected-host"
+check 'account: empty list, selected-host names a home (no newline)' "$(acct)" "$P/p-one/home"
+echo p-two >"$P/selected-host"
+check 'account: empty list, selected-host names an id' "$(acct)" "$P/p-two/home"
+reset; cfg '{}'
+jq -n --argjson now "$now" '{five_hour: {used_percentage: 5, resets_at: ($now + 3600)}, seven_day: {used_percentage: 5, resets_at: ($now + 86400)}, updated_at: $now}' >"$P/p-two/home/highness-usage.json"
+(unset HI_ACCOUNT; CLAUDE_CONFIG_DIR="$T/own" HI_BUDGET_RESPONSE=fail bash "$C" autostart >/dev/null)
+check 'account: autostart reads the budget of the selected profile and starts' "$(starts)" 2
+echo /nowhere >"$P/selected-host"
+jq --arg d "$T/own" '.crew.budget.config_dir = $d' "$HIGHNESS_CONFIG" >"$T/c" && mv "$T/c" "$HIGHNESS_CONFIG"
+check 'account: selected-host names no dir; crew.budget.config_dir' "$(acct)" "$T/own"
+cfg '{}'
+jq -n --argjson t "$((now - 60))" '{updated_at: $t}' >"$P/p-one/home/highness-usage.json"
+check 'account: then the freshest usage cache' "$(acct)" "$P/p-two/home"
+jq -n --argjson t "$((now + 60))" '{updated_at: $t}' >"$P/p-one/home/highness-usage.json"
+check 'account: the freshest wins' "$(acct)" "$P/p-one/home"
+rm -f "$P"/*/home/highness-usage.json "$P/selected-host"
+check 'account: nothing known, the config dir' "$(acct)" "$T/own"
+unset FAKE_ACCOUNTS
 
 # --- usage-save keeps the statusline's rate_limits
 rm -f "$T/acct/highness-usage.json"
