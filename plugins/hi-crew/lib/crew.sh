@@ -10,6 +10,11 @@
 #   crew.sh get <KEY>                 <KEY>'s facts; exit 1 when there are none
 #   crew.sh list                      one JSON object per line, every open ticket
 #   crew.sh close <KEY>               move <KEY>'s facts to closed/ (the ticket is settled)
+#   crew.sh choice <KEY> <json>       append one answered ask to choices.jsonl: the options with
+#                                     their loses:/leans on: lines, what the person took ("option",
+#                                     "own" or "reframed"), their reply verbatim. Kept across close,
+#                                     so a person's choices can be read back over many tickets
+#   crew.sh choices [<KEY>]           the recorded choices, one JSON object per line
 #   crew.sh run                       this session's hi-crew Orca Run: the Run Orca has bound to
 #                                     this terminal, when it is one hi-crew made (exit 1: none)
 #   crew.sh run <run_id>              register a Run hi-crew made
@@ -166,6 +171,28 @@ cmd_close() {
 keep_handle() {
   [ -n "${ORCA_TERMINAL_HANDLE:-}" ] || return 0
   mkdir -p "$DIR/handles" && printf '%s\n' "$ORCA_TERMINAL_HANDLE" >"$DIR/handles/$1"
+}
+
+cmd_choice() {
+  [ $# -eq 2 ] || die 'usage: choice <KEY> <json>'
+  need_jq
+  keyfile "$1" >/dev/null || exit 2
+  printf '%s' "$2" | jq -e 'type == "object"' >/dev/null 2>&1 || die 'choice: the second argument must be a JSON object'
+  mkdir -p "$DIR"
+  jq -nc --argjson add "$2" --arg key "$1" --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '{key: $key, at: $now} + $add' >>"$DIR/choices.jsonl" || die "choice: could not write $DIR/choices.jsonl"
+}
+
+cmd_choices() {
+  [ $# -le 1 ] || die 'usage: choices [<KEY>]'
+  need_jq
+  [ -f "$DIR/choices.jsonl" ] || return 0
+  if [ $# -eq 1 ]; then
+    keyfile "$1" >/dev/null || exit 2
+    jq -c --arg key "$1" 'select(.key == $key)' "$DIR/choices.jsonl"
+  else
+    jq -c . "$DIR/choices.jsonl"
+  fi
 }
 
 cmd_run() {
@@ -858,6 +885,8 @@ case "$sub" in
   get) cmd_get "$@" ;;
   list) cmd_list ;;
   close) cmd_close "$@" ;;
+  choice) cmd_choice "$@" ;;
+  choices) cmd_choices "$@" ;;
   run) cmd_run "$@" ;;
   runs) cmd_runs ;;
   asks) cmd_asks ;;

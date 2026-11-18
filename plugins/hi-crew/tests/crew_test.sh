@@ -25,6 +25,15 @@ if bash "$C" get ABC-1 >/dev/null; then no 'closed facts not readable as open'; 
 if bash "$C" record '../evil' '{}' 2>/dev/null; then no 'bad key refused'; else ok 'bad key refused'; fi
 if bash "$C" record ABC-3 '[1]' 2>/dev/null; then no 'non-object refused'; else ok 'non-object refused'; fi
 
+# --- choices: append-only, kept across close
+bash "$C" choice ABC-1 '{"question":"q1","took":"option","picked":"A"}' || no 'choice appends'
+bash "$C" choice ABC-2 '{"question":"q2","took":"own","reply":"neither: C"}' || no 'choice appends a second'
+check 'choices lists every ticket' "$(bash "$C" choices | jq -r '.key + ":" + .took' | tr '\n' ' ')" 'ABC-1:option ABC-2:own '
+check 'choices of one ticket, closed or not' "$(bash "$C" choices ABC-1 | jq -r '.question + " " + .picked')" 'q1 A'
+check 'a choice carries a time' "$(bash "$C" choices ABC-2 | jq -r '.at | test("^[0-9]{4}-")')" 'true'
+if bash "$C" choice ABC-1 '"x"' 2>/dev/null; then no 'non-object choice refused'; else ok 'non-object choice refused'; fi
+if bash "$C" choice '../evil' '{}' 2>/dev/null; then no 'bad choice key refused'; else ok 'bad choice key refused'; fi
+
 # --- a fake orca: run-current answers $FAKE_CURRENT, inbox prints a fixed inbox
 mkdir -p "$T/bin"
 cat >"$T/bin/fakeorca" <<'EOF'
@@ -128,6 +137,11 @@ case "$out" in *'Change files with the Edit/Write tools, never with a python/sed
 case "$out" in *'check it is not already done (below) before'*'## Already done?'*'## Asking'*) ok 'already-done check, before taking the ticket' ;; *) no 'already-done check, before taking the ticket' ;; esac
 case "$out" in *'Only landed work counts'*'An open pull request, or a branch from an earlier attempt at this ticket, is'*) ok 'only landed work counts as done' ;; *) no 'only landed work counts as done' ;; esac
 case "$out" in *'**All of it is done:** open no pull request.'*'subject that starts `already done:`'*) ok 'already done: no PR, reported as such' ;; *) no 'already done: no PR, reported as such' ;; esac
+# The ask: research first, options with what each loses and what it leans on, a direction note.
+case "$out" in *'Before you ask, do everything you can'*) ok 'ask: research before asking' ;; *) no 'ask: research before asking' ;; esac
+case "$out" in *'`loses:`'*'`leans on:`'*'`no rule: '*'what would change your mind'*) ok 'ask: options carry loses and leans on' ;; *) no 'ask: options carry loses and leans on' ;; esac
+case "$out" in *'take it; do not ask to be safe'*) ok 'ask: obvious calls are taken' ;; *) no 'ask: obvious calls are taken' ;; esac
+case "$out" in *'write your direction in three lines'*'start without waiting'*) ok 'direction note before building' ;; *) no 'direction note before building' ;; esac
 case "$out" in *'If you do work that belongs to another open ticket, comment on that ticket'*) ok 'out-of-band work recorded on its ticket' ;; *) no 'out-of-band work recorded on its ticket' ;; esac
 # The coordinator recognizes an already-done report by the subject prefix the spec gives.
 for s in start agenda; do
