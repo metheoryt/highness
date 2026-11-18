@@ -31,6 +31,11 @@
       "name": "hi-threads",
       "source": "./plugins/hi-threads",
       "description": "A journal of work threads across sessions: what was done, what is left, who waits on whom; the most urgent shown at session start and by /hi-threads:where."
+    },
+    {
+      "name": "hi-review",
+      "source": "./plugins/hi-review",
+      "description": "Review a pull request and submit it as one review: findings drafted by a read-only reviewer subagent, each verified by a second pass, one question for the verdict."
     }
   ]
 }
