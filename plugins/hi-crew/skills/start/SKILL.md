@@ -7,7 +7,8 @@ description: Start a worker agent on a ticket — in its own Orca workspace, wit
 
 One ticket, one worker, one Orca workspace, one branch. The worker carries the ticket to a
 reviewed pull request on its own and stops only for a person's decision; this session is its
-coordinator and relays those decisions. Merging stays a person's call.
+coordinator and relays those decisions. Merging stays a person's call unless the team sets
+`crew.merge` to `on_green`.
 
 Each coordinator session has its own Run, and Orca wakes a session only for the workers of its
 Run. So several sessions can each coordinate their own tickets, and `hi-crew:agenda` reads them
@@ -37,6 +38,7 @@ Below, `$O` stands for that executable.
   | key | what | when unset |
   |---|---|---|
   | `crew.process` | the team's process text appended to every spec: how to take and comment a ticket, open a PR, run the review loop. `{{ROOT}}` in it becomes the absolute path of this session's git root: the worker runs in another tree, where the team's skills may not be loaded, so name its scripts by that path | a generic line |
+  | `crew.merge` | `on_green`: the worker merges its own PR once it is ready and its checks pass (a brief that says merging is the person's call still wins). For repos where the person has decided agents merge | `never`: merging is a person's call |
   | `crew.agent` | Orca agent id for workers | `claude` |
   | `crew.model` | provider model id for workers | say so to the user once; Orca then uses the agent's own default, which differs per person |
   | `crew.marker` | the prefix workers put on everything they post under the person's account | `(agent)` |
