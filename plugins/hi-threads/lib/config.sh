@@ -8,7 +8,7 @@
 # Two JSON files, both optional:
 #   user   ${HIGHNESS_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/highness/config.json}
 #   repo   <git toplevel of the cwd>/.claude/highness.json   (committed by a team); when the
-#          toplevel has none, the file of the nearest umbrella above the clone: a directory with
+#          toplevel has none, the file of the nearest umbrella above the clone: a checkout with
 #          .claude/highness.json and a repos.txt that lists the clone (relative to it, or to its
 #          `umbrella.dir`; see hi's lib/umbrella.sh). A clone the umbrella does not list gets none.
 # The user file may also hold per-repo overlays, for repos a team cannot or will not commit a
@@ -68,7 +68,8 @@ _lists() {
 # The team file: the git toplevel's .claude/highness.json; when it has none, the file of the nearest
 # umbrella above the clone that lists it. The clone is the toplevel's main checkout (the one that
 # repos.txt names), so a linked worktree of a child clone resolves to the same umbrella. File tests
-# only on the way up: most repos have no team file, and every highness hook reads the config.
+# only on the way up, one git call once a repos.txt matches: most repos have no team file, and
+# every highness hook reads the config.
 _team_file() {
   local out top common clone up
   out=$(git rev-parse --show-toplevel --git-common-dir 2>/dev/null) || return 1
