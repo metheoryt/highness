@@ -31,7 +31,10 @@
 #                                     directory: a worker runs in another tree, so the team's files
 #                                     must be named by absolute path. {{TRACKER}} becomes the
 #                                     tracker adapter reading its config there (`{{TRACKER}} read
-#                                     {{KEY}}`, `move`, `comment`: lib/tracker.sh), {{KEY}} the key
+#                                     {{KEY}}`, `move`, `comment`: lib/tracker.sh), {{KEY}} the key.
+#                                     crew.merge sets the merge line: "never" (default) leaves
+#                                     merging to a person; "on_green" has the worker merge its own
+#                                     PR once ready and green, unless its brief says otherwise
 #   crew.sh watch                     look at the PR of every open ticket and, when something a
 #                                     person should see changed since the last look (merged or
 #                                     closed, CI failed, new comments from people), append it to the
@@ -241,7 +244,7 @@ cmd_reports() {
 }
 
 cmd_spec() {
-  local key='' title='' brief_file='' brief='' process marker root
+  local key='' title='' brief_file='' brief='' process marker merge root
   while [ $# -gt 0 ]; do
     case "$1" in
       --key) key=${2:-}; shift 2 ;;
@@ -260,8 +263,14 @@ cmd_spec() {
   root=$(git rev-parse --show-toplevel 2>/dev/null) || root=$(pwd)
   process=$(bash "$CONFIG" get '.crew.process') || process='(none configured: use the tracker and forge tools you have, and say in the PR how you checked the work)'
   marker=$(bash "$CONFIG" get '.crew.marker') || marker='(agent)'
+  merge=$(bash "$CONFIG" get '.crew.merge') || merge=never
+  case "$merge" in
+    never) merge="Never merge. That is a person's call." ;;
+    on_green) merge="Merge your own pull request once it is ready for review and its checks pass, the way the team's process below says. If your brief says merging is the person's call, it is: then never merge." ;;
+    *) die "crew.merge '$merge' is not never or on_green" ;;
+  esac
   # Placeholders are replaced in a fixed order by awk with literal strings (no regex, no &).
-  KEY=$key TITLE=$title BRIEF=$brief PROCESS=$process MARKER=$marker ROOT=$root TRACKER=$(tracker_cmd "$root") awk '
+  KEY=$key TITLE=$title BRIEF=$brief PROCESS=$process MARKER=$marker MERGE=$merge ROOT=$root TRACKER=$(tracker_cmd "$root") awk '
     function rep(s, ph, val,   out, i) {
       out = ""
       while ((i = index(s, ph)) > 0) { out = out substr(s, 1, i - 1) val; s = substr(s, i + length(ph)) }
@@ -271,6 +280,7 @@ cmd_spec() {
       line = rep(line, "{{KEY}}", ENVIRON["KEY"])
       line = rep(line, "{{TITLE}}", ENVIRON["TITLE"])
       line = rep(line, "{{MARKER}}", ENVIRON["MARKER"])
+      line = rep(line, "{{MERGE}}", ENVIRON["MERGE"])
       if (line == "{{BRIEF}}") { print ENVIRON["BRIEF"]; next }
       if (line == "{{PROCESS}}") {
         print rep(rep(rep(ENVIRON["PROCESS"], "{{ROOT}}", ENVIRON["ROOT"]), "{{TRACKER}}", ENVIRON["TRACKER"]), "{{KEY}}", ENVIRON["KEY"])

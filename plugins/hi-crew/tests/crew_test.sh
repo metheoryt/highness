@@ -121,6 +121,8 @@ case "$out" in *'Line & two with {{KEY}} literal.'*) ok 'brief copied verbatim' 
 case "$out" in *'start with `ABC-9: `'*) ok 'key in commit rule' ;; *) no 'key in commit rule' ;; esac
 case "$out" in *'`(agent)`, so people'*) ok 'default marker' ;; *) no 'default marker' ;; esac
 case "$out" in *'(none configured'*) ok 'default process' ;; *) no 'default process' ;; esac
+case "$out" in *'- Never merge. That is a person'*) ok 'default: never merge' ;; *) no 'default: never merge' ;; esac
+case "$out" in *'Merge your own pull request'*) no 'default: no merge-on-green line' ;; *) ok 'default: no merge-on-green line' ;; esac
 case "$out" in *'Change files with the Edit/Write tools, never with a python/sed/perl heredoc in Bash.'*) ok 'edit-not-heredoc rule' ;; *) no 'edit-not-heredoc rule' ;; esac
 # The already-done check comes before the worker takes the ticket or changes anything.
 case "$out" in *'check it is not already done (below) before'*'## Already done?'*'## Asking'*) ok 'already-done check, before taking the ticket' ;; *) no 'already-done check, before taking the ticket' ;; esac
@@ -145,6 +147,15 @@ case "$out" in *"team-pr skill at $R/pr.py."*) ok '{{ROOT}} in process is the co
 left=$(printf '%s\n' "$out" | grep -v 'literal\.$' | grep -c '{{')
 check 'no placeholder left' "$left" 0
 if bash "$C" spec --key ABC-9 2>/dev/null; then no 'spec needs a title'; else ok 'spec needs a title'; fi
+# crew.merge: on_green swaps the merge line for one, and only one; anything else is refused.
+printf '{"crew":{"merge":"on_green"}}' >"$HIGHNESS_CONFIG"
+out=$(cd "$T" && bash "$C" spec --key ABC-9 --title 'T')
+case "$out" in *'- Merge your own pull request once it is ready for review and its checks pass'*) ok 'on_green: merge line' ;; *) no 'on_green: merge line' ;; esac
+case "$out" in *'Never merge'*) no 'on_green: no never-merge line' ;; *) ok 'on_green: no never-merge line' ;; esac
+case "$out" in *'Never resolve review threads, never force-push'*) ok 'on_green: threads and force-push rules kept' ;; *) no 'on_green: threads and force-push rules kept' ;; esac
+printf '{"crew":{"merge":"always"}}' >"$HIGHNESS_CONFIG"
+if (cd "$T" && bash "$C" spec --key ABC-9 --title 'T' >/dev/null 2>&1); then no 'unknown crew.merge refused'; else ok 'unknown crew.merge refused'; fi
+printf '{}' >"$HIGHNESS_CONFIG"
 
 # --- watch: a fake PR state command and an orca that records what it sends
 W="$T/w"; mkdir -p "$W/bin" "$W/root"; git -C "$W/root" init -q

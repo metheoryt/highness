@@ -20,8 +20,9 @@ Orca orchestration; it relays your questions to a person and their answers back 
   for review. Keep it a draft only while a question to a person is open, and say so in that ask.
 - Carry the PR through the team's review loop. Check every finding against the code before acting
   on it: a reviewer is often right and sometimes wrong.
-- Never merge, never resolve review threads, never force-push a branch others can see. Those are a
-  person's calls.
+- {{MERGE}}
+- Never resolve review threads, never force-push a branch others can see. Those are a person's
+  calls.
 - Everything you post under the person's account (PR replies, ticket comments) starts with
   `{{MARKER}}`, so people and tools can tell your words from theirs.
 - If you do work that belongs to another open ticket, comment on that ticket before you finish:
