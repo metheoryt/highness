@@ -7,7 +7,7 @@ A harness for Claude Code agents, as a plugin marketplace. Each plugin is enable
 | `hi` | `/hi:worktrees` — one workspace per piece of work, over Orca worktrees or plain git worktrees, with lineage, a removal check and a per-tree setup (gortex tracking when gortex is installed, local config links, the repo's own setup script). `/hi:repo-setup` — check and wire a repo for that. `/hi:setup` — check and fix a machine and a person for hi and hi-crew, then the repo. |
 | `hi-guard` | A PreToolUse hook on Bash: denies `sudo` from an agent session (quote-aware, through `bash -c`, `ssh`, `eval`…) and any configured deny pattern. Other tools can add checks. |
 | `hi-docs` | `/hi-docs:write-doc` and `/hi-docs:reader-test` — documents that read in short sittings, tested on a reader with no context. |
-| `hi-crew` | `/hi-crew:start <KEY>` — a worker agent on a ticket, in its own Orca workspace, carrying it to a reviewed pull request and stopping only for a person's decision. `/hi-crew:agenda` — what the workers wait on you for: their questions, people's comments on their PRs, PRs ready to merge. A watch (an Orca automation that never starts an agent) wakes the coordinator when a worker's PR is merged or closed, its CI fails, a person comments, the worker sits on a dialog, or one of its tool calls stays open too long. Its hooks keep one small state line per Claude Code session (working, blocked or idle), which `/hi:worktrees` dispatch reads before the screen. A worker first checks its ticket is not already done (landed on the trunk, a merged PR, the result present) and then reports that instead of opening a PR; any session that does work belonging to an open ticket comments on that ticket. Needs Orca with orchestration turned on, and `jq`. Team settings under `crew` in `.claude/highness.json`: `process`, `agent`, `model`, `marker`, `pr_state`; and `agenda.sections`, the team's own digest sections (its tickets, its PRs, reviews waiting), each a command that prints JSON lines, so the digest covers the person's whole plate without hi knowing the team's tracker or forge. Opt-in autostart: the watch starts labelled tickets into free slots, after a check of the plan's usage (see below). |
+| `hi-crew` | `/hi-crew:start <KEY>` — a worker agent on a ticket, in its own Orca workspace, carrying it to a reviewed pull request and stopping only for a person's decision. `/hi-crew:agenda` — what the workers wait on you for: their questions, people's comments on their PRs, PRs ready to merge. A watch (an Orca automation that never starts an agent) wakes the coordinator when a worker's PR is merged or closed, its CI fails, a person comments, the worker sits on a dialog, or one of its tool calls stays open too long. Its hooks keep one small state line per Claude Code session (working, blocked or idle), which `/hi:worktrees` dispatch reads before the screen. A worker first checks its ticket is not already done (landed on the trunk, a merged PR, the result present) and then reports that instead of opening a PR; any session that does work belonging to an open ticket comments on that ticket. Needs Orca with orchestration turned on, and `jq`. Team settings under `crew` in `.claude/highness.json`: `process`, `agent`, `model`, `marker`, `pr_state`; and `agenda.sections`, the team's own digest sections (its tickets, its PRs, reviews waiting), each a command that prints JSON lines, so the digest covers the person's whole plate without hi knowing the team's tracker or forge. A tracker adapter for Jira, YouTrack and GitHub Issues (`tracker` in the config) gives those sections, the autostart candidates and the workers' ticket reads, moves and comments without glue of the team's own (see Tracker below). Opt-in autostart: the watch starts labelled tickets into free slots, after a check of the plan's usage (see below). |
 | `hi-threads` | A journal of work threads across every Claude Code session on the machine. After each turn a Stop hook starts a background job that gives what happened since the last update, with the project's open threads, to a model (`threads.model`, default `sonnet`), which notes the thread it belonged to, what was done, what is left and who it waits on. A new session starts with the project's most urgent open threads in its context; `/hi-crew:agenda`, when installed, shows them first among its sections, beside tickets, PRs and workers; `/hi-threads:where` shows only the threads, ranked, and offers a backfill from the sessions already on the machine. A thread that closes, or stays paused for two hours, gets a comment in its ticket through the person's own command (`threads.comment.commands` in the user config: a regex on the ticket key and a command that reads the comment on stdin). A project is the repo, or the umbrella of nested clones (a `repos.txt` above them). Costs one model call per turn; headless `claude -p` sessions are skipped. Needs `jq`. |
 
 ## Install
@@ -51,7 +51,8 @@ only, since it runs a command and starts agents:
 - `root`: the coordinator's git root. The team's `crew` settings are read there, the candidates
   command runs there, and workers start in it unless a ticket names a repo.
 - `candidates`: prints one JSON object per ready ticket, `{"key", "title", "url", "repo"?, "created"?}`.
-  Unset, it lists the root's GitHub issues with the label. Other keys: `repo`, `base`, `run`.
+  Unset, it asks the root's tracker (below) for its ready tickets with the label, or, with no
+  tracker configured, lists the root's GitHub issues with the label. Other keys: `repo`, `base`, `run`.
   `bash crew.sh` lists them all.
 - Workers join the Run of the coordinator session that last asked for its Run on this machine, so
   their questions go there. With no such session, nothing starts.
@@ -137,6 +138,62 @@ For a team repo that cannot carry `.claude/highness.json`, the personal file can
 by `origin`'s owner or owner/repo (host ignored): `"repos": {"acme": {"docs": {"conventions":
 "~/acme/writing.md"}}}`. The repo's own file still wins, then `owner/repo`, then `owner`, then the
 top level. Keys read from the personal file only ignore these overlays.
+
+### Tracker
+
+hi-crew ships one adapter for Jira, YouTrack and GitHub Issues, `hi-crew/lib/tracker.sh`, so a
+team configures its tracker instead of writing the glue. The tracker part is not secret and goes in
+the team's file (or an overlay); the credential never does:
+
+```json
+{
+  "tracker": {
+    "kind": "jira",
+    "base_url": "https://example.atlassian.net",
+    "projects": ["AB"],
+    "statuses": {"To Do": "todo", "In Progress": "active", "In Review": "in_review",
+                 "Blocked": "waiting", "QA": "testing", "Done": "done", "Reopened": "bounced"},
+    "transitions": {"in_review": "Send to review"},
+    "fields": {"done": {"resolution": {"name": "Done"}}}
+  },
+  "agenda": {"sections": [{"name": "tickets", "command": "{{TRACKER}} sections"}]},
+  "crew": {"process": "Read the ticket with `{{TRACKER}} read {{KEY}}`; move it with `{{TRACKER}} move {{KEY}} in_review`."}
+}
+```
+
+- `kind`: `jira` (Cloud, or Data Center), `youtrack` or `github`. `base_url` and `projects` for the
+  first two; `repo` (owner/repo) for GitHub, default the origin.
+- `statuses` maps each status name to a role: `todo`, `active`, `in_review`, `waiting`, `testing`,
+  `done`, `bounced`. On GitHub the names are labels. A status left out falls back to Jira's status
+  category, YouTrack's resolved flag, or GitHub's open/closed (open with no role label is `todo`).
+- `transitions` names, per role, the Jira transition to take or the YouTrack command to apply;
+  without it a move takes the first transition (state, label) that lands in that role. `fields`
+  gives the fields a move to a role must set, so a transition with required fields goes through.
+- `state_field` (YouTrack, default `State`); `query`: a clause in the tracker's own query language
+  that narrows the person's tickets and the candidates (a sprint, a component).
+- In the digest a role becomes a group: `todo` → later, `active` and `bounced` → you, `in_review`,
+  `testing` and `waiting` → others; `done` is left out.
+
+The verbs: `status`, `sections` (the person's open tickets, as `agenda.sections` lines),
+`candidates [LABEL]` (ready tickets with the label, for autostart), `read <KEY>` (the ticket as
+JSON, with its role, description and comments), `move <KEY> <role>`, and `comment <KEY>` (the body
+on stdin). `{{TRACKER}}` in `agenda.sections`, `crew.process` and `crew.autostart.candidates`
+becomes this command, reading the config at the coordinator's root (a worker runs in another tree).
+Exit codes: 1 no credential, 2 credential rejected, 3 usage, 4 config, 5 the tracker failed.
+
+The credential lives in your personal file only, at its top level, keyed by the tracker's host.
+The adapter sends a token only to the host you paired it with, so a cloned repo's `base_url`
+cannot redirect it (a `base_url` must be a plain scheme, host, port and path: no user info, query
+or fragment that could hide another host), and it travels in curl's config on stdin, never in a command line:
+
+```json
+{"trackers": {"example.atlassian.net": {"email": "you@example.com", "token_command": "secret-tool lookup service jira"}}}
+```
+
+`token_env` (a variable name) is read first, then `token_command` (its first line). Jira uses basic
+auth (email + API token) unless `"auth": "bearer"` (a personal access token); YouTrack takes a
+permanent token as bearer. A plain `http://` URL needs `"allow_http": true`. GitHub uses `gh`'s own
+login. `/hi:setup` checks that the token answers.
 
 ## Orca
 

@@ -29,7 +29,9 @@
 #                                     the config keys crew.process and crew.marker. In crew.process,
 #                                     {{ROOT}} becomes the git root of the coordinator's working
 #                                     directory: a worker runs in another tree, so the team's files
-#                                     must be named by absolute path
+#                                     must be named by absolute path. {{TRACKER}} becomes the
+#                                     tracker adapter reading its config there (`{{TRACKER}} read
+#                                     {{KEY}}`, `move`, `comment`: lib/tracker.sh), {{KEY}} the key
 #   crew.sh watch                     look at the PR of every open ticket and, when something a
 #                                     person should see changed since the last look (merged or
 #                                     closed, CI failed, new comments from people), append it to the
@@ -259,7 +261,7 @@ cmd_spec() {
   process=$(bash "$CONFIG" get '.crew.process') || process='(none configured: use the tracker and forge tools you have, and say in the PR how you checked the work)'
   marker=$(bash "$CONFIG" get '.crew.marker') || marker='(agent)'
   # Placeholders are replaced in a fixed order by awk with literal strings (no regex, no &).
-  KEY=$key TITLE=$title BRIEF=$brief PROCESS=$process MARKER=$marker ROOT=$root awk '
+  KEY=$key TITLE=$title BRIEF=$brief PROCESS=$process MARKER=$marker ROOT=$root TRACKER=$(tracker_cmd "$root") awk '
     function rep(s, ph, val,   out, i) {
       out = ""
       while ((i = index(s, ph)) > 0) { out = out substr(s, 1, i - 1) val; s = substr(s, i + length(ph)) }
@@ -270,7 +272,9 @@ cmd_spec() {
       line = rep(line, "{{TITLE}}", ENVIRON["TITLE"])
       line = rep(line, "{{MARKER}}", ENVIRON["MARKER"])
       if (line == "{{BRIEF}}") { print ENVIRON["BRIEF"]; next }
-      if (line == "{{PROCESS}}") { print rep(ENVIRON["PROCESS"], "{{ROOT}}", ENVIRON["ROOT"]); next }
+      if (line == "{{PROCESS}}") {
+        print rep(rep(rep(ENVIRON["PROCESS"], "{{ROOT}}", ENVIRON["ROOT"]), "{{TRACKER}}", ENVIRON["TRACKER"]), "{{KEY}}", ENVIRON["KEY"])
+        next }
       print line }' "$TEMPLATE"
 }
 
@@ -322,7 +326,8 @@ pr_state() { # <facts json>
   (cd "$root" && sh -c "$line") 2>/dev/null
 }
 
-# stdin with {{PR}}, {{ROOT}} and {{MARKER}} replaced by $PR, $ROOT and $MARKER (each may be unset).
+# stdin with {{PR}}, {{ROOT}}, {{MARKER}} and {{TRACKER}} replaced by $PR, $ROOT, $MARKER and
+# $TRACKER (each may be unset).
 fill() {
   awk '
     function rep(s, ph, val,   out, i) {
@@ -330,14 +335,19 @@ fill() {
       while ((i = index(s, ph)) > 0) { out = out substr(s, 1, i - 1) val; s = substr(s, i + length(ph)) }
       return out s
     }
-    { print rep(rep(rep($0, "{{PR}}", ENVIRON["PR"]), "{{ROOT}}", ENVIRON["ROOT"]), "{{MARKER}}", ENVIRON["MARKER"]) }'
+    { print rep(rep(rep(rep($0, "{{PR}}", ENVIRON["PR"]), "{{ROOT}}", ENVIRON["ROOT"]), "{{MARKER}}", ENVIRON["MARKER"]), "{{TRACKER}}", ENVIRON["TRACKER"]) }'
 }
+
+# The tracker adapter (lib/tracker.sh) as one shell command reading its config at <root>: what
+# {{TRACKER}} becomes in agenda.sections, the autostart candidates and crew.process.
+tracker_cmd() { printf 'bash %s --root %s' "$(q "$HERE/tracker.sh")" "$(q "$1")"; }
 
 # The team's own digest sections (config agenda.sections), so the digest covers more than the
 # workers without hi knowing the team's tracker or forge. Each section is {"name", "command"}; the
-# command runs from this git root with {{ROOT}} and {{MARKER}} filled in, and prints one JSON object
-# per line: {"group": "you|others|later|done", "title", "next", "url", "since"} (all but title
-# optional).
+# command runs from this git root with {{ROOT}}, {{MARKER}} and {{TRACKER}} filled in, and prints
+# one JSON object per line: {"group": "you|others|later|done", "title", "next", "url", "since"}
+# (all but title optional). `{{TRACKER}} sections` is the person's tickets from the configured
+# tracker (lib/tracker.sh).
 # The open threads of the hi-threads journal come first, as section "threads" (with open_items,
 # status, waits_on and resume besides the usual fields), when the journal exists.
 # Out: the same objects with "section" added; other lines are skipped. A section whose command fails
@@ -357,7 +367,7 @@ cmd_sections() {
     cmd=$(printf '%s' "$secs" | jq -r ".[$i].command // empty")
     i=$((i + 1))
     [ -n "$cmd" ] || continue
-    line=$(ROOT=$(q "$root") MARKER=$(q "$(cd "$root" && bash "$CONFIG" get '.crew.marker' 2>/dev/null || echo '(agent)')") fill <<<"$cmd")
+    line=$(ROOT=$(q "$root") TRACKER=$(tracker_cmd "$root") MARKER=$(q "$(cd "$root" && bash "$CONFIG" get '.crew.marker' 2>/dev/null || echo '(agent)')") fill <<<"$cmd")
     out=$(cd "$root" && sh -c "$line" 2>&1); rc=$?
     if [ "$rc" -ne 0 ]; then
       jq -cn --arg s "$name" --arg e "$(printf '%s' "$out" | tail -1)" --argjson rc "$rc" \
@@ -611,6 +621,15 @@ cmd_setup_status() {
       printf 'crew.model\tunset\tworkers get the agent'"'"'s own default, which differs per person\n'
     fi
   done
+  # The tracker answers with the person's credential, when the repo (or the person) configures one.
+  if bash "$CONFIG" get '.tracker.kind' >/dev/null 2>&1; then
+    if out=$(bash "$HERE/tracker.sh" status 2>&1); then
+      printf 'tracker\tok\t%s\n' "$(printf '%s' "$out" | tail -1)"
+    else
+      case $? in 1) k=no-token ;; 2) k=rejected ;; 4) k=config ;; *) k=error ;; esac
+      printf 'tracker\t%s\t%s\n' "$k" "$(printf '%s' "$out" | tail -1 | sed 's/^tracker: //')"
+    fi
+  fi
 }
 
 # ---- autostart: the watch starts labelled tickets itself (off unless the person turns it on) ----
@@ -624,7 +643,9 @@ cmd_setup_status() {
 #                                it is the `root` of each started ticket's facts. Required
 #   crew.autostart.candidates    a command printing one JSON object per ready ticket that carries
 #                                the label: {"key", "title", "url", "repo"?, "created"?}; {{LABEL}}
-#                                and {{ROOT}} become the shell-quoted label and root. Unset: the
+#                                and {{ROOT}} become the shell-quoted label and root, {{TRACKER}}
+#                                the tracker adapter. Unset: with tracker.kind set at the root,
+#                                the adapter's ready tickets (role todo) with the label; else the
 #                                root's GitHub issues with the label, keyed <repo name>-<number>
 #   crew.autostart.label         the opt-in label (default "auto")
 #   crew.autostart.max_active    slots (default 3)
@@ -675,19 +696,22 @@ as_busy() {
 as_candidates() { # <root> <label>
   local cmd line name
   cmd=$(as_get candidates) || cmd=''
-  if [ -z "$cmd" ]; then
+  if [ -z "$cmd" ] && (cd "$1" && bash "$CONFIG" get '.tracker.kind' >/dev/null 2>&1); then
+    bash "$HERE/tracker.sh" --root "$1" candidates "$2" 2>/dev/null \
+      | jq -c 'select(type == "object" and (.key | type) == "string")' || return 1
+  elif [ -z "$cmd" ]; then
     name=$(git -C "$1" config --get remote.origin.url 2>/dev/null) || return 1
     name=${name%/}; name=${name%.git}; name=${name##*/}; name=${name##*:}
     (cd "$1" && gh issue list --label "$2" --state open --limit 100 --json number,title,url,createdAt) 2>/dev/null \
       | jq -c --arg p "$name" '.[] | {key: "\($p)-\(.number)", title, url, created: .createdAt}' || return 1
   else
-    line=$(LABEL=$(q "$2") ROOT=$(q "$1") awk '
+    line=$(LABEL=$(q "$2") ROOT=$(q "$1") TRACKER=$(tracker_cmd "$1") awk '
       function rep(s, ph, val,   out, i) {
         out = ""
         while ((i = index(s, ph)) > 0) { out = out substr(s, 1, i - 1) val; s = substr(s, i + length(ph)) }
         return out s
       }
-      { print rep(rep($0, "{{LABEL}}", ENVIRON["LABEL"]), "{{ROOT}}", ENVIRON["ROOT"]) }' <<<"$cmd")
+      { print rep(rep(rep($0, "{{LABEL}}", ENVIRON["LABEL"]), "{{ROOT}}", ENVIRON["ROOT"]), "{{TRACKER}}", ENVIRON["TRACKER"]) }' <<<"$cmd")
     (cd "$1" && sh -c "$line") 2>/dev/null | jq -c 'select(type == "object" and (.key | type) == "string")' || return 1
   fi | jq -sc 'sort_by(.created // "", .key)[]'
 }

@@ -102,7 +102,7 @@ assert_eq "session-state: this hi-crew registers its hooks" ok "$(row "$out" mac
 
 # An older hi-crew: a crew.sh with setup-status, but no session-state hooks.
 OLD="$SANDBOX/old-crew"; mkdir -p "$OLD/lib" "$OLD/hooks"
-cp "$CREW_ROOT/lib/"* "$OLD/lib/"
+cp -R "$CREW_ROOT/lib/"* "$OLD/lib/"
 printf '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"bash prompt-mark.sh hook"}]}]}}\n' > "$OLD/hooks/hooks.json"
 out=$(cd "$SANDBOX" && FAKE_PLUGINS="$(CREW_ROOT=$OLD plugins hi-crew@highness:user)" bash "$S" status)
 assert_eq "session-state: an older hi-crew → old" old "$(row "$out" machine session-state)"
@@ -148,6 +148,16 @@ assert_eq "overlay: an owner block → ok" ok "$(row "$out" person overlay)"
 mkdir -p "$R/.claude"; printf '{}\n' > "$R/.claude/highness.json"
 out=$(cd "$R" && bash "$S" status)
 assert_eq "overlay: the repo's own file → team-file" team-file "$(row "$out" person overlay)"
+assert_eq "no tracker configured: no tracker row" "" "$(row "$out" person tracker)"
+
+# A tracker the repo configures: hi-crew's crew.sh checks the person's credential (#42).
+printf '{"tracker":{"kind":"jira","base_url":"https://example.atlassian.net"}}\n' > "$R/.claude/highness.json"
+PLUG="$(plugins hi-crew@highness:user)"
+out=$(cd "$R" && FAKE_PLUGINS="$PLUG" bash "$S" status)
+assert_eq "tracker: no credential → no-token, a person row" no-token "$(row "$out" person tracker)"
+assert_contains "tracker: names the host" "$(detail "$out" person tracker)" "example.atlassian.net"
+assert_eq "tracker is not a machine row" "" "$(row "$out" machine tracker)"
+printf '{}\n' > "$R/.claude/highness.json"
 
 # Orca down: repo rows say unknown rather than "missing".
 out=$(cd "$R" && HI_ORCA="$SANDBOX/no-orca" bash "$S" status)
