@@ -265,6 +265,16 @@ mkdir "$CK/state/threads/check.lock"
 check 'check: another check runs — gives up at once, prints nothing' "$(ck check --ttl 0)" ''
 rmdir "$CK/state/threads/check.lock"
 
+# A paused thread the check closes gets no ticket comment from the next turn's sweep.
+jq --argjson old "$old" '.threads += [{id: "P", project: "'"$CK/proj"'", title: "paused landed", status: "paused", waits_on: "person", next: "x", open_items: ["x"], pr: "svc#1", ticket: "AB-1", updated: "x", updated_epoch: $old, history: [{at: "x", session: "s", note: "did a thing"}]}]' "$CL" >"$CL.n" && mv "$CL.n" "$CL"
+ck check --ttl 0 >/dev/null
+printf '{"threads":{"comment":{"commands":[{"match":".","command":"cat >>%s"}]}}}' "$CK/posted" >"$CK/user.json"
+reply '{"ops":[]}'
+{ u 'hello'; a 'hi'; } >"$CK/t.jsonl"
+(cd "$CK/proj" && HIGHNESS_STATE="$CK/state" HIGHNESS_CONFIG="$CK/user.json" CK_LOG="$CK/log" CK_STATES="$CK/states" bash "$TH" process "$CK/t.jsonl" sck "$CK/proj")
+check 'check: a paused thread it closed is done' "$(jq -r '.threads[] | select(.id == "P") | .status' "$CL")" 'done'
+check 'check: and the next turn posts no comment for it' "$([ -s "$CK/posted" ] && echo posted || echo none)" 'none'
+
 # The skill relays first and gives the resume line last: sent, then started, then manual.
 SK="$HERE/../skills/where/SKILL.md"
 case "$(cat "$SK")" in *'"$TH" relay'*'`sent`'*'`started`'*'`manual`'*) ok 'where: relay, then new terminal, then the resume line' ;; *) no 'where: relay, then new terminal, then the resume line' ;; esac
