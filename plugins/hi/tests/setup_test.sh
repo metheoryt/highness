@@ -208,6 +208,13 @@ assert_eq "overlay: an owner block → ok" ok "$(row "$out" person overlay)"
 mkdir -p "$R/.claude"; printf '{}\n' > "$R/.claude/highness.json"
 out=$(cd "$R" && bash "$S" status)
 assert_eq "overlay: the repo's own file → team-file" team-file "$(row "$out" person overlay)"
+# A child clone with no file of its own, listed by the umbrella above it: the umbrella's file.
+UMB="$SANDBOX/umb"; mkdir -p "$UMB/.claude" "$UMB/kid" && git -C "$UMB" init -q && git -C "$UMB/kid" init -q
+printf '{}\n' > "$UMB/.claude/highness.json"; printf 'kid git@github.com:someone/kid.git\n' > "$UMB/repos.txt"
+UMB=$(cd "$UMB" && pwd -P)
+out=$(cd "$UMB/kid" && bash "$S" status)
+assert_eq "overlay: a child clone of an umbrella → team-file" team-file "$(row "$out" person overlay)"
+assert_contains "overlay: names the umbrella's file" "$(detail "$out" person overlay)" "$UMB/.claude/highness.json (the umbrella"
 assert_eq "no tracker configured: no tracker row" "" "$(row "$out" person tracker)"
 
 # A tracker the repo configures: hi-crew's crew.sh checks the person's credential (#42).

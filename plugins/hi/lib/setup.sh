@@ -259,6 +259,10 @@ rows_person() {
 
   [ -n "${TOP:-}" ] || return 0
   if [ -f "$TOP/.claude/highness.json" ]; then _row person overlay team-file "$TOP/.claude/highness.json"; return; fi
+  # A child clone of an umbrella takes the umbrella's team file (config.sh): say which one.
+  if key=$(cd "$TOP" && bash "$HERE/config.sh" root 2>/dev/null) && [ -n "$key" ]; then
+    _row person overlay team-file "$key/.claude/highness.json (the umbrella that lists this clone)"; return
+  fi
   o=$(git -C "$TOP" config --get remote.origin.url 2>/dev/null) || o=''
   o=${o%/}; o=${o%.git}; o=${o##*:}
   o=$(printf '%s\n' "$o" | awk -F/ 'NF >= 2 { print tolower($(NF-1) "/" $NF) }')

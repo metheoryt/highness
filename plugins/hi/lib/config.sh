@@ -7,7 +7,10 @@
 #
 # Two JSON files, both optional:
 #   user   ${HIGHNESS_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/highness/config.json}
-#   repo   <git toplevel of the cwd>/.claude/highness.json   (committed by a team)
+#   repo   <git toplevel of the cwd>/.claude/highness.json   (committed by a team); when the
+#          toplevel has none, the file of the nearest umbrella above the clone: a checkout with
+#          .claude/highness.json and a repos.txt that lists the clone (relative to it, or to its
+#          `umbrella.dir`; see hi's lib/umbrella.sh). A clone the umbrella does not list gets none.
 # The user file may also hold per-repo overlays, for repos a team cannot or will not commit a
 # file to: `repos.<owner/repo>` and `repos.<owner>`, keyed by the cwd's `origin` (host ignored,
 # lowercase, no .git), each an object of the same keys:
@@ -21,6 +24,8 @@
 #   config.sh has [--user] <jq-path>    the file that sets the key, even to null (how a person says
 #                                       "leave it to the default" on purpose); exit 1 when no source does
 #   config.sh files [--user]            the files that exist, repo first
+#   config.sh root                      the directory whose team file applies here (the toplevel, or
+#                                       the umbrella), physical path; exit 1 when no team file does
 #
 # --user reads the user file's top level only. A key that runs code or switches a protection off
 # must be read with it: the repo file comes with any clone, so trusting it would let a cloned repo
@@ -40,12 +45,63 @@ _origin() {
   printf '%s\n' "$u" | awk -F/ 'NF >= 2 { print tolower($(NF-1) "/" $NF) }'
 }
 
+# Whether <umbrella dir>/repos.txt lists the clone at <physical path>: a `<dir> [url]` line whose dir,
+# relative to the umbrella dir or to its `umbrella.dir` (umbrella.sh's rules), is that path.
+_lists() {
+  local up=$1 clone=$2 base sub dir rest p
+  base=$up
+  sub=$(jq -r '.umbrella.dir // empty | strings' "$up/.claude/highness.json" 2>/dev/null) || sub=''
+  sub=${sub%/}
+  case "$sub" in ''|.) ;; /*) base=$sub ;; *) base="$up/$sub" ;; esac
+  while read -r dir rest || [ -n "$dir" ]; do
+    dir=${dir%$'\r'}
+    case "$dir" in ''|'#'*) continue ;; esac
+    dir=${dir%/}
+    case "$dir" in /*) p=$dir ;; *) p="$base/$dir" ;; esac
+    [ -d "$p" ] || continue
+    p=$(cd "$p" 2>/dev/null && pwd -P) || continue
+    [ "$p" = "$clone" ] && [ "$p" != "$up" ] && return 0
+  done < "$up/repos.txt"
+  return 1
+}
+
+# The team file: the git toplevel's .claude/highness.json; when it has none, the file of the nearest
+# umbrella above the clone that lists it. The clone is the toplevel's main checkout (the one that
+# repos.txt names), so a linked worktree of a child clone resolves to the same umbrella. File tests
+# only on the way up, one git call once a repos.txt matches: most repos have no team file, and
+# every highness hook reads the config.
+_team_file() {
+  local out top common clone up
+  out=$(git rev-parse --show-toplevel --git-common-dir 2>/dev/null) || return 1
+  top=$(printf '%s\n' "$out" | sed -n 1p); common=$(printf '%s\n' "$out" | sed -n 2p)
+  [ -n "$top" ] || return 1
+  [ -f "$top/.claude/highness.json" ] && { printf '%s\n' "$top/.claude/highness.json"; return 0; }
+  command -v jq >/dev/null 2>&1 || return 1
+  case "$common" in /*) ;; *) common="$(pwd)/$common" ;; esac
+  case "$common" in */.git) clone=${common%/.git} ;; *) clone=$top ;; esac
+  clone=$(cd "$clone" 2>/dev/null && pwd -P) || return 1
+  up=$clone
+  while [ "$up" != / ] && [ -n "$up" ]; do
+    up=$(dirname "$up")
+    [ -f "$up/repos.txt" ] && [ -f "$up/.claude/highness.json" ] && _lists "$up" "$clone" \
+      && _is_umbrella "$up" && { printf '%s\n' "$up/.claude/highness.json"; return 0; }
+  done
+  return 1
+}
+
+# An umbrella is a checkout of its own (repos.txt at a git toplevel, as umbrella.sh marks it), and
+# its two files are the person's: a repo file's keys run commands, so a planted /tmp/repos.txt with
+# a file beside it must not decide for a clone under /tmp.
+_is_umbrella() {
+  local t
+  [ -O "$1/repos.txt" ] && [ -O "$1/.claude/highness.json" ] || return 1
+  t=$(git -C "$1" rev-parse --show-toplevel 2>/dev/null) || return 1
+  [ "$(cd "$t" 2>/dev/null && pwd -P)" = "$1" ]
+}
+
 _files() {
-  local top user
-  if [ "$USER_ONLY" = 0 ]; then
-    top=$(git rev-parse --show-toplevel 2>/dev/null) || top=''
-    [ -n "$top" ] && [ -f "$top/.claude/highness.json" ] && printf '%s\n' "$top/.claude/highness.json"
-  fi
+  local user
+  [ "$USER_ONLY" = 0 ] && _team_file
   user=$(_user_file)
   [ -f "$user" ] && printf '%s\n' "$user"
   return 0
@@ -119,5 +175,6 @@ case "${1:-}" in
   list)  [ -n "${2:-}" ] || { echo 'usage: config.sh list [--user] <jq-path>' >&2; exit 2; }; _list "$2" ;;
   has)   [ -n "${2:-}" ] || { echo 'usage: config.sh has [--user] <jq-path>' >&2; exit 2; }; _has "$2" ;;
   files) _files ;;
-  *) echo 'usage: config.sh get|list|has [--user] <jq-path> | files [--user]' >&2; exit 2 ;;
+  root)  f=$(_team_file) || exit 1; d=${f%/.claude/highness.json}; (cd "$d" && pwd -P) ;;
+  *) echo 'usage: config.sh get|list|has [--user] <jq-path> | files [--user] | root' >&2; exit 2 ;;
 esac

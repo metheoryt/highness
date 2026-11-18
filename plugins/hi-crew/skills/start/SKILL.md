@@ -30,21 +30,23 @@ Below, `$O` stands for that executable.
 - Orchestration: if `$O orchestration run-current` fails, tell the user to set it up (Orca 1.4.254:
   Settings → Orchestration → Agent Orchestration; older Orca: Settings → Experimental) and stop.
 - `jq` must be installed (`crew.sh` needs it).
-- Team settings come from `.claude/highness.json` at the git root of **this session's working
-  directory** (a team commits it), or the user's `highness/config.json`. In a workspace that holds
-  several clones, run hi-crew from the workspace root, where the team's file is, not from inside a
-  clone:
+- Team settings come from `.claude/highness.json` (a team commits it) at the **coordinator root**,
+  or the user's `highness/config.json`. The coordinator root is pinned once per session, when its
+  Run is registered (step 4), from where the session stands then: the git root, or, from a clone
+  with no team file of its own, the umbrella above it whose `repos.txt` lists that clone. A later
+  `cd` into a clone does not move it. `bash "$C" root` prints it; `bash "$C" root <dir>` re-pins
+  it. Keys:
 
   | key | what | when unset |
   |---|---|---|
-  | `crew.process` | the team's process text appended to every spec: how to take and comment a ticket, open a PR, run the review loop. `{{ROOT}}` in it becomes the absolute path of this session's git root: the worker runs in another tree, where the team's skills may not be loaded, so name its scripts by that path | a generic line |
+  | `crew.process` | the team's process text appended to every spec: how to take and comment a ticket, open a PR, run the review loop. `{{ROOT}}` in it becomes the absolute path of the coordinator root: the worker runs in another tree, where the team's skills may not be loaded, so name its scripts by that path | a generic line |
   | `crew.merge` | `on_green`: the worker merges its own PR once it is ready and its checks pass (a brief that says merging is the person's call still wins). For repos where the person has decided agents merge | `never`: merging is a person's call |
   | `crew.agent` | Orca agent id for workers | `claude` |
   | `crew.model` | provider model id for workers | say so to the user once; Orca then uses the agent's own default, which differs per person |
   | `crew.marker` | the prefix workers put on everything they post under the person's account | `(agent)` |
-  | `crew.pr_state` | a command that prints one PR's state as JSON, for the watch (below); `{{PR}}`, `{{ROOT}}`, `{{MARKER}}` become the shell-quoted PR url, this git root and the marker. It runs outside any terminal, so it finds its own credentials | `gh` for a github.com PR; other forges go unwatched |
+  | `crew.pr_state` | a command that prints one PR's state as JSON, for the watch (below); `{{PR}}`, `{{ROOT}}`, `{{MARKER}}` become the shell-quoted PR url, the coordinator root and the marker. It runs outside any terminal, so it finds its own credentials | `gh` for a github.com PR; other forges go unwatched |
 
-  Read them with `bash "${CLAUDE_PLUGIN_ROOT}/lib/config.sh" get '.crew.<key>'`.
+  Read them at that root: `(cd "$(bash "$C" root)" && bash "${CLAUDE_PLUGIN_ROOT}/lib/config.sh" get '.crew.<key>')`.
 - **The watch.** Workers report on their own, but nobody tells the person when a PR is merged,
   CI fails or a person comments while the worker is idle. `bash "$C" watch-install` sets up an
   Orca automation, "hi-crew watch", that looks at every open ticket's PR every 10 minutes and
@@ -76,11 +78,13 @@ Below, `$O` stands for that executable.
    an Orca project: `$O repo list --json`; add a missing clone with `$O repo add --path <path> --json`.
 4. **This session's Run.** `bash "$C" run` prints it when this session already has one; use it.
    None yet: `$O orchestration run-create --objective "hi-crew" --json`, then
-   `bash "$C" run <run_id>` to register it. Never `run-use` another session's Run to start a
+   `bash "$C" run <run_id>` to register it; that also pins the coordinator root from the cwd, so
+   register it from the umbrella or the repo whose team file applies. Never `run-use` another session's Run to start a
    ticket: Orca would stop waking that session for its workers.
 5. **Spec:** write the brief to a file in the scratchpad, then
-   `bash "$C" spec --key <KEY> --title '<title>' --brief-file <file> > <spec-file>`. Read it once
-   before starting.
+   `bash "$C" spec --key <KEY> --title '<title>' --brief-file <file> > <spec-file>` (it reads the
+   team's settings at the coordinator root). Read it once before starting: a `Team process (none
+   configured…)` there means no team file applies at that root.
 6. **Start:**
    ```bash
    $O orchestration worker-start --spec-file <spec-file> --task-title '<KEY>: <title>' \
@@ -92,8 +96,8 @@ Below, `$O` stands for that executable.
 7. **Record the facts** from the receipt, with the branch read from the workspace
    (`git -C <workspace path> branch --show-current`; the digest finds the PR by it):
    `bash "$C" record <KEY> '{"title":…,"repo":…,"workspace":…,"branch":…,"dispatch":…,"task":…,"run":…,"agent":…,"model":…,"root":…}'`,
-   where `root` is this session's git root (`git rev-parse --show-toplevel`): the watch reads the
-   team's settings there.
+   where `root` is the coordinator root (`bash "$C" root`), never re-derived from the cwd: the watch
+   reads the team's settings there.
 8. Tell the user in one or two lines: the ticket, the workspace, what the worker will do, that its
    questions come here. Then **end your turn**. Never poll; Orca wakes you.
 

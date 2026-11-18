@@ -17,7 +17,14 @@
 #   crew.sh choices [<KEY>]           the recorded choices, one JSON object per line
 #   crew.sh run                       this session's hi-crew Orca Run: the Run Orca has bound to
 #                                     this terminal, when it is one hi-crew made (exit 1: none)
-#   crew.sh run <run_id>              register a Run hi-crew made
+#   crew.sh run <run_id>              register a Run hi-crew made, and pin its coordinator root
+#                                     (below) from the cwd, once
+#   crew.sh root [<dir>]              this session's coordinator root: where the team's settings,
+#                                     {{ROOT}} and the tracker are read for its tickets. Pinned per
+#                                     Run when the Run is registered, so a later cd into a clone does
+#                                     not move it; <dir> re-pins it. With no pin: the directory whose
+#                                     team file applies (an umbrella, from a child clone it lists:
+#                                     config.sh root), else the git toplevel, else the cwd
 #   crew.sh runs                      the Runs of the open tickets, one per line. Each coordinator
 #                                     session has its own Run, so Orca wakes each for its own
 #                                     workers; the digest reads them all
@@ -29,11 +36,11 @@
 #                                     escalation, while its dispatch has sent no later worker_done.
 #   crew.sh reports                   the latest worker_done per dispatch in those Runs, TSV:
 #                                     run id, dispatch id, created_at, outcome, subject
-#   crew.sh spec --key K --title T [--brief-file F]
+#   crew.sh spec --key K --title T [--brief-file F] [--root R]
 #                                     the worker spec for a ticket, from reference/worker-spec.md and
-#                                     the config keys crew.process and crew.marker. In crew.process,
-#                                     {{ROOT}} becomes the git root of the coordinator's working
-#                                     directory: a worker runs in another tree, so the team's files
+#                                     the config keys crew.process and crew.marker, read at R (default:
+#                                     `crew.sh root`). In crew.process, {{ROOT}} becomes R, the
+#                                     coordinator root: a worker runs in another tree, so the team's files
 #                                     must be named by absolute path. {{TRACKER}} becomes the
 #                                     tracker adapter reading its config there (`{{TRACKER}} read
 #                                     {{KEY}}`, `move`, `comment`: lib/tracker.sh), {{KEY}} the key.
@@ -94,8 +101,8 @@
 #                                       crew.agent     set | default | unset   (default: set to null on purpose)
 #                                       crew.model     set | default | unset
 #
-# PR state comes from the config key crew.pr_state, read at the ticket's `root` (the coordinator's
-# git root, recorded at start): a command that prints one JSON object for a PR,
+# PR state comes from the config key crew.pr_state, read at the ticket's `root` (the coordinator
+# root, recorded at start): a command that prints one JSON object for a PR,
 #   {"state": "open|merged|closed", "draft": bool, "head": sha, "ci": "success|failure|pending|",
 #    "people": <count of comments by people>, "people_at": <latest time one was written or edited>}
 # with {{PR}}, {{ROOT}} and {{MARKER}} replaced by the shell-quoted PR url, root and crew.marker.
@@ -208,6 +215,7 @@ cmd_run() {
     mkdir -p "$DIR"
     grep -qxF "$1" "$DIR/run" 2>/dev/null || printf '%s\n' "$1" >>"$DIR/run"
     keep_handle "$1"
+    pin_root "$1"
     return
   fi
   need_jq
@@ -216,6 +224,32 @@ cmd_run() {
   [ -n "$cur" ] && grep -qxF "$cur" "$DIR/run" 2>/dev/null || return 1
   keep_handle "$cur"
   printf '%s\n' "$cur"
+}
+
+# The coordinator root, derived from the cwd: the directory whose team file applies (the umbrella,
+# from a child clone it lists: config.sh root), else the git toplevel, else the cwd.
+derive_root() {
+  bash "$CONFIG" root 2>/dev/null || git rev-parse --show-toplevel 2>/dev/null || pwd -P
+}
+
+# $DIR/roots/<run>: the root pinned for a Run, written once when the Run is registered, so a
+# coordinator that later cd's into a clone keeps reading the team's settings where it started.
+pin_root() { # <run> [<dir>]
+  local r
+  if [ $# -eq 2 ]; then r=$(cd "$2" 2>/dev/null && pwd -P) || die "root: not a directory: '$2'"
+  else [ -s "$DIR/roots/$1" ] && return 0; r=$(derive_root); fi
+  mkdir -p "$DIR/roots" && printf '%s\n' "$r" >"$DIR/roots/$1"
+}
+
+cmd_root() {
+  local run
+  if [ $# -eq 1 ]; then
+    run=$(cmd_run) || die 'root: this session has no hi-crew Run yet (crew.sh run <run_id> first)'
+    pin_root "$run" "$1"; cat "$DIR/roots/$run"; return
+  fi
+  [ $# -eq 0 ] || die 'usage: root [<dir>]'
+  if run=$(cmd_run 2>/dev/null) && [ -s "$DIR/roots/$run" ]; then cat "$DIR/roots/$run"; return; fi
+  derive_root
 }
 
 cmd_runs() {
@@ -278,26 +312,28 @@ cmd_reports() {
 }
 
 cmd_spec() {
-  local key='' title='' brief_file='' brief='' process marker merge root
+  local key='' title='' brief_file='' brief='' process marker merge root=''
   while [ $# -gt 0 ]; do
     case "$1" in
+      --root) root=${2:-}; shift 2 ;;
       --key) key=${2:-}; shift 2 ;;
       --title) title=${2:-}; shift 2 ;;
       --brief-file) brief_file=${2:-}; shift 2 ;;
       *) die "spec: unknown argument '$1'" ;;
     esac
   done
-  [ -n "$key" ] && [ -n "$title" ] || die 'usage: spec --key K --title T [--brief-file F]'
+  [ -n "$key" ] && [ -n "$title" ] || die 'usage: spec --key K --title T [--brief-file F] [--root R]'
   keyfile "$key" >/dev/null || exit 2
   [ -f "$TEMPLATE" ] || die "missing $TEMPLATE"
   if [ -n "$brief_file" ]; then
     [ -f "$brief_file" ] || die "no brief file: $brief_file"
     brief=$(cat "$brief_file")
   fi
-  root=$(git rev-parse --show-toplevel 2>/dev/null) || root=$(pwd)
-  process=$(bash "$CONFIG" get '.crew.process') || process='(none configured: use the tracker and forge tools you have, and say in the PR how you checked the work)'
-  marker=$(bash "$CONFIG" get '.crew.marker') || marker='(agent)'
-  merge=$(bash "$CONFIG" get '.crew.merge') || merge=never
+  [ -n "$root" ] || root=$(cmd_root)
+  [ -d "$root" ] || die "spec: the root is not a directory: '$root'"
+  process=$(cd "$root" && bash "$CONFIG" get '.crew.process') || process='(none configured: use the tracker and forge tools you have, and say in the PR how you checked the work)'
+  marker=$(cd "$root" && bash "$CONFIG" get '.crew.marker') || marker='(agent)'
+  merge=$(cd "$root" && bash "$CONFIG" get '.crew.merge') || merge=never
   case "$merge" in
     never) merge="Never merge. That is a person's call." ;;
     on_green) merge="Merge your own pull request once it is ready for review and its checks pass, the way the team's process below says. If your brief says merging is the person's call, it is: then never merge." ;;
@@ -360,7 +396,7 @@ pr_state() { # <facts json>
   local pr root cmd marker line
   pr=$(printf '%s' "$1" | jq -r '.pr // empty')
   root=$(printf '%s' "$1" | jq -r '.root // empty')
-  [ -n "$root" ] && [ -d "$root" ] || root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+  [ -n "$root" ] && [ -d "$root" ] || root=$(derive_root)
   cmd=$(cd "$root" && bash "$CONFIG" get '.crew.pr_state') || cmd=''
   marker=$(cd "$root" && bash "$CONFIG" get '.crew.marker') || marker='(agent)'
   if [ -z "$cmd" ]; then
@@ -388,7 +424,8 @@ tracker_cmd() { printf 'bash %s --root %s' "$(q "$HERE/tracker.sh")" "$(q "$1")"
 
 # The team's own digest sections (config agenda.sections), so the digest covers more than the
 # workers without hi knowing the team's tracker or forge. Each section is {"name", "command"}; the
-# command runs from this git root with {{ROOT}}, {{MARKER}} and {{TRACKER}} filled in, and prints
+# command runs from the team file's root (derive_root: an umbrella, from a child clone it lists)
+# with {{ROOT}}, {{MARKER}} and {{TRACKER}} filled in, and prints
 # one JSON object per line: {"group": "you|others|later|done", "title", "next", "url", "since"}
 # (all but title optional). `{{TRACKER}} sections` is the person's tickets from the configured
 # tracker (lib/tracker.sh).
@@ -399,7 +436,7 @@ tracker_cmd() { printf 'bash %s --root %s' "$(q "$HERE/tracker.sh")" "$(q "$1")"
 cmd_sections() {
   need_jq
   local root secs n i name cmd line out rc
-  root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+  root=$(derive_root)
   # The person's open work threads from the hi-threads journal, when that plugin keeps one here.
   bash "$HERE/threads-read.sh" agenda 2>/dev/null | jq -c '{section: "threads"} + .' 2>/dev/null
   secs=$(cd "$root" && bash "$CONFIG" get '.agenda.sections') || secs=''
@@ -888,7 +925,7 @@ as_start() { # <candidate json> <root> <run> <handle> <dry>
   bf=$(mktemp "${TMPDIR:-/tmp}/hi-crew-brief.XXXXXX") && sf="$bf.spec" || return 1
   printf 'Started by hi-crew autostart: the ticket carries the label `%s`, and no person has read it\nbefore this start. Read the ticket yourself%s; when it is not clear enough to act on, ask.\n' \
     "$label" "${url:+ ($url)}" >"$bf"
-  (cd "$root" && bash "$HERE/crew.sh" spec --key "$key" --title "$title" --brief-file "$bf") >"$sf" \
+  (cd "$root" && bash "$HERE/crew.sh" spec --key "$key" --title "$title" --brief-file "$bf" --root "$root") >"$sf" \
     || { rm -f "$bf" "$sf"; as_log failed "$key" "could not build the spec"; return 1; }
   out=$(cd "$root" && "$(orca_cmd)" orchestration worker-start --spec-file "$sf" --task-title "$key: $title" \
     --worktree new-top-level --repo "$repo" --name "$key" --base-branch "$base" --agent "$agent" \
@@ -969,6 +1006,7 @@ case "$sub" in
   choice) cmd_choice "$@" ;;
   choices) cmd_choices "$@" ;;
   run) cmd_run "$@" ;;
+  root) cmd_root "$@" ;;
   runs) cmd_runs ;;
   asks) cmd_asks ;;
   reports) cmd_reports ;;
