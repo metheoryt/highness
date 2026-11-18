@@ -38,8 +38,12 @@ this skill" printed above, two levels up.
    `stale` is a thread with no PR and no ticket left untouched for days: nothing can check it.
    A thread whose PR or ticket a team section also lists shows once, by the section's line (it is
    live), with the thread's open items under it.
-   No open tickets: skip steps 2–6. No tickets and no sections: say there is nothing on the
-   person and stop.
+   **A held autostart**: `bash "$C" held` — one line, "autostart held <N> h: <reason>", when
+   autostart has started nothing for over an hour because every pass stopped short (the budget,
+   no coordinator, no root); nothing otherwise. A hold starts no worker and makes no event, so this
+   line is the only place it shows. `bash "$C" account` names the config dir whose budget it reads.
+   No open tickets: skip steps 2–6. No tickets, no sections and no held autostart: say there is
+   nothing on the person and stop.
 2. **What blocks a worker**: `bash "$C" asks` — open questions, decision gates, and escalations
    (a worker that stopped without reporting), across the Runs of all open tickets, each with its
    Run. `$O orchestration inbox --limit 100 --full --json` gives the full text.
@@ -66,7 +70,8 @@ this skill" printed above, two levels up.
 
 One short list, most urgent first, each item with its next step in words:
 
-1. **Waiting on you** — open questions and gates (with the worker's proposals), workers on a
+1. **Waiting on you** — a held autostart's line as it came (its reason says what to fix: the
+   budget, a coordinator session to open), open questions and gates (with the worker's proposals), workers on a
    dialog (since when, which tool), stopped workers, people's new comments on a
    PR, PRs whose review loop finished and that wait for a person to resolve threads and merge;
    then the sections' `you` items, by section. A thread left unfinished (`paused`) carries its

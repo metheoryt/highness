@@ -75,6 +75,12 @@ counted); a figure that cannot be read holds the start (`crew.budget.on_unknown:
 that). `bash lib/budget.sh check` prints the verdict. Other launchers of background agents can call
 it the same way: exit 0 is go, 1 is hold.
 
+The account is the one Orca launches agents on (`crew.sh account` prints it): Orca's active Claude
+account; with none, the profile home `claude-profiles/selected-host` in Orca's data dir names; else
+`crew.budget.config_dir` in your own config; else the profile home whose statusline cache is the
+freshest. A hold that lasts over an hour shows in `/hi-crew:agenda` as
+"autostart held <N> h: <reason>" (`crew.sh held`).
+
 **Pausing a running worker.** Each watch pass also writes the verdict for the account as a flag
 (`<config dir>/highness-hold`, `lib/hold.sh pass`). While it is there, an autostarted worker's next
 tool call ends its turn: the session stays open and idle, its work in the tree as it was. When the
