@@ -8,7 +8,11 @@
 #   setup.sh profile       the Claude Code config dir Orca starts workers under<TAB>why
 #
 # Sections and rows:
-#   machine  jq, orca, launcher, plugin:<name> (each highness plugin), hi-crew (its crew.sh),
+#   machine  jq, orca, launcher, plugin:<name> (each highness plugin in the worker profile: on,
+#            off or double, with its source: a skills-dir link or a marketplace),
+#            profile:<dir> (every other Claude config dir Orca uses: ok, or gaps against the
+#            worker profile's set), pins:<installed_plugins.json> (stale project pins) or pins ok,
+#            hi-crew (its crew.sh),
 #            session-state (that hi-crew registers the session-state hooks),
 #            orchestration, orca-skill, watch (these three from `crew.sh setup-status`), board
 #   person   config, crew.agent, crew.model, tracker (from crew.sh; tracker only when one is
@@ -24,7 +28,8 @@
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CLAUDE_BIN=${HI_CLAUDE:-claude}
-PLUGINS='hi hi-crew hi-guard hi-docs'
+# Every plugin of this marketplace (.claude-plugin/marketplace.json; setup_test.sh holds them equal).
+PLUGINS='hi hi-crew hi-guard hi-threads hi-review hi-docs'
 
 _row() { printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4"; }
 
@@ -60,18 +65,130 @@ _plugin_list() {
   CLAUDE_CONFIG_DIR=$1 "$CLAUDE_BIN" plugin list --json 2>/dev/null
 }
 
-# The enabled entry of plugin <name> that a worker in <top> loads: user scope, or a project scope
-# at <top> (a team's committed settings). @highness and @skills-dir count alike. Prints
-# id<TAB>scope<TAB>installPath, or nothing.
+# Every enabled entry of plugin <name> that a session in <top> loads: user scope, or a project
+# scope at <top> (a team's committed settings). @highness and @skills-dir count alike; more than
+# one line is the plugin loaded twice. Prints id<TAB>scope<TAB>installPath per entry.
 _enabled() {
   printf '%s' "$1" | jq -r --arg n "$2" --arg top "$3" '
-    [ .[]? | select((.id // "") | startswith($n + "@")) | select(.enabled == true)
-      | select(.scope == "user" or (.scope == "project" and $top != "" and .projectPath == $top)) ][0]
-    // empty | [.id, .scope, (.installPath // "")] | @tsv' 2>/dev/null
+    .[]? | select((.id // "") | startswith($n + "@")) | select(.enabled == true)
+      | select(.scope == "user" or (.scope == "project" and $top != "" and .projectPath == $top))
+      | [.id, .scope, (.installPath // "")] | @tsv' 2>/dev/null
+}
+
+# Where one enabled entry comes from: a link in the skills dir (to a working copy: a local edit
+# changes sessions without a release) or a marketplace install.
+_source() { # <id> <installPath>
+  local t
+  case "$1" in
+    *@skills-dir)
+      t=$(cd -P "$2" 2>/dev/null && pwd -P) || t=$2
+      printf 'link → %s' "$t" ;;
+    *) printf 'marketplace %s' "${1#*@}" ;;
+  esac
+}
+
+# The entries of _enabled as one phrase: "<id> (<scope>, <source>); …".
+_entries() {
+  local id sc ip out=''
+  while IFS='	' read -r id sc ip; do
+    [ -n "$id" ] || continue
+    out="$out${out:+; }$id ($sc, $(_source "$id" "$ip"))"
+  done <<EOF
+$1
+EOF
+  printf '%s' "$out"
+}
+
+# Every Claude Code config dir Orca uses, the worker profile first: Orca's
+# claude-observed-config-dirs.json (a JSON array of paths) and each claude-profiles/*/home.
+# One line per existing dir, deduplicated by physical path.
+_config_dirs() { # <worker profile>
+  local d o p seen='' phys
+  {
+    printf '%s\n' "$1"
+    while IFS= read -r o; do
+      [ -n "$o" ] || continue
+      [ -f "$o/claude-observed-config-dirs.json" ] \
+        && jq -r '.[]? | strings' "$o/claude-observed-config-dirs.json" 2>/dev/null
+      for p in "$o"/claude-profiles/*/home; do [ -d "$p" ] && printf '%s\n' "$p"; done
+    done <<EOF
+$(_orca_dirs)
+EOF
+  } | while IFS= read -r d; do
+    [ -n "$d" ] && [ -d "$d" ] || continue
+    phys=$(cd -P "$d" 2>/dev/null && pwd -P) || continue
+    case "$seen" in *"
+$phys
+"*) continue ;; esac
+    seen="$seen
+$phys
+"
+    printf '%s\n' "$d"
+  done
+}
+
+# Project-scope pins of highness plugins whose project dir is gone (an old worktree): reopening a
+# workspace at that path loads the pinned, older code. Reads <dir>/plugins/installed_plugins.json;
+# prints id<TAB>projectPath per stale pin.
+_stale_pins() { # <installed_plugins.json>
+  local id pp p
+  jq -r '.plugins // {} | to_entries[] | .key as $k | .value[]?
+         | select(.scope == "project" or .scope == "local") | [$k, (.projectPath // "")] | @tsv' \
+    "$1" 2>/dev/null | while IFS='	' read -r id pp; do
+    [ -n "$pp" ] && [ ! -d "$pp" ] || continue
+    for p in $PLUGINS; do
+      case "$id" in "$p"@*) printf '%s\t%s\n' "$id" "$pp"; break ;; esac
+    done
+  done
+}
+
+# The rows for every other config dir and the stale pins of all of them.
+# <worker profile> <the plugins the worker profile loads, space-separated>
+rows_profiles() {
+  local prof=$1 want=$2 d list p hits n off dbl state file files='' phys pins any=''
+  while IFS= read -r d; do
+    [ -n "$d" ] || continue
+    file="$d/plugins/installed_plugins.json"
+    if [ -f "$file" ]; then
+      phys="$(cd -P "$(dirname "$file")" && pwd -P)/installed_plugins.json"
+      case "$files" in *"
+$phys
+"*) ;; *)
+        files="$files
+$phys
+"
+        pins=$(_stale_pins "$file" | awk -F'\t' '{ printf "%s%s → %s", (NR > 1 ? "; " : ""), $1, $2 }')
+        if [ -n "$pins" ]; then _row machine "pins:$file" stale "$pins"; any=1; fi ;;
+      esac
+    fi
+    [ "$d" = "$prof" ] && continue
+    if ! list=$(_plugin_list "$d") || ! printf '%s' "$list" | jq -e 'type == "array"' >/dev/null 2>&1; then
+      _row machine "profile:$d" unknown "$CLAUDE_BIN plugin list --json failed"; continue
+    fi
+    off=''; dbl=''
+    for p in $PLUGINS; do
+      hits=$(_enabled "$list" "$p" "${BASE:-}")
+      n=$(printf '%s' "$hits" | grep -c .)
+      if [ "$n" -gt 1 ]; then dbl="$dbl${dbl:+; }$p twice: $(_entries "$hits")"
+      elif [ "$n" -eq 0 ]; then
+        case " $want " in *" $p "*) off="$off${off:+, }$p" ;; esac
+      fi
+    done
+    state=ok
+    if [ -n "$off" ] || [ -n "$dbl" ]; then state=gaps; fi
+    if [ "$state" = ok ]; then
+      _row machine "profile:$d" ok "loads the worker profile's highness plugins, each once"
+    else
+      _row machine "profile:$d" gaps "${off:+off: $off}${off:+${dbl:+ | }}${dbl:+double: $dbl}"
+    fi
+  done <<EOF
+$(_config_dirs "$prof")
+EOF
+  [ -n "$any" ] || _row machine pins ok 'no project pin of a highness plugin points at a dir that is gone'
 }
 
 rows_machine() {
-  local prof why list p hit crew='' O ver js line
+  local prof why list p hit n loaded='' crew='' O ver js line
   if command -v jq >/dev/null 2>&1; then _row machine jq ok "$(command -v jq)"
   else _row machine jq missing 'hi and hi-crew read every Orca and Claude Code answer with jq'; fi
 
@@ -96,13 +213,20 @@ rows_machine() {
   else
     for p in $PLUGINS; do
       hit=$(_enabled "$list" "$p" "${BASE:-}")
-      if [ -n "$hit" ]; then
-        _row machine "plugin:$p" on "$(printf '%s' "$hit" | cut -f1) ($(printf '%s' "$hit" | cut -f2)) in $prof — $why"
-        [ "$p" = hi-crew ] && crew="$(printf '%s' "$hit" | cut -f3)/lib/crew.sh"
+      n=$(printf '%s' "$hit" | grep -c .)
+      if [ "$n" -gt 1 ]; then
+        _row machine "plugin:$p" double "loaded twice in $prof: $(_entries "$hit") — $why"
+      elif [ "$n" -eq 1 ]; then
+        _row machine "plugin:$p" on "$(_entries "$hit") in $prof — $why"
       else
         _row machine "plugin:$p" off "not enabled in $prof — $why"
       fi
+      if [ "$n" -gt 0 ]; then
+        loaded="$loaded $p"
+        [ "$p" = hi-crew ] && crew="$(printf '%s\n' "$hit" | head -1 | cut -f3)/lib/crew.sh"
+      fi
     done
+    rows_profiles "$prof" "$loaded"
   fi
 
   if [ -n "$crew" ] && [ -f "$crew" ]; then

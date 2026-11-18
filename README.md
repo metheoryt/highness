@@ -26,8 +26,8 @@ For a team, add the marketplace and the plugins to the repo's `.claude/settings.
 1. Install the plugins above (`hi` and `hi-crew` at least; `hi-guard` is recommended), in the Claude
    Code profile Orca starts its agents under.
 2. In a new session, from the repo you will start tickets in: `/hi:setup`. It checks the machine
-   (jq, Orca and its orchestration, the launcher, the plugins the worker profile loads, the hi-crew
-   watch, the board columns), your config (`crew.agent`, `crew.model`, a repo overlay) and the repo
+   (jq, Orca and its orchestration, the launcher, that every Claude profile Orca uses loads each
+   highness plugin once, stale project pins of them, the hi-crew watch, the board columns), your config (`crew.agent`, `crew.model`, a repo overlay) and the repo
    (an Orca project, plus `/hi:repo-setup`), and proposes one fix per gap. Some steps are yours in
    the Orca window; it gives them.
 3. `/hi-crew:start <KEY>`. A key is letters, digits, `.`, `_` and `-` only (`[A-Za-z0-9._-]`), not
