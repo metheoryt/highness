@@ -78,7 +78,10 @@ Do not show ids, paths or session ids unless asked. When the user picks a thread
 
 ## 3. Rules
 
-- The journal is a model's notes, not the truth: when a thread's state matters (a PR merged?
-  a ticket closed?) check it in the tracker or forge before acting on it.
+- The journal is a model's notes, not the truth. When the team configures `threads.check.pr` and
+  `threads.check.ticket`, the job after each turn (at most every 10 minutes) and the agenda close
+  the threads whose PRs merged and tickets closed, and leave what they found in `check`; run
+  `bash "$TH" check --wait --ttl 0` for a fresh look. Still check a PR or ticket in the tracker or
+  forge before acting on it.
 - Never edit `threads.json` by hand; a correction the user gives goes in the conversation and the
   next turn's update picks it up.

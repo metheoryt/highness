@@ -29,6 +29,15 @@ this skill" printed above, two levels up.
    `status`, `waits_on`, `open_items` (what is left), `session` and `cwd` (the session it was
    last worked in, and where) and `resume` (the line that reopens that session). A thread that names a ticket a worker carries shows once,
    under the worker.
+   The journal is a model's notes, so the threads come checked: before printing them the section
+   asks the forge and the tracker what became of each PR and ticket a thread names (the team's
+   commands `threads.check.pr` and `threads.check.ticket`). A thread whose PRs all merged or closed
+   and whose tickets are all resolved is closed in the journal and comes first, group `done`, its
+   `next` saying why. An open one carries `live`, what the check found ("repo#12 merged; AB-3 In
+   Review"): when it contradicts `next` (the PR to merge is merged), word the item from `live`.
+   `stale` is a thread with no PR and no ticket left untouched for days: nothing can check it.
+   A thread whose PR or ticket a team section also lists shows once, by the section's line (it is
+   live), with the thread's open items under it.
    No open tickets: skip steps 2–6. No tickets and no sections: say there is nothing on the
    person and stop.
 2. **What blocks a worker**: `bash "$C" asks` — open questions, decision gates, and escalations
@@ -61,13 +70,14 @@ One short list, most urgent first, each item with its next step in words:
    dialog (since when, which tool), stopped workers, people's new comments on a
    PR, PRs whose review loop finished and that wait for a person to resolve threads and merge;
    then the sections' `you` items, by section. A thread left unfinished (`paused`) carries its
-   open items as a short sublist; no ids, paths or session ids unless asked.
+   open items as a short sublist; no ids, paths or session ids unless asked. The `stale` threads
+   only as one count ("and 37 old notes with no PR or ticket"), with an offer to go through them.
 2. **Running** — what each worker is doing, from its last report; then the sections' `others`
    items (waiting on a reviewer, a bot, a teammate), one line each. The `later` items only as a
    count per section ("and 12 not started"), listed when the person asks.
 3. **Done since last time** — merged or closed, and reports whose subject starts `already done:`
    (the worker found the work landed and opened no PR; show its evidence); propose closing the
-   facts. The sections' `done` items go here too.
+   facts. The sections' `done` items go here too, the threads the check just closed among them.
 
 Then `bash "$C" events --ack`, propose where to start, and go one topic at a time.
 

@@ -217,6 +217,54 @@ check 'relay: not a git work tree — the resume line, nothing run' "$o|$r|$([ -
 HI_WT_SH="$T/wt.sh" bash "$TH" relay "$T/wt/svc-1" "$SID" "$T/missing.md" 2>/dev/null; r=$?
 check 'relay: no brief file is a usage error' "$r|$([ -f "$T/wt.log" ] && echo ran || echo none)" '2|none'
 
+# The live check: the team's commands say what became of the PRs and tickets a thread names.
+CK="$T/ck"; mkdir -p "$CK/proj/.claude" "$CK/other/.claude" "$CK/state"
+git -C "$CK/proj" init -q; git -C "$CK/other" init -q
+cat >"$CK/fake.sh" <<'EOF'
+#!/bin/sh
+echo "$1" >>"$CK_LOG"
+case "$1" in slow*) sleep 5 ;; esac
+grep "^$1	" "$CK_STATES" | cut -f2
+EOF
+printf 'svc#1\t{"state":"merged"}\nAB-1\t{"state":"Done","resolved":true}\nsvc#2\t{"state":"merged"}\nAB-2\t{"state":"In Review","resolved":false}\nsvc#3\tnot json\nsvc#9\t{"state":"merged"}\n' >"$CK/states"
+for d in proj other; do
+  printf '{"threads":{"check":{"pr":"sh %s {{PR}}","ticket":"sh %s {{KEY}}"}}}' "$CK/fake.sh" "$CK/fake.sh" >"$CK/$d/.claude/highness.json"
+done
+now=$(date +%s); old=$((now - 10 * 86400))
+jq -n --arg p "$CK/proj" --arg o "$CK/other" --argjson now "$now" --argjson old "$old" '{threads: [
+  {id: "A", project: $p, title: "landed", status: "waiting", waits_on: "person", next: "merge it", open_items: ["merge"], pr: "svc#1", ticket: "AB-1", updated: "x", updated_epoch: $now},
+  {id: "B", project: $p, title: "half", status: "waiting", waits_on: "person", next: "merge", open_items: [], pr: "svc#2", ticket: "AB-2", updated: "x", updated_epoch: $now},
+  {id: "C", project: $p, title: "unknown", status: "active", waits_on: "agent", next: "", open_items: [], pr: "svc#3", ticket: "", updated: "x", updated_epoch: $now},
+  {id: "D", project: $p, title: "old note", status: "active", waits_on: "person", next: "", open_items: [], pr: "", ticket: "", updated: "x", updated_epoch: $old},
+  {id: "E", project: $p, title: "new note", status: "active", waits_on: "person", next: "", open_items: [], pr: "", ticket: "", updated: "x", updated_epoch: $now},
+  {id: "F", project: $o, title: "elsewhere", status: "waiting", waits_on: "person", next: "", open_items: [], pr: "svc#9", ticket: "", updated: "x", updated_epoch: $now}]}' \
+  >"$CK/state/threads.json"
+mkdir -p "$CK/state/threads"; mv "$CK/state/threads.json" "$CK/state/threads/threads.json"
+ck() { (cd "$CK/proj" && HIGHNESS_STATE="$CK/state" CK_LOG="$CK/log" CK_STATES="$CK/states" bash "$TH" "$@"); }
+CL="$CK/state/threads/threads.json"
+ag=$(ck agenda)
+check 'check: every PR merged and every ticket resolved — closed' "$(jq -r '.threads[] | select(.id == "A") | [.status, .waits_on, (.open_items | length)] | @tsv' "$CL")" "done	none	0"
+check 'check: the reason in the history' "$(jq -r '.threads[] | select(.id == "A") | .history[-1] | [.session, .note] | @tsv' "$CL")" "check	closed by the live check: svc#1 merged, AB-1 Done"
+check 'check: one event, from the check' "$(jq -r 'select(.id == "A") | [.from, .to, .session] | @tsv' "$CK/state/threads/events.jsonl")" "waiting	done	check"
+check 'check: a ticket still open keeps the thread open' "$(jq -r '.threads[] | select(.id == "B") | .status' "$CL")" 'waiting'
+check 'check: an answer that is not JSON leaves the link unchecked, the thread open' "$(jq -r '.threads[] | select(.id == "C") | [.status, (.check.links | length)] | @tsv' "$CL")" "active	0"
+check 'check: another project is not touched' "$(jq -r '.threads[] | select(.id == "F") | [.status, (.check // "none")] | @tsv' "$CL")" "waiting	none"
+check 'agenda: the closed thread first, as done' "$(printf '%s\n' "$ag" | head -1 | jq -r '[.group, .title, .next] | @tsv')" "done	landed (AB-1)	closed by the live check: svc#1 merged, AB-1 Done"
+check 'agenda: what the check found on an open thread' "$(printf '%s\n' "$ag" | jq -r 'select(.title == "half (AB-2)") | .live')" 'svc#2 merged; AB-2 In Review'
+check 'agenda: an old thread with no links is stale' "$(printf '%s\n' "$ag" | jq -r 'select(.title == "old note") | .stale')" 'true'
+check 'agenda: a fresh one is not' "$(printf '%s\n' "$ag" | jq -r 'select(.title == "new note") | .stale')" 'false'
+check 'agenda: a closed thread is listed once' "$(printf '%s\n' "$ag" | grep -c '"landed (AB-1)"')" '1'
+n=$(wc -l <"$CK/log"); ck check >/dev/null
+check 'check: a fresh result is reused; only the unanswered link is asked again' "$(( $(wc -l <"$CK/log") - n ))" '1'
+n=$(wc -l <"$CK/log"); ck check --ttl 0 >/dev/null
+check 'check: past its ttl, each link of an open thread is asked again' "$(( $(wc -l <"$CK/log") - n ))" '3'
+jq --argjson now "$now" '.threads += [{id: "S", project: "'"$CK/proj"'", title: "slow", status: "active", waits_on: "person", next: "", open_items: [], pr: "slow#1", ticket: "", updated: "x", updated_epoch: $now}]' "$CL" >"$CL.n" && mv "$CL.n" "$CL"
+s0=$(date +%s); HI_THREADS_CHECK_TIMEOUT=1 ck check --ttl 0 >/dev/null; s1=$(date +%s)
+check 'check: a hung command is cut off, its thread stays open' "$([ $((s1 - s0)) -lt 4 ] && echo fast || echo slow) $(jq -r '.threads[] | select(.id == "S") | .status' "$CL")" 'fast active'
+mkdir "$CK/state/threads/check.lock"
+check 'check: another check runs — gives up at once, prints nothing' "$(ck check --ttl 0)" ''
+rmdir "$CK/state/threads/check.lock"
+
 # The skill relays first and gives the resume line last: sent, then started, then manual.
 SK="$HERE/../skills/where/SKILL.md"
 case "$(cat "$SK")" in *'"$TH" relay'*'`sent`'*'`started`'*'`manual`'*) ok 'where: relay, then new terminal, then the resume line' ;; *) no 'where: relay, then new terminal, then the resume line' ;; esac

@@ -18,7 +18,8 @@
 #
 # Config (highness config.sh): threads.enabled (default true), threads.model (default sonnet),
 # threads.comment.lang (en or ru), and threads.comment.commands, read from the user file only
-# (see _comments).
+# (see _comments); threads.check.pr, threads.check.ticket and threads.check.stale_days for the
+# live check (threads-read.sh, th_check).
 #
 #   threads.sh hook-stop                Stop hook: payload on stdin; starts the job, prints nothing
 #   threads.sh hook-start               SessionStart hook: the project's top open threads as context
@@ -31,28 +32,20 @@
 #   threads.sh backfill [--days N]      replay the history of each not backfilled yet
 #   threads.sh digest <transcript> [<from>]   the cut-down text from byte <from>
 #   threads.sh list [--all | --project <dir>] [--json]   ranked threads (default: the cwd's project)
-#   threads.sh agenda                   the open threads as hi-crew agenda section lines (JSON)
+#   threads.sh agenda                   the threads as hi-crew agenda section lines (JSON), after a
+#                                       live check
+#   threads.sh check [--all | --project <dir>] [--ttl S] [--wait]
+#                                       close the threads whose PRs merged and tickets closed
+#                                       (threads-read.sh; also after every processed turn)
 #   threads.sh project [<dir>]          the project a directory belongs to
 #   threads.sh relay <cwd> <session> <brief>   give a thread's own session the brief (threads-read.sh)
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CHUNK_MAX=${HI_THREADS_CHUNK_MAX:-60000}
-. "$HERE/threads-read.sh"   # th_project, _repo, th_list, th_agenda, th_relay
+. "$HERE/threads-read.sh"   # th_project, _repo, th_list, th_check, th_agenda, th_relay, _lock
 
 _cfg() { bash "$HERE/config.sh" get "$1" 2>/dev/null; }
 _log() { mkdir -p "$TH_DIR" && printf '%s %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*" >>"$TH_DIR/log"; }
-
-# A mkdir lock; a lock older than two minutes is a dead job's and is taken over.
-_lock() { # <name> [tries]
-  local l="$TH_DIR/$1.lock" n=${2:-300}
-  mkdir -p "$TH_DIR"
-  while ! mkdir "$l" 2>/dev/null; do
-    if [ -n "$(find "$l" -maxdepth 0 -mmin +2 2>/dev/null)" ]; then rm -rf "$l"; continue; fi
-    n=$((n - 1)); [ "$n" -gt 0 ] || return 1
-    sleep 0.2
-  done
-}
-_unlock() { rmdir "$TH_DIR/$1.lock" 2>/dev/null; }
 
 # Complete lines of <transcript> from byte <from> into <out>; prints the new cursor.
 _chunk() { # <transcript> <from> <out>
@@ -249,6 +242,8 @@ th_process() { # <transcript> <session> <cwd>
     rm -f "$chunk" "$dig"
   done
   _unlock "s-$sid"
+  # Close what landed elsewhere (a PR merged, a ticket closed), so the next session's list is true.
+  th_check --project "$proj" --ttl "${HI_THREADS_CHECK_TTL:-600}" >/dev/null
 }
 
 # Byte offsets where a person's prompt starts: the turn boundaries.
@@ -365,7 +360,8 @@ case "$cmd" in
   digest) th_digest "$@" ;;
   list) th_list "$@" ;;
   agenda) th_agenda ;;
+  check) th_check "$@" ;;
   project) th_project "${1:-$PWD}" ;;
   relay) th_relay "$@" ;;
-  *) sed -n '2,36p' "$0" >&2; exit 2 ;;
+  *) sed -n '2,41p' "$0" >&2; exit 2 ;;
 esac
