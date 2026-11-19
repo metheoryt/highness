@@ -51,7 +51,7 @@ Below, `$O` stands for that executable.
   | `crew.owner` | the person's own name in branch names, for `{{OWNER}}`; set it in the person's own file, not the team's | a template with `{{OWNER}}` refuses to start |
   | `crew.marker` | the prefix workers put on everything they post under the person's account | `(agent)` |
   | `crew.pr_state` | a command that prints one PR's state as JSON, for the watch (below; the fields are in `lib/crew.sh`'s header); `{{PR}}`, `{{ROOT}}`, `{{MARKER}}`, `{{BOTS}}` become the shell-quoted PR url, the coordinator root, the marker and the JSON array of logins that are not people. It runs outside any terminal, so it finds its own credentials | `gh` for a github.com PR; other forges go unwatched |
-  | `crew.bots` | logins that are not people, added to the forge Actions users (`github-actions`, `forgejo-actions`, `gitea-actions`) and any `[bot]` or Bot account: a team's AI reviewer or gatekeeper on a normal account. Their comments wake no one; their inline comments and change requests are findings, sent to the worker | the Actions users only |
+  | `crew.bots` | logins that are not people, added to the forge Actions users (`github-actions`, `forgejo-actions`, `gitea-actions`) and any `[bot]` or Bot account: a team's AI reviewer or gatekeeper on a normal account. A GitHub App bot (CodeRabbit, Bugbot, Codex) is a Bot account and needs no entry. Their comments wake no one; their inline comments and change requests are findings, sent to the worker | the Actions users only |
 
   Read them at that root: `(cd "$(bash "$C" root)" && bash "${CLAUDE_PLUGIN_ROOT}/lib/config.sh" get '.crew.<key>')`.
 - **The watch.** Workers report on their own, but nobody tells the person when a PR is merged,
