@@ -180,6 +180,7 @@ refused 'action refused: hi-guard denies it' "$a" 'no DENYME'
 # in the denial log as an ask nobody met.
 printf '#!/bin/sh\ngrep -q ASKME && printf "A\\tcheck: ask\\n"\nexit 0\n' >"$T/askcheck"; chmod +x "$T/askcheck"
 jq -n --arg c "$T/askcheck" '{guard: {checks: [$c]}}' >"$HIGHNESS_CONFIG"
+[ -f "$HERE/../../hi-guard/lib/guard.sh" ] || no 'the real hi-guard is beside hi-crew (else the probe tests nothing)'
 printf 'echo ASKME >>"%s"\n' "$T/ran" >"$T/ask.sh"; a=$(bash "$C" action ABC-2 "$T/ask.sh"); rm -f "$T/ran"
 HI_GUARD="$HERE/../../hi-guard/lib/guard.sh" bash "$C" relay ABC-2 --id msg_q2 --action "$a" "$T/r-min" || no 'relay --action under the real guard'
 check 'relay --action: an ask from the probe does not stop the approved action' "$(cat "$T/ran" 2>/dev/null)" ASKME
