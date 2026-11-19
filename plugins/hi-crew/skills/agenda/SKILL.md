@@ -5,6 +5,10 @@ description: Where the person's work stands and what waits on them, in one list,
 
 # hi-crew:agenda
 
+**Session rules** (`${CLAUDE_PLUGIN_ROOT}/reference/session.md`, read before the first reply): chat
+in the user's language (no words of theirs yet: `session.language` in their config), Read one file
+per call, 2–4 options per question.
+
 A digest the person pulls. Nothing here is pushed to them except what blocks a worker.
 
 ```bash
@@ -92,9 +96,10 @@ Replying or sending needs the worker's Run bound to this session. When it is ano
 (`bash "$C" run` prints something else, or nothing), `$O orchestration run-use --id <run>` first,
 and say in one line that Orca now wakes this session, not the other one, for that Run's workers.
 
-- **A question**: show it point by point with your read; get the user's decisions; relay with
-  `$O orchestration reply --id <message_id> --body "…"`, marked as the user's.
-  Then record each decided point with `bash "$C" choice <KEY> '{…}'`, as `hi-crew:start` says.
+- **A question**: show it point by point with your read; get the user's decisions; answer only
+  with `bash "$C" relay <KEY> --id <message_id> <reply-file>`, which sends the reply and records
+  the choices in one step (the reply file as `hi-crew:start` says), never with
+  `orchestration reply` directly.
 - **A person's comment on a PR**: show it with your read; on the user's decision, send the worker a
   round: `$O orchestration send --to dispatch:<dispatch> --subject … --body …`, saying what to
   change and how to reply. Record the new dispatch id from the receipt.
@@ -129,6 +134,7 @@ and say in one line that Orca now wakes this session, not the other one, for tha
   With nothing to carry, the `resume` line alone reopens it.
 - **A section item**: its `next` says what to do; do it with the team's own tools (the item's
   `url`, the skill the team's process names). Starting a ticket on a worker is `/hi-crew:start`.
-- **Merged or closed**: `bash "$C" close <KEY>`; offer to release the workspace.
+- **Merged or closed**: run the retro (`reference/retro.md`), then `bash "$C" close <KEY>`; offer
+  to release the workspace.
 
 End your turn when the topics are done; Orca wakes this session when a worker reports.

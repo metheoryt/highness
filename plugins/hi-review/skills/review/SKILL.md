@@ -6,8 +6,9 @@ description: Review a GitHub pull request and submit it as one review, from the 
 # /hi-review:review
 
 **Session rules** (`${CLAUDE_PLUGIN_ROOT}/reference/session.md`, read before the first reply): chat
-in the user's language, the review itself in the PR's; 2–4 options per question; nothing reaches
-GitHub but the one review the person chose.
+in the user's language (no words of theirs yet: `session.language` in their config), the review
+itself in the PR's; 2–4 options per question; nothing reaches GitHub but the one review the person
+chose.
 
 One invocation reviews one PR. Every shell call starts with
 

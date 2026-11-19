@@ -48,6 +48,10 @@ if [ "$2" = worker-show ]; then
   esac
   exit 0
 fi
+if [ "$2" = reply ]; then
+  [ -z "${FAKE_REPLY_FAIL:-}" ] || { echo '{"ok":false,"error":{"code":"dispatch_inactive"}}'; exit 1; }
+  printf '%s|%s\n' "$4" "$6" >>"$FAKE_SENT"; echo '{"ok":true,"result":{}}'; exit 0
+fi
 if [ "$2" = run-current ]; then
   [ -n "${FAKE_CURRENT:-}" ] || { echo '{"ok":false}'; exit 1; }
   printf '{"ok":true,"result":{"runId":"%s"}}\n' "$FAKE_CURRENT"; exit 0
@@ -87,6 +91,33 @@ check 'reports: latest worker_done per dispatch' "$(bash "$C" reports)" "$(print
 check 'asks: a settled worker'"'"'s question and gate drop out, its escalation stays' "$(FAKE_SETTLED='ctx_b ctx_c' FAKE_GONE=ctx_d bash "$C" asks | cut -f1 | tr '\n' ' ')" 'msg_e1 '
 bash "$C" close ABC-4
 check 'asks: a closed ticket'"'"'s Run drops out' "$(bash "$C" asks | cut -f1 | tr '\n' ' ')" 'msg_q2 msg_e1 '
+
+# --- relay: the reply and its choice lines in one step; --gaps: answers sent any other way
+export FAKE_SENT="$T/sent"; : >"$FAKE_SENT"
+bash "$C" record ABC-2 '{"dispatch":"ctx_b"}'
+bash "$C" record ABC-6 '{"run":"run_abc123","dispatch":"ctx_a"}'; bash "$C" close ABC-6
+check 'gaps: a reply sent without relay, keyed through closed facts' "$(bash "$C" choices --gaps)" "$(printf 'ABC-6\tmsg_q1\t2026-01-01T10:05:00Z\tAnswered one?')"
+lines() { wc -l <"$HIGHNESS_STATE/crew/choices.jsonl" | tr -d ' '; }
+n0=$(lines)
+printf '{"points":[]}' >"$T/r-bad"
+if bash "$C" relay ABC-2 "$T/r-bad" 2>/dev/null; then no 'relay refuses a reply file with no body'; else ok 'relay refuses a reply file with no body'; fi
+printf '{"body":"yes","points":[]}' >"$T/r-min"
+if bash "$C" relay ABC-2 --id msg_e1 "$T/r-min" 2>/dev/null; then no 'relay refuses an escalation'; else ok 'relay refuses an escalation'; fi
+case "$(FAKE_REPLY_FAIL=1 bash "$C" relay ABC-2 "$T/r-min" 2>&1; echo "exit $?")" in
+  *'was not sent, nothing recorded'*'exit 2') ok 'relay fails when the reply fails' ;; *) no 'relay fails when the reply fails' ;; esac
+check 'relay: nothing sent or recorded on a refusal or a failed send' "$(wc -c <"$FAKE_SENT" | tr -d ' ') $(lines)" "0 $n0"
+jq -n '{body: "The person'"'"'s decisions:\n(1) A.\n(2) their own: C.",
+  points: [{question: "first", options: [{name: "A", loses: "x", leans_on: "no rule: y"}], took: "option", picked: "A", reply: "A"},
+           {question: "second", took: "own", picked: "C", reply: "neither: C"}]}' >"$T/r-two"
+bash "$C" relay ABC-2 "$T/r-two" || no 'relay finds the ticket'"'"'s one open ask'
+check 'relay: the reply went to that ask, body verbatim' "$(head -1 "$FAKE_SENT")" "msg_q2|$(jq -r .body "$T/r-two" | head -1)"
+check 'relay: one choice line per point' "$(( $(lines) - n0 ))" 2
+check 'relay: a line carries the point, the ask and what was sent' \
+  "$(bash "$C" choices ABC-2 | tail -2 | jq -r '[.key, .question, .took, .picked, .reply, .ask, .run, .dispatch, .asked_at, .ask_body, (.sent | split("\n")[0]), (.options // [] | length | tostring)] | join("|")' | tr '\n' ' ')" \
+  "ABC-2|first|option|A|A|msg_q2|run_abc123|ctx_b|2026-01-01T11:00:00Z|Open one? second line|The person's decisions:|1 ABC-2|second|own|C|neither: C|msg_q2|run_abc123|ctx_b|2026-01-01T11:00:00Z|Open one? second line|The person's decisions:|0 "
+bash "$C" relay ABC-6 --id msg_q1 "$T/r-min" || no 'relay with --id'
+check 'relay: no points still leaves one line' "$(bash "$C" choices ABC-6 | jq -r '[.ask, (.took // "null"), .sent] | join("|")')" 'msg_q1|null|yes'
+check 'gaps: a relayed answer is no gap' "$(bash "$C" choices --gaps)" ''
 unset ORCA_CLI_COMMAND
 
 # --- the team's digest sections

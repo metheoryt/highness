@@ -5,6 +5,10 @@ description: Only the work threads — for the whole picture with tickets, PRs a
 
 # /hi-threads:where
 
+**Session rules** (`${CLAUDE_PLUGIN_ROOT}/reference/session.md`, read before the first reply): chat
+in the user's language (no words of theirs yet: `session.language` in their config), Read one file
+per call, 2–4 options per question.
+
 The journal is kept by the plugin's hooks: after every turn in any session on this machine a model
 notes which thread the turn belonged to, what was done, what is left and who waits on whom. This
 skill reads it.
