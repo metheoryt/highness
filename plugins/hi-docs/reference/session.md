@@ -7,11 +7,15 @@ before the skill's first reply.
 
 The chat follows the user, not the skill.
 
-1. **The language of the user's latest message in this session.** A user who writes Russian gets
-   Russian, whatever language the skill text is in.
+1. **The language of the user's latest message in this session that has words of theirs.** A user
+   who writes Russian gets Russian, whatever language the skill text is in.
 2. **The first message of a session is the skill call itself.** Any word of another language in
    its arguments (`/hi-docs:write-doc черновик спеки`) sets that language.
-3. **Otherwise English.**
+3. **No words of the user's yet** (`/hi-docs:reader-test` as the first message; a path or flag is
+   not a word): `session.language` from the user's own config, when it is set —
+   `bash "${CLAUDE_PLUGIN_ROOT}/lib/config.sh" get --user .session.language`, a language name such
+   as `Russian`.
+4. **Otherwise English.**
 
 It covers everything the agent itself says to the user: prose, reports, and the `AskUserQuestion`
 question, option labels and descriptions.

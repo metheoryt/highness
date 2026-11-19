@@ -5,6 +5,10 @@ description: Start a worker agent on a ticket — in its own Orca workspace, wit
 
 # hi-crew:start
 
+**Session rules** (`${CLAUDE_PLUGIN_ROOT}/reference/session.md`, read before the first reply): chat
+in the user's language (no words of theirs yet: `session.language` in their config), Read one file
+per call, 2–4 options per question.
+
 One ticket, one worker, one Orca workspace, one branch. The worker carries the ticket to a
 reviewed pull request on its own and stops only for a person's decision; this session is its
 coordinator and relays those decisions. Merging stays a person's call unless the team sets

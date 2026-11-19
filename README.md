@@ -126,9 +126,14 @@ it runs the repo's own tests, code any clone already carries.
   "land": { "test": "bash tests/run.sh </dev/null" },
   "dispatch": { "read_dirs": ["~/plugins/team-skills"] },
   "docs": { "conventions": "docs/writing.md" },
-  "review": { "intent": "Specs live in docs/specs/<KEY>.md; the key is in the PR title.", "bots": ["lint-helper"], "voice": "~/notes/review-voice.md" }
+  "review": { "intent": "Specs live in docs/specs/<KEY>.md; the key is in the PR title.", "bots": ["lint-helper"], "voice": "~/notes/review-voice.md" },
+  "session": { "language": "Russian" }
 }
 ```
+
+`session.language` (personal file only) is the language every highness skill answers in when the
+session has no words of the person's yet — a bare `/hi-crew:agenda` or `/hi-crew:start KEY`. Once
+the person writes, the chat follows what they write; unset, it is English.
 
 `review.intent` is a text the team writes: where its specs live and how a PR leads to them;
 `/hi-review:review` reads it beside the PR body and the issues the PR closes. `review.bots` lists

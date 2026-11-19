@@ -6,7 +6,8 @@ description: Test a document, page, spec, PR description or ticket text on a fre
 # /hi-docs:reader-test
 
 **Session rules** (`${CLAUDE_PLUGIN_ROOT}/reference/session.md`, read before the first reply): chat
-in the user's language, artifacts in English unless the user set otherwise, 2–4 options per question.
+in the user's language (no words of theirs yet: `session.language` in their config), artifacts in
+English unless the user set otherwise, 2–4 options per question.
 
 The author cannot see their own gaps: every undefined term reads as obvious to the person who
 invented it. A reader with none of the author's context finds those gaps in minutes. This skill runs

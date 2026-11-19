@@ -5,6 +5,10 @@ description: Where the person's work stands and what waits on them, in one list,
 
 # hi-crew:agenda
 
+**Session rules** (`${CLAUDE_PLUGIN_ROOT}/reference/session.md`, read before the first reply): chat
+in the user's language (no words of theirs yet: `session.language` in their config), Read one file
+per call, 2–4 options per question.
+
 A digest the person pulls. Nothing here is pushed to them except what blocks a worker.
 
 ```bash
