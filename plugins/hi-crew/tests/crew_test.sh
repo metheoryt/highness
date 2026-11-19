@@ -169,6 +169,8 @@ case "$out" in *'`(agent)`, so people'*) ok 'default marker' ;; *) no 'default m
 case "$out" in *'(none configured'*) ok 'default process' ;; *) no 'default process' ;; esac
 case "$out" in *'- Never merge. That is a person'*) ok 'default: never merge' ;; *) no 'default: never merge' ;; esac
 case "$out" in *'Merge your own pull request'*) no 'default: no merge-on-green line' ;; *) ok 'default: no merge-on-green line' ;; esac
+case "$out" in *"record it, so the coordinator's watch"*"\`HIGHNESS_STATE='$HIGHNESS_STATE' bash '$(cd "$HERE/../lib" && pwd)/crew.sh' record ABC-9 '{\"pr\":\"<the PR url>\"}'\`"*) ok 'spec: the worker records its PR, in this state dir' ;; *) no 'spec: the worker records its PR, in this state dir' ;; esac
+case "$out" in *'{{CREW}}'*) no 'spec: {{CREW}} filled' ;; *) ok 'spec: {{CREW}} filled' ;; esac
 case "$out" in *'Change files with the Edit/Write tools, never with a python/sed/perl heredoc in Bash.'*) ok 'edit-not-heredoc rule' ;; *) no 'edit-not-heredoc rule' ;; esac
 # The already-done check comes before the worker takes the ticket or changes anything.
 case "$out" in *'check it is not already done (below) before'*'## Already done?'*'## Asking'*) ok 'already-done check, before taking the ticket' ;; *) no 'already-done check, before taking the ticket' ;; esac
@@ -298,6 +300,40 @@ mkdir "$W/state/crew/watch/lock"
 echo '{"state":"closed"}' >"$WR/state-7.json"; bash "$C" watch
 check 'a running watch is not doubled' "$(bash "$C" events | wc -l | tr -d ' ')" 2
 rmdir "$W/state/crew/watch/lock"
+# --- no `pr` in the facts: the watch finds the PR by the workspace's branch, and records it
+mkdir -p "$W/bin3" "$W/ws3"; git -C "$W/ws3" init -q; git -C "$W/ws3" checkout -q -b feat-3
+WS3=$(cd "$W/ws3" && pwd -P)
+cat >"$W/bin3/gh" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$PWD $*" >>"$GH_LOG"
+[ "$1 $2" = "pr list" ] || exit 1
+case " $* " in
+  *' --head feat-3 '*) echo '[{"number":8,"url":"https://forge/pr/8"},{"number":9,"url":"https://forge/pr/9"}]' ;;
+  *) echo '[]' ;;
+esac
+EOF
+chmod +x "$W/bin3/gh"; export GH_LOG="$W/gh.log"; : >"$GH_LOG"
+bash "$C" events --ack
+echo '{"state":"open","ci":"pending","people":0}' >"$WR/state-9.json"
+bash "$C" record W-3 "{\"run\":\"run_w1\",\"root\":\"$WR\",\"workspace\":\"$WS3\",\"branch\":\"old-name\"}"
+PATH="$W/bin3:$PATH" bash "$C" watch
+check 'watch: a PR found by branch is recorded' "$(bash "$C" get W-3 | jq -r .pr)" https://forge/pr/9
+check 'watch: asked from the workspace, by the branch checked out there' \
+  "$(grep -c "^$WS3 pr list --head feat-3 " "$GH_LOG")" 1
+check 'watch: the found PR gets its first look' "$(jq -r .state "$W/state/crew/watch/W-3.json")" open
+check 'watch: a first look at a found PR is no event' "$(bash "$C" events | cut -f2 | grep -c '^W-3$')" 0
+PATH="$W/bin3:$PATH" bash "$C" watch
+check 'watch: a recorded PR is not looked up again' "$(grep -c 'pr list' "$GH_LOG")" 1
+git -C "$W/ws3" checkout -q -b no-pr-yet
+bash "$C" record W-4 "{\"run\":\"run_w1\",\"root\":\"$WR\",\"workspace\":\"$WS3\"}"
+PATH="$W/bin3:$PATH" bash "$C" watch
+check 'watch: no PR on the branch, none recorded' "$(bash "$C" get W-4 | jq -r '.pr // "none"')" none
+bash "$C" close W-4
+# --- close drops the watch's notes on the ticket, and only on it
+: >"$W/state/crew/watch/W-3.prompt"; : >"$W/state/crew/watch/W-3.tool"; : >"$W/state/crew/watch/W-3.1.json"
+bash "$C" close W-3
+check 'close: the watch notes are gone' "$(ls "$W/state/crew/watch" | grep -c '^W-3\.[a-z]')" 0
+check 'close: a longer key keeps its notes' "$(ls "$W/state/crew/watch" | grep -c '^W-3\.1\.json$')" 1
 # --- a worker on a permission dialog: prompts lists it, the watch tells the coordinator once
 mkdir -p "$W/ws2/sub"; WS2=$(cd "$W/ws2" && pwd -P)
 bash "$C" record W-2 "{\"workspace\":\"$WS2\"}"

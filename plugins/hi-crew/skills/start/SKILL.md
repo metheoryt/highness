@@ -98,7 +98,8 @@ Below, `$O` stands for that executable.
    If it fails, do not rerun it: read `failedStage` and load
    `$O skills get orchestration --reference references/recovery-and-cleanup.md`.
 7. **Record the facts** from the receipt, with the branch read from the workspace
-   (`git -C <workspace path> branch --show-current`; the digest finds the PR by it):
+   (`git -C <workspace path> branch --show-current`; until the worker records its PR, the digest
+   and the watch find the PR by it):
    `bash "$C" record <KEY> '{"title":…,"repo":…,"workspace":…,"branch":…,"dispatch":…,"task":…,"run":…,"agent":…,"model":…,"root":…}'`,
    where `root` is the coordinator root (`bash "$C" root`), never re-derived from the cwd: the watch
    reads the team's settings there.
