@@ -29,6 +29,11 @@
 #   crew.sh stranded                  answers no worker will act on (the worker is gone, or a reply
 #                                     Orca refused), one JSON object per line, with the live session
 #                                     in the workspace if any; the agenda asks "resume it?"
+#   crew.sh resume <KEY>              a worker lost without reporting (a usage limit, an account
+#                                     switch): start a new one in its recorded workspace and Run,
+#                                     on the spec copy under a "resuming" note, and record its
+#                                     dispatch and task. Refuses when the workspace is gone, the
+#                                     PR is merged or closed, or the worker is still live (cmd_resume)
 #   crew.sh choices [<KEY>]           the recorded choices, one JSON object per line
 #   crew.sh choices --gaps            answers to hi-crew asks with no choice line (sent without
 #                                     relay), TSV: key, ask id, answered at, the ask's first line
@@ -448,8 +453,10 @@ inbox() { # [<runs json array>] (default: the open tickets' Runs)
 
 cmd_asks() {
   need_jq
-  local m; m=$(inbox) || exit $?
-  printf '%s' "$m" | jq -r '
+  local m resumed; m=$(inbox) || exit $?
+  # The Dispatches `resume` replaced: their escalation (the worker lost) is handled.
+  resumed=$(cmd_list | jq -sc 'map(.resumed // []) | add // []') || resumed='[]'
+  printf '%s' "$m" | jq -r --argjson resumed "$resumed" '
     . as $m
     | [ $m[] | select(.thread_id != null and .thread_id != .id) | .thread_id ] as $answered
     | $m[]
@@ -457,7 +464,8 @@ cmd_asks() {
     | select(.id as $id | $answered | index($id) | not)
     | select(.type != "escalation" or
         (. as $e | [ $m[] | select(.type == "worker_done" and .dispatch == $e.dispatch
-                                   and .created_at > $e.created_at) ] | length == 0))
+                                   and .created_at > $e.created_at) ] | length == 0
+                   and ($resumed | index($e.dispatch) | not)))
     | [ .id, .type, .run_id, .dispatch, .created_at, ((.body // .subject // "") | split("\n")[0]) ] | @tsv' \
     | while IFS=$'\t' read -r id type rest; do
         d=$(printf '%s' "$rest" | cut -f2)
@@ -1429,6 +1437,80 @@ EOF
   return 0
 }
 
+# resume <KEY>: start a new worker on <KEY> in its recorded workspace and Run, after the last one
+# was lost without reporting (a usage limit, an account switch, a closed session). Orca's own
+# retry does not fit: --retry-of needs --task, and a Task's spec cannot carry the note below,
+# while `claude --resume` cannot follow a session into another Claude profile. So this is a new
+# Task: the spec copy (the facts' `spec`) under a note that says the work so far is in the
+# workspace, then the new dispatch and task recorded, the old dispatch kept in `resumed` (asks
+# drops its "lost" escalation). Refuses, starting nothing: no facts, no workspace, no spec copy,
+# a merged or closed PR, or a worker on it Orca still counts live. Prints the receipt.
+cmd_resume() {
+  [ $# -eq 1 ] || die 'usage: resume <KEY>'
+  need_jq
+  local key=$1 facts ws run spec root pr state d agent model handle title branch sf out rc
+  facts=$(cmd_get "$key") || die "resume: no open facts for $key"
+  ws=$(printf '%s' "$facts" | jq -r '.workspace // empty')
+  run=$(printf '%s' "$facts" | jq -r '.run // empty')
+  [ -n "$ws" ] && [ -d "$ws" ] || die "resume: $key's workspace is gone (${ws:-none recorded}); start it afresh with /hi-crew:start"
+  [ -n "$run" ] || die "resume: no Run recorded for $key"
+  spec=$(printf '%s' "$facts" | jq -r '.spec // empty'); [ -n "$spec" ] || spec="$DIR/specs/$key.md"
+  [ -f "$spec" ] || die "resume: no spec copy for $key ($spec); build one with crew.sh spec and record it as \"spec\""
+  pr=$(printf '%s' "$facts" | jq -r '.pr // empty')
+  [ -n "$pr" ] || { pr=$(find_pr "$facts") || pr=''; }
+  if [ -n "$pr" ]; then
+    state=$(pr_state "$(printf '%s' "$facts" | jq -c --arg p "$pr" '.pr = $p')" | jq -r '.state // empty' 2>/dev/null) || state=''
+    case "$state" in
+      merged|closed) die "resume: $key's PR is $state ($pr): nothing to resume" ;;
+      '') printf 'crew: resume: could not read the state of %s; resuming anyway\n' "$pr" >&2 ;;
+    esac
+  fi
+  if d=$(worker_dispatch "$facts") && dispatch_live "$d"; then
+    die "resume: $key's worker $d is not settled in Orca (orchestration worker-show --dispatch $d); a lost one is"
+  fi
+  [ -n "$d" ] || d=$(printf '%s' "$facts" | jq -r '.dispatch // empty')
+  root=$(facts_root "$facts")
+  agent=$(printf '%s' "$facts" | jq -r '.agent // empty')
+  [ -n "$agent" ] || agent=$(cd "$root" && bash "$CONFIG" get '.crew.agent') || agent=claude
+  model=$(printf '%s' "$facts" | jq -r '.model // empty')
+  title=$(printf '%s' "$facts" | jq -r '.title // empty'); [ -n "$title" ] || title=$key
+  branch=$(git -C "$ws" branch --show-current 2>/dev/null) || branch=''
+  handle=${ORCA_TERMINAL_HANDLE:-$(cat "$DIR/handles/$run" 2>/dev/null)}
+  sf=$(mktemp "${TMPDIR:-/tmp}/hi-crew-resume.XXXXXX") || die 'resume: no temp file'
+  {
+    printf '## Resuming %s: read this first\n\n' "$key"
+    printf 'An earlier worker on this ticket stopped without reporting%s: a usage limit, an account\n' "${d:+ (Dispatch $d)}"
+    printf 'switch or a closed session. Its chat is gone, but its work is here, in this workspace%s.\n\n' "${branch:+ on the branch \`$branch\`}"
+    printf 'Before anything else, find where it stopped:\n\n'
+    printf -- '- `git status`, `git stash list` and `git log --oneline -20`: what it committed, and what it left\n'
+    printf '  uncommitted. Uncommitted changes are its work in progress: keep them and build on them.\n'
+    if [ -n "$pr" ]; then
+      printf -- '- Its pull request, %s: the description, the comments, the review threads and CI.\n' "$pr"
+    else
+      printf -- '- Its pull request, if it opened one: look it up on the forge by the branch.\n'
+    fi
+    printf -- '- The ticket'"'"'s comments since it started: what it posted, and what people answered.\n\n'
+    printf 'Then continue from there, under the spec below. That pull request is yours: do not open a\n'
+    printf 'second one, and do not redo committed work. The spec'"'"'s "Already done?" check is about this\n'
+    printf 'ticket landing elsewhere, not about the earlier worker'"'"'s progress here.\n\n---\n\n'
+    cat "$spec"
+  } >"$sf"
+  out=$(cd "$root" && "$(orca_cmd)" orchestration worker-start --spec-file "$sf" --task-title "$key: $title (resumed)" \
+    --worktree "path:$ws" --keep-open --agent "$agent" ${model:+--model "$model"} --run "$run" \
+    ${handle:+--from "$handle"} --json 2>&1)
+  rc=$?
+  rm -f "$sf"
+  if [ $rc -ne 0 ] || [ "$(printf '%s' "$out" | jq -r '.ok // false' 2>/dev/null)" != true ]; then
+    die "resume: worker-start failed; do not rerun it, read failedStage (orca skills get orchestration --reference references/recovery-and-cleanup.md): $out"
+  fi
+  (cmd_record "$key" "$(printf '%s' "$out" | jq -c --argjson f "$facts" --arg d "$d" --arg pr "$pr" --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
+    {dispatch: .result.dispatchId, task: .result.taskId, resumed_at: $now,
+     resumed: (($f.resumed // []) + (if $d != "" then [$d] else [] end))}
+    + (if $pr != "" and ($f.pr // "") == "" then {pr: $pr} else {} end)')") \
+    || die "resume: the worker started, but its facts were not recorded; record its dispatch and task by hand: $out"
+  printf '%s\n' "$out"
+}
+
 . "$HERE/action.sh"
 
 sub=${1:-}; [ $# -gt 0 ] && shift
@@ -1437,6 +1519,7 @@ case "$sub" in
   action) cmd_action "$@" ;;
   action-show) cmd_action_show "$@" ;;
   stranded) cmd_stranded ;;
+  resume) cmd_resume "$@" ;;
   record) cmd_record "$@" ;;
   get) cmd_get "$@" ;;
   list) cmd_list ;;
