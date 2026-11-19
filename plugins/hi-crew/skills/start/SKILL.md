@@ -50,7 +50,8 @@ Below, `$O` stands for that executable.
   | `crew.branch` | the worker's branch name, for a team whose forge accepts only its own scheme: `{{KEY}}`, `{{SLUG}}` (a short slug of the title), `{{TYPE}}` (`feat`, `fix`, … from the ticket; default `feat`), `{{OWNER}}` (`crew.owner`). Example: `{{TYPE}}/{{OWNER}}/{{KEY}}-{{SLUG}}` | Orca names the branch from `--name` |
   | `crew.owner` | the person's own name in branch names, for `{{OWNER}}`; set it in the person's own file, not the team's | a template with `{{OWNER}}` refuses to start |
   | `crew.marker` | the prefix workers put on everything they post under the person's account | `(agent)` |
-  | `crew.pr_state` | a command that prints one PR's state as JSON, for the watch (below); `{{PR}}`, `{{ROOT}}`, `{{MARKER}}` become the shell-quoted PR url, the coordinator root and the marker. It runs outside any terminal, so it finds its own credentials | `gh` for a github.com PR; other forges go unwatched |
+  | `crew.pr_state` | a command that prints one PR's state as JSON, for the watch (below; the fields are in `lib/crew.sh`'s header); `{{PR}}`, `{{ROOT}}`, `{{MARKER}}`, `{{BOTS}}` become the shell-quoted PR url, the coordinator root, the marker and the JSON array of logins that are not people. It runs outside any terminal, so it finds its own credentials | `gh` for a github.com PR; other forges go unwatched |
+  | `crew.bots` | logins that are not people, added to the forge Actions users (`github-actions`, `forgejo-actions`, `gitea-actions`) and any `[bot]` or Bot account: a team's AI reviewer or gatekeeper on a normal account. Their comments wake no one; their inline comments and change requests are findings, sent to the worker | the Actions users only |
 
   Read them at that root: `(cd "$(bash "$C" root)" && bash "${CLAUDE_PLUGIN_ROOT}/lib/config.sh" get '.crew.<key>')`.
 - **The watch.** Workers report on their own, but nobody tells the person when a PR is merged,
@@ -152,10 +153,12 @@ Several tickets: run steps 1–7 for each, then end the turn once.
   no PR: show its evidence, and offer to close the ticket (if the worker left it open) and
   `bash "$C" close <KEY>`.
 - **A `status` from the watch** (body starts `hi-crew watch:`; the subject is `<KEY>: <what>`):
-  a PR merged or closed, CI failed, or people commented. Then `bash "$C" events --ack`, and
-  handle it as `hi-crew:agenda` does: merged or closed → offer to close the facts; CI failed or
-  a person's comment → read it, show it with your read, and send the worker a round only on the
-  user's decision.
+  a PR merged or closed, people commented, or a person approved it. A CI failure and review
+  bots' findings go to the worker itself as a round (and an approval too, when crew.merge is
+  `on_green`); they reach you only when no worker Dispatch took them. Then
+  `bash "$C" events --ack`, and handle it as `hi-crew:agenda` does: merged or closed → offer to
+  close the facts; a person's comment, an approval, or a worker event that fell back to you →
+  read it, show it with your read, and send the worker a round only on the user's decision.
 - **An escalation** (stopped without `worker_done`): tell the user; steer with
   `$O orchestration send --to dispatch:<id>` only on their say.
 - **The user wants another round** (a person's new review comments, a change of mind): send it to
