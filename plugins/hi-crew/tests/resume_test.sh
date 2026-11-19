@@ -103,10 +103,20 @@ check 'resume: records the new dispatch and task, keeps the old one' \
   "$(bash "$C" get AB-1 | jq -r '[.dispatch, .task, (.resumed | join(",")), .pr, (.resumed_at | test("^[0-9]{4}-") | tostring)] | join("|")')" \
   'ctx_new|task_new|ctx_old|https://forge/pr/1|true'
 check 'after: the lost escalation is handled' "$(bash "$C" asks)" ''
+# highness#98: compact re-entry points the new worker at the spec it got, note included; `spec`
+# stays the original copy (the retro reads it, the next resume builds on it).
+noted=$(bash "$C" get AB-1 | jq -r '.resumed_spec // empty')
+check 'resume: records the noted spec' "$noted" "$S/specs/AB-1.resumed.md"
+check 'resume: the noted copy is what the worker got' "$(cat "$noted" 2>/dev/null)" "$spec"
+check 'resume: spec stays the original copy' "$(bash "$C" get AB-1 | jq -r .spec)" "$S/specs/AB-1.md"
+ctx=$(printf '{"hook_event_name":"SessionStart","source":"compact","cwd":"%s"}' "$T/ws" | bash "$C" reentry \
+  | jq -r '.hookSpecificOutput.additionalContext' 2>/dev/null)
+has 'reentry after resume: names the noted spec' "$ctx" "Re-read it before your next step: $S/specs/AB-1.resumed.md Your PR"
 
 # --- a second resume carries the earlier ones
 bash "$C" resume AB-1 >/dev/null 2>&1
 check 'resume again: both replaced dispatches kept' "$(bash "$C" get AB-1 | jq -r '.resumed | join(",")')" 'ctx_old,ctx_new'
+check 'resume again: one note, on the original copy' "$(grep -c '^## Resuming AB-1' "$S/specs/AB-1.resumed.md")" 1
 
 # --- the coordinator's own terminal wins over the kept handle
 fresh
@@ -132,6 +142,7 @@ fresh
 err=$(FAKE_FAIL=1 bash "$C" resume AB-1 2>&1) && no 'failed start: exit 0'
 has 'failed start: says do not rerun' "$err" 'do not rerun it'
 check 'failed start: facts unchanged' "$(bash "$C" get AB-1 | jq -r .dispatch)" ctx_old
+check 'failed start: no noted spec recorded' "$(bash "$C" get AB-1 | jq -r '.resumed_spec // empty')" ''
 rm -f "$FAKE_LOG"
 
 fresh; mv "$T/ws" "$T/ws.away"

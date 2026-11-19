@@ -32,7 +32,8 @@
 #   crew.sh resume <KEY>              a worker lost without reporting (a usage limit, an account
 #                                     switch): start a new one in its recorded workspace and Run,
 #                                     on the spec copy under a "resuming" note, and record its
-#                                     dispatch and task. Refuses when the workspace is gone, the
+#                                     dispatch and task, and the noted spec as `resumed_spec`
+#                                     (<state dir>/specs/<KEY>.resumed.md). Refuses when the workspace is gone, the
 #                                     PR is merged or closed, or the worker is still live (cmd_resume)
 #   crew.sh choices [<KEY>]           the recorded choices, one JSON object per line
 #   crew.sh choices --gaps            answers to hi-crew asks with no choice line (sent without
@@ -85,6 +86,7 @@
 #   crew.sh reentry                   SessionStart(compact) hook, payload on stdin: in the session
 #                                     of an open ticket's worker (its cwd in the ticket's
 #                                     `workspace`), one context line naming the ticket and its spec
+#                                     (the facts' `resumed_spec` after a resume, else `spec`)
 #                                     to re-read; anywhere else nothing. Never fails a start
 #   crew.sh branch --key K --title T [--type X] [--slug S] [--root R]
 #                                     the worker's branch name from the team's crew.branch template,
@@ -566,7 +568,8 @@ cmd_spec() {
 
 # SessionStart(compact): a compaction keeps what happened, not the spec's rules (asking, merging,
 # markers, the team process), and nothing else points the worker back at them. In an open
-# ticket's workspace this prints one context line naming the spec to re-read; the spec itself is
+# ticket's workspace this prints one context line naming the spec to re-read (after a resume, the
+# copy with the resume note: `resumed_spec`); the spec itself is
 # never inlined (it is long). Every error is silence: a session start must never fail on it.
 cmd_reentry() {
   local in cwd real f row key title spec pr msg
@@ -580,7 +583,7 @@ cmd_reentry() {
     row=$(jq -r --arg a "$cwd" --arg b "$real" '
       (.workspace // "") as $w | select($w != "")
       | select([$a, $b] | any(. == $w or startswith($w + "/")))
-      | [.key, (.title // ""), (.spec // ""), (.pr // "")] | @tsv' "$f" 2>/dev/null) || continue
+      | [.key, (.title // ""), (.resumed_spec // .spec // ""), (.pr // "")] | @tsv' "$f" 2>/dev/null) || continue
     [ -n "$row" ] && break
   done
   [ -n "$row" ] || return 0
@@ -1448,7 +1451,7 @@ EOF
 cmd_resume() {
   [ $# -eq 1 ] || die 'usage: resume <KEY>'
   need_jq
-  local key=$1 facts ws run spec root pr state d agent model handle title branch sf out rc m asked
+  local key=$1 facts ws run spec root pr state d agent model handle title branch sf out rc m asked noted
   facts=$(cmd_get "$key") || die "resume: no open facts for $key"
   ws=$(printf '%s' "$facts" | jq -r '.workspace // empty')
   run=$(printf '%s' "$facts" | jq -r '.run // empty')
@@ -1516,13 +1519,19 @@ cmd_resume() {
     --worktree "path:$ws" --keep-open --agent "$agent" ${model:+--model "$model"} --run "$run" \
     ${handle:+--from "$handle"} --json 2>&1)
   rc=$?
-  rm -f "$sf"
   if [ $rc -ne 0 ] || [ "$(printf '%s' "$out" | jq -r '.ok // false' 2>/dev/null)" != true ]; then
+    rm -f "$sf"
     die "resume: worker-start failed; do not rerun it, read failedStage (orca skills get orchestration --reference references/recovery-and-cleanup.md): $out"
   fi
-  (cmd_record "$key" "$(printf '%s' "$out" | jq -c --argjson f "$facts" --arg d "$d" --arg pr "$pr" --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
+  # The spec the new worker got, note included, is what `reentry` points it back at after a
+  # compaction; `spec` stays the original (the retro reads it, the next resume builds on it).
+  noted="$DIR/specs/$key.resumed.md"
+  mkdir -p "$DIR/specs" 2>/dev/null
+  mv -f "$sf" "$noted" 2>/dev/null || { rm -f "$sf"; noted=''; }
+  (cmd_record "$key" "$(printf '%s' "$out" | jq -c --argjson f "$facts" --arg d "$d" --arg pr "$pr" --arg n "$noted" --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
     {dispatch: .result.dispatchId, task: .result.taskId, resumed_at: $now,
      resumed: (($f.resumed // []) + (if $d != "" then [$d] else [] end))}
+    + (if $n != "" then {resumed_spec: $n} else {} end)
     + (if $pr != "" and ($f.pr // "") == "" then {pr: $pr} else {} end)')") \
     || die "resume: the worker started, but its facts were not recorded; record its dispatch and task by hand: $out"
   printf '%s\n' "$out"
