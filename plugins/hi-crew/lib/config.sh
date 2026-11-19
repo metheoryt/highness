@@ -19,22 +19,29 @@
 # `repos.<owner>`, user top level. `list` concatenates the arrays of all of them in that order,
 # which is how deny patterns from a team and from one person add up.
 #
-#   config.sh get [--user] <jq-path>    the value (raw for strings); exit 1 when unset
-#   config.sh list [--user] <jq-path>   one array element per line from both files; nothing when unset
-#   config.sh has [--user] <jq-path>    the file that sets the key, even to null (how a person says
-#                                       "leave it to the default" on purpose); exit 1 when no source does
-#   config.sh files [--user]            the files that exist, repo first
+#   config.sh get [--user|--personal] <jq-path>    the value (raw for strings); exit 1 when unset
+#   config.sh list [--user|--personal] <jq-path>   one array element per line from every source;
+#                                                  nothing when unset
+#   config.sh has [--user|--personal] <jq-path>    the file that sets the key, even to null (how a
+#                                                  person says "leave it to the default" on
+#                                                  purpose); exit 1 when no source does
+#   config.sh files [--user|--personal]            the files that exist, repo first
 #   config.sh root                      the directory whose team file applies here (the toplevel, or
 #                                       the umbrella), physical path; exit 1 when no team file does
 #
-# --user reads the user file's top level only. A key that runs code or switches a protection off
-# must be read with it: the repo file comes with any clone, so trusting it would let a cloned repo
-# decide, and an overlay is chosen by a remote name any host can carry.
+# --user reads the user file's top level only. A key that switches a protection off, or runs a
+# command the person did not write for this repo, must be read with it: the repo file comes with
+# any clone, so trusting it would let a cloned repo decide, and an overlay is chosen by a remote
+# name any host can carry.
+# --personal reads the user file with its overlays, never the repo file. It is for a key that runs
+# the person's own program and can only add a limit (hi-guard's guard.checks): every path in it is
+# one the person wrote, so a clone that carries a matching remote name only gets more of them run,
+# and a clone that carries another one loses the overlay's limits but never the top level's.
 #
 # A missing jq, an unreadable or invalid file: treated as unset, never an error on stdout.
 set -uo pipefail
 
-USER_ONLY=0
+TEAM=1 OVERLAYS=1   # read the repo file; read the user file's overlays
 _user_file() { printf '%s\n' "${HIGHNESS_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/highness/config.json}"; }
 
 # owner/repo of the cwd's origin, lowercase: git@host:o/r(.git), ssh://…/o/r, https://…/o/r.
@@ -101,7 +108,7 @@ _is_umbrella() {
 
 _files() {
   local user
-  [ "$USER_ONLY" = 0 ] && _team_file
+  [ "$TEAM" = 1 ] && _team_file
   user=$(_user_file)
   [ -f "$user" ] && printf '%s\n' "$user"
   return 0
@@ -113,7 +120,7 @@ _sources() {
   user=$(_user_file)
   while IFS= read -r f; do
     [ -n "$f" ] || continue
-    if [ "$f" = "$user" ] && [ "$USER_ONLY" = 0 ] && o=$(_origin) && [ -n "$o" ]; then
+    if [ "$f" = "$user" ] && [ "$OVERLAYS" = 1 ] && o=$(_origin) && [ -n "$o" ]; then
       printf '%s\t.repos[%s]\n' "$f" "$(printf '%s' "$o" | jq -R .)"
       printf '%s\t.repos[%s]\n' "$f" "$(printf '%s' "${o%%/*}" | jq -R .)"
     fi
@@ -168,13 +175,17 @@ EOF
 }
 
 cmd=${1:-}; [ $# -gt 0 ] && shift
-[ "${1:-}" = --user ] && { USER_ONLY=1; shift; }
-set -- "$cmd" "$@"
 case "${1:-}" in
-  get)   [ -n "${2:-}" ] || { echo 'usage: config.sh get [--user] <jq-path>' >&2; exit 2; }; _get "$2" ;;
-  list)  [ -n "${2:-}" ] || { echo 'usage: config.sh list [--user] <jq-path>' >&2; exit 2; }; _list "$2" ;;
-  has)   [ -n "${2:-}" ] || { echo 'usage: config.sh has [--user] <jq-path>' >&2; exit 2; }; _has "$2" ;;
+  --user) TEAM=0 OVERLAYS=0; shift ;;
+  --personal) TEAM=0; shift ;;
+esac
+set -- "$cmd" "$@"
+F='[--user|--personal]'
+case "${1:-}" in
+  get)   [ -n "${2:-}" ] || { echo "usage: config.sh get $F <jq-path>" >&2; exit 2; }; _get "$2" ;;
+  list)  [ -n "${2:-}" ] || { echo "usage: config.sh list $F <jq-path>" >&2; exit 2; }; _list "$2" ;;
+  has)   [ -n "${2:-}" ] || { echo "usage: config.sh has $F <jq-path>" >&2; exit 2; }; _has "$2" ;;
   files) _files ;;
   root)  f=$(_team_file) || exit 1; d=${f%/.claude/highness.json}; (cd "$d" && pwd -P) ;;
-  *) echo 'usage: config.sh get|list|has [--user] <jq-path> | files [--user] | root' >&2; exit 2 ;;
+  *) echo "usage: config.sh get|list|has $F <jq-path> | files $F | root" >&2; exit 2 ;;
 esac

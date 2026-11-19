@@ -150,7 +150,8 @@ person, `.claude/highness.json` in a repo for a team. A repo key wins; lists fro
 A clone with no `.claude/highness.json` of its own, inside an umbrella (a checkout whose `repos.txt`
 lists it), takes the umbrella's file; `config.sh root` names the directory whose file applies.
 `guard.exempt_commands` and `guard.checks` are read from the personal file only: a repo's file comes
-with every clone, so it may add deny patterns but never switch the guard off or run a program. One exception:
+with every clone, so it may add deny patterns but never switch the guard off or run a program
+(scoping them per repo: the overlays below). One exception:
 `land.test`, the suite `wt.sh land` runs before it lands a branch, is read from the repo's file too —
 it runs the repo's own tests, code any clone already carries.
 
@@ -197,9 +198,28 @@ at a git repo's root (measured on 2.1.328). A new session that still opens on a 
 dispatch exit 6 with the screen it shows.
 
 For a team repo that cannot carry `.claude/highness.json`, the personal file can set keys per repo,
-by `origin`'s owner or owner/repo (host ignored): `"repos": {"acme": {"docs": {"conventions":
-"~/acme/writing.md"}}}`. The repo's own file still wins, then `owner/repo`, then `owner`, then the
-top level. Keys read from the personal file only ignore these overlays.
+by `origin`'s owner or owner/repo (host ignored, keys lowercase): `"repos": {"acme": {"docs":
+{"conventions": "~/acme/writing.md"}}}`. The repo's own file still wins, then `owner/repo`, then
+`owner`, then the top level. Keys read from the personal file only ignore these overlays, with one
+exception: `guard.checks`.
+
+A person who works for a team and on their own repos scopes the team's guard to the team's repos
+the same way. `guard.deny_patterns` and `guard.checks` under `repos.<owner>` (or `<owner/repo>`)
+apply only in sessions whose repo matches; the top level's apply everywhere. A check is the
+person's own program and can only deny or ask, so it is the one personal-only key an overlay may
+carry; `guard.exempt_commands` stays top-level only, since any clone can carry a matching remote
+name. A team's ready-gate check that sat in the top-level `guard.checks`, and so also ran in the
+person's own repos, moves under the team's owner (and leaves the top level, or it runs twice there):
+
+```json
+{
+  "guard": { "deny_patterns": ["terraform apply"] },
+  "repos": {
+    "acme": { "guard": { "checks": ["~/plugins/acme-tools/bin/ready-gate"],
+                         "deny_patterns": ["acme-prod-[a-z]+"] } }
+  }
+}
+```
 
 ### Tracker
 
