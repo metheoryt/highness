@@ -6,7 +6,8 @@ description: Check and fix what a machine and a person need before the first /hi
 # /hi:setup
 
 **Session rules** (`${CLAUDE_PLUGIN_ROOT}/reference/session.md`, read before the first reply): chat
-in the user's language, Read one file per call, 2–4 options per question.
+in the user's language (no words of theirs yet: `session.language` in their config), Read one file
+per call, 2–4 options per question.
 
 `L="${CLAUDE_PLUGIN_ROOT}/lib"` (if that path does not exist: `L="$("$HOME/.local/bin/highness" root)/lib"`).
 The script measures; you render, propose and ask. It needs no repo; run it from the repo the person

@@ -6,7 +6,8 @@ description: Show, find, create, land and clean up this repo's workspaces (Orca 
 # /hi:worktrees
 
 **Session rules** (`${CLAUDE_PLUGIN_ROOT}/reference/session.md`, read before the first reply): chat
-in the user's language, Read one file per call, 2–4 options per question.
+in the user's language (no words of theirs yet: `session.language` in their config), Read one file
+per call, 2–4 options per question.
 
 Every shell call starts with `L="${CLAUDE_PLUGIN_ROOT}/lib"` (if that path does not exist:
 `L="$("$HOME/.local/bin/highness" root)/lib"`) and runs from inside the repo: the main checkout or

@@ -6,7 +6,8 @@ description: Write or restructure a document that teammates must read and act on
 # /hi-docs:write-doc
 
 **Session rules** (`${CLAUDE_PLUGIN_ROOT}/reference/session.md`, read before the first reply): chat
-in the user's language, artifacts in English unless the user set otherwise, 2–4 options per question.
+in the user's language (no words of theirs yet: `session.language` in their config), artifacts in
+English unless the user set otherwise, 2–4 options per question.
 
 A document is for a reader with a job to do and limited time. Every rule below serves one test: **can
 the named reader get what they need in one sitting, without decoding anything first?**
