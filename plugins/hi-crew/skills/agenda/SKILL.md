@@ -112,6 +112,15 @@ and say in one line that Orca now wakes this session, not the other one, for tha
   <session> <brief file>` as for a thread below; without one, as a new round,
   `$O orchestration send --to dispatch:<dispatch> --subject … --body …`, and record the new
   dispatch id, which retires the line.
+- **A worker lost without reporting**: an escalation in `asks` whose line says the worker "is
+  gone ... without sending worker_done" (Orca's "Worker lost without reporting": a usage limit,
+  an account switch, a closed session). Find its ticket by the dispatch in the facts
+  (`bash "$C" list`), and offer "resume it in its own workspace?". On a yes,
+  `bash "$C" resume <KEY>`: a new worker in the recorded workspace and Run, on the spec copy under
+  a note to continue from the branch and its PR (no second PR); it records the new dispatch, which
+  retires the escalation. It refuses when the workspace is gone or the PR is merged or closed:
+  say so, and offer `/hi-crew:start` for a fresh attempt or closing the facts. Never Orca's
+  `--retry-of` for this: it needs the old Task, whose spec cannot carry the note.
 - **A person's comment on a PR**: show it with your read; on the user's decision, send the worker a
   round: `$O orchestration send --to dispatch:<dispatch> --subject … --body …`, saying what to
   change and how to reply. Record the new dispatch id from the receipt.

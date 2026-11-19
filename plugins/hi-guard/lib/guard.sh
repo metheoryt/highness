@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # guard.sh — hi-guard's PreToolUse hook: hard limits on every Bash call in every session.
 #
-#   guard.sh pretool      hook JSON on stdin (tool_name, tool_input.command, cwd)
+#   guard.sh pretool      hook JSON on stdin (tool_name, tool_input.command, cwd, session_id)
 #
 # Allow is no stdout and exit 0. Deny (or ask) is exit 0 with one
-# {"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":…}} object.
+# {"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":…}} object, and one
+# line in the denial log (lib/denials.sh).
 # Rules, first match wins:
 #   1. `sudo` as a command word (unquoted, unescaped: `\sudo`, `'su'do`); or anywhere as a word
 #      in an interpreter segment (sh/bash/dash/zsh/ksh/mksh/fish/busybox, su, eval, ssh; not the
@@ -26,9 +27,16 @@
 # Configuration: lib/config.sh (a copy of shared/config.sh), read in the hook's .cwd: the user
 # file ${HIGHNESS_CONFIG:-~/.config/highness/config.json} and the repo's .claude/highness.json,
 # arrays concatenated. All keys are optional; with none set, only rule 1 applies.
-# guard.exempt_commands and guard.checks come from the USER file only (config.sh --user): a repo's
-# file arrives with every clone, and these two keys switch rule 1 off or run a program on every
-# Bash call. A repo can only add deny patterns.
+# The user file's `repos` overlays (`repos.<owner/repo>`, `repos.<owner>`, keys lowercase, matched
+# against the cwd's `origin`) may carry guard.deny_patterns and guard.checks, which then apply only
+# in sessions whose repo matches; the top level's apply everywhere. A team's production deny and
+# its ready-gate check go under `repos.<team-owner>`, so they stay out of the person's own repos.
+# guard.exempt_commands and guard.checks never come from a repo's file: it arrives with every
+# clone, and these two keys switch rule 1 off or run a program on every Bash call. A repo can only
+# add deny patterns. guard.exempt_commands is read from the user file's top level only (config.sh
+# --user): an overlay is chosen by a remote name any clone can carry. guard.checks is read with
+# its overlays (config.sh --personal): a check is the person's own program and can only add a D or
+# an A, so a clone that borrows a remote name can at most have more of them run.
 #   guard.deny_patterns    EREs for rule 2.
 #   guard.exempt_commands  basenames. A segment whose command word (or the script right after a
 #                          `bash`/`sh` command word) has one of these basenames is exempt from
@@ -36,7 +44,8 @@
 #                          $(…) and `…` are commands of their own and stay checked, as does
 #                          every other segment of the line. Default: none.
 #   guard.checks           absolute paths (or ~/…) of executables, run in order after rules 1
-#                          and 2 allow. Each runs in .cwd with .cwd as $1 and, on stdin, every
+#                          and 2 allow: the matching `repos.<owner/repo>` overlay's, then
+#                          `repos.<owner>`'s, then the top level's. Each runs in .cwd with .cwd as $1 and, on stdin, every
 #                          simple command the scan found, one per line:
 #                            <moved><TAB><word1><US><word2>…
 #                          US is \x1f. Words are unquoted and unescaped, redirections dropped; a
@@ -75,6 +84,8 @@
 # slips past it). It must never break a session: bad input, a broken config or a failing
 # check all fall through to allow.
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The denial log (denial_write, DENIAL_MAX). Missing, the guard still decides, unlogged.
+. "$HERE/denials.sh" 2>/dev/null || { DENIAL_MAX=2000; denial_write() { :; }; }
 
 # The quote-blind check, for heredoc bodies kept as commands (and a command the scan cannot
 # close): matched against the text with newlines turned into `;`, since bash's =~ anchors ^ at
@@ -92,9 +103,12 @@ SCAN_MAX=262144
 # quoting inside a literal [[ =~ ]] pattern.
 DUR_RE='^[0-9][0-9.]*[smhd]?$'
 
-_out() {  # _out <deny|ask> <reason>
+_out() {  # _out <deny|ask> <reason>; logs it too (denials.sh), with pretool's sid, cwd, cmd, RULE
   jq -nc --arg d "$1" --arg r "$2" \
     '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:$d,permissionDecisionReason:$r}}'
+  denial_write "$(jq -nc --arg s "${sid:-}" --arg c "${cwd:-}" --arg x "${cmd:0:$DENIAL_MAX}" \
+    --arg rule "${RULE:-}" --arg d "$1" --arg r "$2" \
+    '{time:(now|todate),session:$s,cwd:$c,tool:"Bash",command:$x,by:"hi-guard",rule:$rule,decision:$d,reason:$r}' 2>/dev/null)"
 }
 
 # ---- the scan: a command into simple commands and their words ----
@@ -657,10 +671,17 @@ _feed() {
 
 # _limited <cmd> <args…>: run a check with a time limit (HI_GUARD_CHECK_TIMEOUT seconds,
 # default 5), so a hung check cannot stall every Bash call; past it the check counts as failed
-# (allow). perl's alarm is on macOS and most Linux; without perl the check runs unlimited.
+# (allow). The check runs in a process group of its own and the whole group is killed at the
+# limit: killing only the check left a child of it (a `sleep`) holding the output pipe open, so
+# the hook waited for that child anyway. perl is on macOS and most Linux; without perl the check
+# runs unlimited.
 _limited() {
   local t=${HI_GUARD_CHECK_TIMEOUT:-5}
-  if command -v perl >/dev/null 2>&1; then perl -e 'alarm shift; exec @ARGV or exit 127' "$t" "$@"
+  if command -v perl >/dev/null 2>&1; then
+    perl -e 'my $t = shift; my $p = fork; defined $p or exit 127;
+             if (!$p) { setpgrp(0, 0); exec @ARGV or exit 127 }
+             $SIG{ALRM} = sub { kill "KILL", -$p; kill "KILL", $p; exit 124 };
+             alarm $t; waitpid($p, 0); exit($? & 127 ? 124 : $? >> 8)' "$t" "$@"
   else "$@"; fi
 }
 
@@ -691,15 +712,15 @@ EOF
 }
 
 pretool() {
-  local vals tool cwd cmd p flat r x='' k=0 scans=0 ok=0 pend j files checked
+  local vals tool cwd cmd sid p flat r x='' k=0 scans=0 ok=0 pend j files checked
   MORE=()
   vals=$(jq -r 'if type == "object" then
-                  [(.tool_name // ""), (.cwd // ""), (.tool_input.command? // "")]
+                  [(.tool_name // ""), (.cwd // ""), (.tool_input.command? // ""), (.session_id // "")]
                   | map(if type == "string" then . else "" end) | @sh
                 else empty end' 2>/dev/null) || return 0
   [ -n "$vals" ] || return 0
   eval "set -- $vals"
-  tool=${1:-} cwd=${2:-} cmd=${3:-}
+  tool=${1:-} cwd=${2:-} cmd=${3:-} sid=${4:-} RULE=sudo
   [ "$tool" = Bash ] && [ -n "$cmd" ] || return 0
 
   # The configuration, read in .cwd. No config file at all (the common case) costs one call.
@@ -713,7 +734,7 @@ pretool() {
 $(_cfg list --user .guard.exempt_commands)
 EOF
     [ -z "$EXS" ] || EXS=$'\037'$EXS
-    CHECKS=$(_cfg list --user .guard.checks)
+    CHECKS=$(_cfg list --personal .guard.checks)
     [ -z "$CHECKS" ] || ALLC=1
   fi
 
@@ -775,7 +796,7 @@ EOF
   while IFS= read -r p; do
     [ -n "$p" ] || continue
     if [[ $checked =~ $p ]]; then
-      _out deny "hi-guard: the command matches the denied pattern '$p' (guard.deny_patterns). That access is the user's: do not work around it; tell the user what you need and why, and let them run it or grant it."
+      RULE=deny_patterns; _out deny "hi-guard: the command matches the denied pattern '$p' (guard.deny_patterns). That access is the user's: do not work around it; tell the user what you need and why, and let them run it or grant it."
       return 0
     fi
   done <<EOF
@@ -784,7 +805,7 @@ EOF
 
   # rule 3: guard.checks
   [ -n "$CHECKS" ] || return 0
-  r=$(_checks "$cwd")
+  RULE=checks; r=$(_checks "$cwd")
   case "$r" in
     D$'\t'*) _out deny "${r#D$'\t'}" ;;
     A$'\t'*) _out ask "${r#A$'\t'}" ;;

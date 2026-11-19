@@ -599,6 +599,51 @@ else
 fi
 
 
+# The personal file's repos overlays scope guard.checks and guard.deny_patterns to the repos whose
+# origin matches. The real case: a team's ready-gate check (the fixture, denying `gh pr ready`) sat
+# in the top-level guard.checks and so also ran in the person's own repos; it moves under
+# repos.<team-owner>. TAPP and TWEB are the team's (owner "teamco"), MINE is the person's own.
+TAPP="$SANDBOX/team-app"; TWEB="$SANDBOX/team-web"; MINE="$SANDBOX/mine"
+for d in "$TAPP" "$TWEB" "$MINE"; do git init -q "$d"; done
+git -C "$TAPP" remote add origin git@github.com:TeamCo/App.git
+git -C "$TWEB" remote add origin https://git.example.org/teamco/web
+git -C "$MINE" remote add origin git@github.com:someone/mine.git
+HIGHNESS_CONFIG="$SANDBOX/overlay.json"
+jq -n --arg f "$FIX" --arg d "$CK/d" --arg a "$CK/a" '{
+  guard: {deny_patterns: ["prod-cluster"]},
+  repos: {teamco: {guard: {checks: [$f], deny_patterns: ["team-prod-[a-z]+"],
+                           exempt_commands: ["note.sh"]}},
+          "teamco/web": {guard: {checks: [$a]}},
+          someone: {guard: {exempt_commands: ["note.sh"]}}}}' > "$HIGHNESS_CONFIG"
+denies "overlay check: runs in the team's repo"         'gh pr ready 5' "$TAPP"
+assert_contains "overlay check: its own reason"         "$(reason)" "fixture: gh pr ready"
+denies "overlay check: in every repo of the owner"      'gh pr ready 5' "$TWEB"
+allows "overlay check: not in the person's own repo"    'gh pr ready 5' "$MINE"
+allows "overlay check: not outside any repo"            'gh pr ready 5' "$SANDBOX"
+allows "overlay check: not in a repo with no origin"    'gh pr ready 5'
+run 'ls' "$TWEB"
+assert_eq "overlay check: an owner/repo key, there"     "ask" "$(decision)"
+allows "overlay check: an owner/repo key, not elsewhere" 'ls' "$TAPP"
+denies "overlay check: owner/repo's A, then owner's D"  'gh pr ready 5' "$TWEB"
+denies "overlay deny: in the team's repo"               'kubectl --context team-prod-east get pods' "$TAPP"
+allows "overlay deny: not in the person's own repo"     'kubectl --context team-prod-east get pods' "$MINE"
+denies "overlay deny: the top level's still holds"      'kubectl --context prod-cluster get pods' "$MINE"
+denies "overlay exempt: ignored in the team's repo"     "$(printf "note.sh add <<'EOF'\nsudo x\nEOF")" "$TAPP"
+denies "overlay exempt: ignored in the person's repo"   "$(printf "note.sh add <<'EOF'\nsudo x\nEOF")" "$MINE"
+jq --arg d "$CK/d" '.guard.checks = [$d]' "$HIGHNESS_CONFIG" > "$SANDBOX/overlay-top.json"
+HIGHNESS_CONFIG="$SANDBOX/overlay-top.json"
+denies "a top-level check: in the person's own repo"    'ls' "$MINE"
+assert_eq "a top-level check: its reason"               "check d says no" "$(reason)"
+denies "a top-level check: outside any repo"            'ls' "$SANDBOX"
+denies "a top-level check: after the overlay's, which ran first" 'gh pr ready 5' "$TAPP"
+assert_contains "the overlay's D wins over the top level's" "$(reason)" "fixture: gh pr ready"
+mkdir -p "$TAPP/.claude"
+printf '{"guard":{"checks":["%s"]}}\n' "$CK/d" > "$TAPP/.claude/highness.json"
+HIGHNESS_CONFIG="$SANDBOX/overlay.json"
+allows "overlay: a repo file's check still never runs"  'ls' "$TAPP"
+rm -rf "$TAPP/.claude"
+HIGHNESS_CONFIG=$CFG
+
 # A repo file's guard.checks never run (user file only), and a hung check is cut off.
 printf '{"guard":{"checks":["%s"]}}\n' "$CK/d" > "$TEAM/.claude/highness.json"
 HIGHNESS_CONFIG="$SANDBOX/none.json"
@@ -607,7 +652,7 @@ printf '#!/bin/sh\ncat >/dev/null\nsleep 10\nprintf "D\\tlate\\n"\n' > "$CK/slow
 checks "$CK/slow"
 t0=$(date +%s); HI_GUARD_CHECK_TIMEOUT=1 run 'ls'; t1=$(date +%s)
 assert_eq "a hung check past its limit allows"         "" "$(decision)"
-[ $((t1 - t0)) -lt 5 ] && ok "a hung check is cut off at its limit" || fail "a hung check ran $((t1 - t0))s"
+assert_eq "a hung check is cut off at its limit"       "under 5s" "$([ $((t1 - t0)) -lt 5 ] && echo 'under 5s' || echo "$((t1 - t0))s")"
 HIGHNESS_CONFIG=$CFG
 
 assert_summary

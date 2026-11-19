@@ -33,8 +33,8 @@
 # Bodies are measured facts, never a person's words; $HOME in them becomes ~ before filing.
 #
 # The denial log: JSON lines at ${HIGHNESS_STATE:-${XDG_STATE_HOME:-~/.local/state}/highness}/
-# denials.jsonl (HI_RETRO_DENIALS overrides), one object per denial with at least "session" or
-# "cwd"; the retro keeps the lines of the worker's session or workspace. Absent: "no denial log".
+# denials.jsonl (HI_RETRO_DENIALS overrides), written by hi-guard (lib/denials.sh: its own denies
+# and asks, and Claude Code's PermissionDenied), one object per denial with "session" and "cwd"; the retro keeps the lines of the worker's session or workspace. Absent: "no denial log".
 #
 # Proposed preference lines and team-rule drafts from the choice records (the `choices` part of
 # the bundle) are lib/prefs.sh's; this script only hands those records over.
