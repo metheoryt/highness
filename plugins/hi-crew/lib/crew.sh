@@ -1448,7 +1448,7 @@ EOF
 cmd_resume() {
   [ $# -eq 1 ] || die 'usage: resume <KEY>'
   need_jq
-  local key=$1 facts ws run spec root pr state d agent model handle title branch sf out rc
+  local key=$1 facts ws run spec root pr state d agent model handle title branch sf out rc m asked
   facts=$(cmd_get "$key") || die "resume: no open facts for $key"
   ws=$(printf '%s' "$facts" | jq -r '.workspace // empty')
   run=$(printf '%s' "$facts" | jq -r '.run // empty')
@@ -1476,6 +1476,22 @@ cmd_resume() {
   title=$(printf '%s' "$facts" | jq -r '.title // empty'); [ -n "$title" ] || title=$key
   branch=$(git -C "$ws" branch --show-current 2>/dev/null) || branch=''
   handle=${ORCA_TERMINAL_HANDLE:-$(cat "$DIR/handles/$run" 2>/dev/null)}
+  # The earlier worker's stranded asks: recording the new dispatch retires them from `stranded`,
+  # so they go into the note, the person's answer verbatim where there is one.
+  # The inbox goes through a file: as an argument it can pass the kernel's limit on one.
+  m=$(mktemp "${TMPDIR:-/tmp}/hi-crew-inbox.XXXXXX") || die 'resume: no temp file'
+  inbox >"$m" 2>/dev/null && [ -s "$m" ] || echo '[]' >"$m"
+  asked=$(cmd_stranded 2>/dev/null | jq -rs --arg k "$key" --slurpfile mm "$m" '
+    $mm[0] as $m
+    | map(select(.key == $k)) | unique_by(.ask)[]
+    | (if .what == "unsent" then .body
+       elif .what == "unheard" then (.ask as $a | [$m[] | select(.thread_id == $a and .id != $a)] | min_by(.created_at) | .body // "")
+       else "" end) as $ans
+    | "- It asked: \(.question)\n"
+      + (if $ans != "" then "  The person answered (it never reached that worker; act on it):\n\n"
+                          + ($ans | split("\n") | map("  > " + .) | join("\n")) + "\n"
+         else "  No answer came before it stopped. Ask again if it still stands.\n" end)') || asked=''
+  rm -f "$m"
   sf=$(mktemp "${TMPDIR:-/tmp}/hi-crew-resume.XXXXXX") || die 'resume: no temp file'
   {
     printf '## Resuming %s: read this first\n\n' "$key"
@@ -1490,6 +1506,7 @@ cmd_resume() {
       printf -- '- Its pull request, if it opened one: look it up on the forge by the branch.\n'
     fi
     printf -- '- The ticket'"'"'s comments since it started: what it posted, and what people answered.\n\n'
+    [ -z "$asked" ] || printf 'Its questions to the coordinator that it never acted on:\n\n%s\n\n' "$asked"
     printf 'Then continue from there, under the spec below. That pull request is yours: do not open a\n'
     printf 'second one, and do not redo committed work. The spec'"'"'s "Already done?" check is about this\n'
     printf 'ticket landing elsewhere, not about the earlier worker'"'"'s progress here.\n\n---\n\n'
