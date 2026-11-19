@@ -21,6 +21,8 @@ export HOME="$SANDBOX/home"
 export XDG_CONFIG_HOME="$HOME/.config" XDG_STATE_HOME="$HOME/.local/state"
 mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME"
 export HIGHNESS_CONFIG="$SANDBOX/no-config.json"
+# The denial log goes here, never into the real state dir.
+export HIGHNESS_STATE="$SANDBOX/state"
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
 export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null
 sandbox_cleanup() { cd / && rm -rf "$SANDBOX"; }
