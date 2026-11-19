@@ -158,6 +158,8 @@ assert_eq "watch: from crew.sh" missing "$(row "$out" machine watch)"
 assert_eq "crew.model: in the person section" unset "$(row "$out" person crew.model)"
 assert_eq "crew.agent: in the person section" unset "$(row "$out" person crew.agent)"
 assert_eq "crew rows are not machine rows" "" "$(row "$out" machine crew.model)"
+assert_eq "no preference file: the person row that offers /hi:meet" missing "$(row "$out" person preferences)"
+assert_eq "preferences is not a machine row" "" "$(row "$out" machine preferences)"
 assert_eq "session-state: this hi-crew registers its hooks" ok "$(row "$out" machine session-state)"
 
 # An older hi-crew: a crew.sh with setup-status, but no session-state hooks.

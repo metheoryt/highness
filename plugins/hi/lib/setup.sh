@@ -6,6 +6,8 @@
 # Usage:
 #   setup.sh status        one row per item: section<TAB>name<TAB>state<TAB>detail
 #   setup.sh profile       the Claude Code config dir Orca starts workers under<TAB>why
+#   setup.sh config-dirs   every Claude Code config dir Orca uses, the worker profile first, one
+#                          per line (what /hi:meet reads sessions from)
 #
 # Sections and rows:
 #   machine  jq, orca, launcher, plugin:<name> (each highness plugin in the worker profile: on,
@@ -15,8 +17,8 @@
 #            hi-crew (its crew.sh),
 #            session-state (that hi-crew registers the session-state hooks),
 #            orchestration, orca-skill, watch (these three from `crew.sh setup-status`), board
-#   person   config, crew.agent, crew.model, tracker (from crew.sh; tracker only when one is
-#            configured), overlay
+#   person   config, crew.agent, crew.model, preferences, tracker (from crew.sh; tracker only when
+#            one is configured), overlay
 #   repo     orca-project, then every row of `repo-setup.sh status` except launcher and board,
 #            which the machine section already has. Only inside a git work tree.
 #
@@ -239,7 +241,7 @@ rows_machine() {
     else
       _row machine session-state old "this hi-crew registers no session-state hooks: dispatch and the watch read the screen only; update it"
     fi
-    printf '%s\n' "$CREW_ROWS" | awk -F'\t' 'NF >= 2 && $1 !~ /^(crew\.|tracker$)/ { print "machine\t" $0 }'
+    printf '%s\n' "$CREW_ROWS" | awk -F'\t' 'NF >= 2 && $1 !~ /^(crew\.|tracker$|preferences$)/ { print "machine\t" $0 }'
   else
     CREW_ROWS=''
     _row machine hi-crew off 'hi-crew is not enabled for workers: no orchestration, watch or crew rows'
@@ -255,7 +257,7 @@ rows_person() {
   elif ! jq -e 'type == "object"' "$f" >/dev/null 2>&1; then _row person config invalid "$f is not a JSON object"
   else _row person config ok "$f"; fi
 
-  printf '%s\n' "$CREW_ROWS" | awk -F'\t' 'NF >= 2 && $1 ~ /^(crew\.|tracker$)/ { print "person\t" $0 }'
+  printf '%s\n' "$CREW_ROWS" | awk -F'\t' 'NF >= 2 && $1 ~ /^(crew\.|tracker$|preferences$)/ { print "person\t" $0 }'
 
   [ -n "${TOP:-}" ] || return 0
   if [ -f "$TOP/.claude/highness.json" ]; then _row person overlay team-file "$TOP/.claude/highness.json"; return; fi
@@ -289,8 +291,8 @@ rows_repo() {
 }
 
 case "${1:-}" in
-  status|profile) ;;
-  *) echo 'usage: setup.sh status | profile' >&2; exit 2 ;;
+  status|profile|config-dirs) ;;
+  *) echo 'usage: setup.sh status | profile | config-dirs' >&2; exit 2 ;;
 esac
 TOP=''; BASE=''
 if TOP=$(git rev-parse --show-toplevel 2>/dev/null); then
@@ -301,5 +303,6 @@ else
 fi
 case "$1" in
   profile) cmd_profile ;;
+  config-dirs) _config_dirs "$(cmd_profile | cut -f1)" ;;
   status) CREW_ROWS=''; rows_machine; rows_person; rows_repo ;;
 esac

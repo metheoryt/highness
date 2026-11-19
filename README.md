@@ -4,7 +4,7 @@ A harness for Claude Code agents, as a plugin marketplace. Each plugin is enable
 
 | plugin | what it gives |
 |---|---|
-| `hi` | `/hi:worktrees` — one workspace per piece of work, over Orca worktrees or plain git worktrees, with lineage, a removal check and a per-tree setup (gortex tracking when gortex is installed, local config links, the repo's own setup script). `/hi:repo-setup` — check and wire a repo for that. `/hi:setup` — check and fix a machine and a person for hi and hi-crew, then the repo. |
+| `hi` | `/hi:worktrees` — one workspace per piece of work, over Orca worktrees or plain git worktrees, with lineage, a removal check and a per-tree setup (gortex tracking when gortex is installed, local config links, the repo's own setup script). `/hi:repo-setup` — check and wire a repo for that. `/hi:setup` — check and fix a machine and a person for hi and hi-crew, then the repo. `/hi:meet` — seed your working preferences from your own past sessions, each line with its evidence, written only where you say yes. |
 | `hi-guard` | A PreToolUse hook on Bash: denies `sudo` from an agent session (quote-aware, through `bash -c`, `ssh`, `eval`…) and any configured deny pattern. Other tools can add checks. |
 | `hi-docs` | `/hi-docs:write-doc` and `/hi-docs:reader-test` — documents that read in short sittings, tested on a reader with no context. |
 | `hi-crew` | `/hi-crew:start <KEY>` — a worker agent on a ticket, in its own Orca workspace, carrying it to a reviewed pull request and stopping only for a person's decision. Before it asks, a worker does its own research and takes the obvious calls; what it brings is a trade-off, each option with what it loses and the rule it leans on (or `no rule`), and it states its direction before building so a wrong one is caught early. Each answered ask is recorded (`crew.sh choices`), so a person's choices can be read back across tickets. `/hi-crew:agenda` — what the workers wait on you for: their questions, people's comments on their PRs, PRs ready to merge. A watch (an Orca automation that never starts an agent) wakes the coordinator when a worker's PR is merged or closed, its CI fails, a person comments, the worker sits on a dialog, or one of its tool calls stays open too long. Its hooks keep one small state line per Claude Code session (working, blocked or idle), which `/hi:worktrees` dispatch reads before the screen. A worker first checks its ticket is not already done (landed on the trunk, a merged PR, the result present) and then reports that instead of opening a PR; any session that does work belonging to an open ticket comments on that ticket. Needs Orca with orchestration turned on, and `jq`. Team settings under `crew` in `.claude/highness.json`: `process`, `agent`, `model`, `marker`, `pr_state`; and `agenda.sections`, the team's own digest sections (its tickets, its PRs, reviews waiting), each a command that prints JSON lines, so the digest covers the person's whole plate without hi knowing the team's tracker or forge. A tracker adapter for Jira, YouTrack and GitHub Issues (`tracker` in the config) gives those sections, the autostart candidates and the workers' ticket reads, moves and comments without glue of the team's own (see Tracker below). Opt-in autostart: the watch starts labelled tickets into free slots, after a check of the plan's usage (see below). |
@@ -131,6 +131,17 @@ your yes (`hi-crew/lib/prefs.sh`); your own sync carries them from there. A choi
 way on several tickets becomes a drafted team rule, opened as a pull request to the team's rules
 file (`crew.team_rules` in the team's settings, a path in its repo) only on your yes, for the
 team to accept or reject in review.
+
+To start that file from what you already did, run `/hi:meet` (`/hi:setup` offers it when you have
+no preference file yet). It reads your own Claude Code sessions on this machine (the last 60 days,
+every Claude profile Orca uses included; headless runs, dispatched workers, subagents and pasted
+text left out), counts your corrections, rejected tool calls, permission denials, repeated asks and
+the skills you use, reads a sample in full, and drafts lines each backed by evidence: the session,
+the date and a short quote of your own words, with paths, addresses and anything token-shaped
+masked. You keep, reword or drop each line; only kept ones are written, through `prefs.sh`, into
+the files `preferences` names (no second store). Candidate team rules come apart and become a
+pull request only on your yes, without your quotes. Nothing leaves the machine
+(`hi/lib/meet.sh`).
 
 ## Configuration
 
