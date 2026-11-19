@@ -171,6 +171,35 @@ case "$out" in *'- Never merge. That is a person'*) ok 'default: never merge' ;;
 case "$out" in *'Merge your own pull request'*) no 'default: no merge-on-green line' ;; *) ok 'default: no merge-on-green line' ;; esac
 case "$out" in *"record it, so the coordinator's watch"*"\`HIGHNESS_STATE='$HIGHNESS_STATE' bash '$(cd "$HERE/../lib" && pwd)/crew.sh' record ABC-9 '{\"pr\":\"<the PR url>\"}'\`"*) ok 'spec: the worker records its PR, in this state dir' ;; *) no 'spec: the worker records its PR, in this state dir' ;; esac
 case "$out" in *'{{CREW}}'*) no 'spec: {{CREW}} filled' ;; *) ok 'spec: {{CREW}} filled' ;; esac
+case "$out" in *'background and wait for its completion notification; never'*'sleep-poll'*) ok 'spec: background test runs, no sleep-poll' ;; *) no 'spec: background test runs, no sleep-poll' ;; esac
+# A copy of the spec is kept under the state dir, the same text as printed (highness#85).
+check 'spec: a copy is kept for the key' "$(cat "$HIGHNESS_STATE/crew/specs/ABC-9.md" 2>/dev/null)" "$out"
+check 'spec: no temp file left' "$(ls "$HIGHNESS_STATE/crew/specs" | tr '\n' ' ')" 'ABC-9.md '
+out2=$(cd "$T" && HIGHNESS_STATE="$T/ro" bash -c 'mkdir -p "$HIGHNESS_STATE" && chmod 500 "$HIGHNESS_STATE" && bash "$0" spec --key ABC-9 --title "Do the thing" --brief-file "$1"' "$C" "$T/brief"); rc=$?
+chmod 700 "$T/ro" 2>/dev/null
+check 'spec: an unwritable state dir still prints the spec' "$rc $(printf '%s' "$out2" | head -1)" '0 Ticket ABC-9: Do the thing'
+
+# --- reentry: SessionStart(compact) points a worker back at its spec (highness#54)
+spec_out=$out   # the spec checks below read it again
+mkdir -p "$T/ws9/sub" "$T/elsewhere"
+bash "$C" record ABC-9 "{\"title\":\"Do the thing\",\"workspace\":\"$T/ws9\",\"spec\":\"$HIGHNESS_STATE/crew/specs/ABC-9.md\",\"pr\":\"https://forge/pr/9\"}"
+ctx() { printf '%s' "$1" | jq -r '.hookSpecificOutput | .hookEventName + "|" + .additionalContext'; }
+out=$(printf '{"hook_event_name":"SessionStart","source":"compact","cwd":"%s"}' "$T/ws9/sub" | bash "$C" reentry); rc=$?
+check 'reentry: exit 0' "$rc" 0
+case "$(ctx "$out")" in "SessionStart|hi-crew: this session is the ticket worker for ABC-9 (Do the thing)"*"Re-read it before your next step: $HIGHNESS_STATE/crew/specs/ABC-9.md"*"Your PR: https://forge/pr/9."*) ok 'reentry: names the ticket, the spec and the PR' ;; *) no "reentry: names the ticket, the spec and the PR: [$out]" ;; esac
+case "$out" in *'Line one of the brief'*) no 'reentry: the spec is pointed at, not inlined' ;; *) ok 'reentry: the spec is pointed at, not inlined' ;; esac
+out=$(printf '{"cwd":"%s"}' "$T/elsewhere" | bash "$C" reentry); rc=$?
+check 'reentry: outside a workspace, silence' "$rc|$out" '0|'
+out=$(printf '{"cwd":"%s"}' "${T}/ws9x" | bash "$C" reentry)
+check 'reentry: a sibling path with the workspace as prefix is not it' "$out" ''
+bash "$C" record ABC-9 '{"spec":"/nonexistent/spec.md"}'
+case "$(ctx "$(printf '{"cwd":"%s"}' "$T/ws9" | bash "$C" reentry)")" in *'No copy of it was saved'*'first prompt'*) ok 'reentry: a missing spec sends to the first prompt' ;; *) no 'reentry: a missing spec sends to the first prompt' ;; esac
+out=$(printf 'not json' | bash "$C" reentry); rc=$?
+check 'reentry: a bad payload is silence' "$rc|$out" '0|'
+bash "$C" close ABC-9 2>/dev/null
+check 'reentry: a closed ticket is silence' "$(printf '{"cwd":"%s"}' "$T/ws9" | bash "$C" reentry)" ''
+if jq -e '.hooks.SessionStart[] | select(.matcher == "compact") | .hooks[] | select(.command | test("crew.sh\\\" reentry"))' "$HERE/../hooks/hooks.json" >/dev/null; then ok 'hooks: SessionStart(compact) runs reentry'; else no 'hooks: SessionStart(compact) runs reentry'; fi
+out=$spec_out
 case "$out" in *'Change files with the Edit/Write tools, never with a python/sed/perl heredoc in Bash.'*) ok 'edit-not-heredoc rule' ;; *) no 'edit-not-heredoc rule' ;; esac
 # The already-done check comes before the worker takes the ticket or changes anything.
 case "$out" in *'check it is not already done (below) before'*'## Already done?'*'## Asking'*) ok 'already-done check, before taking the ticket' ;; *) no 'already-done check, before taking the ticket' ;; esac

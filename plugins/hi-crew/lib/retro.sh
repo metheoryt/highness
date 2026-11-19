@@ -134,7 +134,9 @@ cmd_gather() {
   local f t sid
   f=$(facts "$1") || die "no facts for $1"
   printf '# retro bundle: %s\n\n## facts\n%s\n\n' "$1" "$(printf '%s' "$f" | jq -c .)"
-  printf '## spec\n%s\n\n' "$(t=$(fact "$f" spec_file); [ -n "$t" ] && [ -f "$t" ] && echo "$t" || echo 'not recorded: rebuild it with crew.sh spec, or read the worker'"'"'s first prompt in the transcript')"
+  # The facts' `spec` (recorded at start), else the copy crew.sh spec keeps for the key.
+  printf '## spec\n%s\n\n' "$(t=$(fact "$f" spec); [ -n "$t" ] || t="$(bash "$CREW" dir)/specs/$1.md"
+    [ -f "$t" ] && echo "$t" || echo 'not recorded: rebuild it with crew.sh spec, or read the worker'"'"'s first prompt in the transcript')"
   printf '## pr\n%s\n\n' "$(t=$(fact "$f" pr); [ -n "$t" ] && echo "$t (read its body, review threads and CI)" || echo none)"
   printf '## ticket\n%s (read it with its comments)\n\n' "$1"
   if t=$(transcript "$f"); then
