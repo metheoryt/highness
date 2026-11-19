@@ -198,7 +198,9 @@ cmd_stranded() {
       | . as $q
       | ([ $m[] | select(.thread_id == $q.id and .id != $q.id) | .created_at ] | min) as $ans
       | if $ans == null then {what: "unanswered", since: $q.created_at}
-        elif ([ $m[] | select(.dispatch == $d and .created_at > $ans and .thread_id != $q.id) ] | length) == 0
+        # The "lost without reporting" notice Orca sends is not a word from the worker.
+        elif ([ $m[] | select(.dispatch == $d and .created_at > $ans and .thread_id != $q.id)
+                | select(((.payload // "{}" | fromjson? // {}) .stopReason // "") != "lost") ] | length) == 0
           then {what: "unheard", since: $ans}
         else empty end
       | {key: $key} + . + {ask: $q.id, dispatch: $d, question: (($q.body // $q.subject // "") | split("\n")[0]),
