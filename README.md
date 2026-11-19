@@ -158,12 +158,18 @@ the workspace. Each becomes an `--add-dir` with an Edit deny rule beside it, as 
 directory already is, so the worker neither stops on "read outside working directory" nor
 changes them. A directory that holds the workspace, or sits inside it, is left out.
 
-`wt.sh dispatch` also keeps a new session off Claude Code's folder-trust dialog, which nobody
-watching a dispatched terminal answers. Trust stays the person's decision: when the repo's main
-checkout or another of its worktrees is already trusted, the new workspace is trusted in the
+`wt.sh dispatch` also keeps a new session off Claude Code's folder-trust and "Allow external
+CLAUDE.md file imports" dialogs, which nobody watching a dispatched terminal answers. Both stay the
+person's decisions, copied only from where they already made them — the caller's
+`CLAUDE_CONFIG_DIR`, Claude Code's default config, or any of Orca's Claude profiles — into the
 config of the account the session runs under (`--config-dir`, else the caller's
-`CLAUDE_CONFIG_DIR`, else `~/.claude.json`); a repo never trusted is left to ask, and a review
-workspace counts only its main checkout's trust. A new session that still opens on a dialog makes
+`CLAUDE_CONFIG_DIR`, else `~/.claude.json`). Trust: when the repo's main checkout or another of its
+worktrees is trusted, so is the new workspace; a repo never trusted is left to ask, and a review
+workspace counts only its main checkout's trust. Imports: Claude Code keeps the answer on the main
+checkout's entry for every worktree of the repo, so the main checkout's yes or no is copied there
+when the configs that have one agree; a review workspace gets only a no, since its branch can
+import other files. Trusting a folder that holds the workspaces does not help: Claude Code stops
+at a git repo's root (measured on 2.1.328). A new session that still opens on a dialog makes
 dispatch exit 6 with the screen it shows.
 
 For a team repo that cannot carry `.claude/highness.json`, the personal file can set keys per repo,
