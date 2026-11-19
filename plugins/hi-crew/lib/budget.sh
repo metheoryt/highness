@@ -39,15 +39,36 @@ now() { printf '%s' "${HI_NOW:-$(date +%s)}"; }
 num() { case "$1" in ''|*[!0-9.]*) printf '%s' "$2" ;; *) printf '%s' "$1" ;; esac; }
 cfg() { bash "$CONFIG" get --user ".crew.budget.$1" 2>/dev/null; }
 
-# The account's OAuth access token, or nothing. macOS keeps it in the login Keychain.
+# The Keychain services that may hold <config dir>'s token, most likely first. Claude Code run
+# with CLAUDE_CONFIG_DIR keeps it under "Claude Code-credentials-<first 8 hex of sha256(dir)>";
+# without it (the default ~/.claude), under the bare name. An Orca profile home has only the
+# suffixed entry: the bare name there is another account's token, or none.
+services() { # <config dir>
+  local d=${1%/} h
+  h=$(printf '%s' "$d" | shasum -a 256 2>/dev/null | cut -c1-8)
+  [ "$d" = "$HOME/.claude" ] && printf '%s\n' 'Claude Code-credentials'
+  [ -n "$h" ] && printf '%s\n' "Claude Code-credentials-$h"
+  return 0
+}
+
+# The account's OAuth access token, or nothing. macOS keeps it in the login Keychain
+# (HI_BUDGET_KEYCHAIN=1 takes that path anywhere, for tests).
 token() { # <config dir>
-  local f="$1/.credentials.json" j=''
+  local f="$1/.credentials.json" s t
   if [ -f "$f" ]; then
-    j=$(cat "$f" 2>/dev/null)
-  elif [ "$(uname -s)" = Darwin ] && command -v security >/dev/null 2>&1; then
-    j=$(security find-generic-password -s 'Claude Code-credentials' -w 2>/dev/null) || j=''
+    jq -r '.claudeAiOauth.accessToken // empty' "$f" 2>/dev/null
+    return 0
   fi
-  printf '%s' "$j" | jq -r '.claudeAiOauth.accessToken // empty' 2>/dev/null
+  [ -n "${HI_BUDGET_KEYCHAIN:-}" ] || [ "$(uname -s)" = Darwin ] || return 0
+  command -v security >/dev/null 2>&1 || return 0
+  while IFS= read -r s; do
+    [ -n "$s" ] || continue
+    t=$(security find-generic-password -s "$s" -w 2>/dev/null | jq -r '.claudeAiOauth.accessToken // empty' 2>/dev/null)
+    [ -n "$t" ] && { printf '%s' "$t"; return 0; }
+  done <<EOF
+$(services "$1")
+EOF
+  return 0
 }
 
 # The endpoint's JSON on stdout; exit 0, or 1 on any failure, 3 on a 401.
