@@ -7,6 +7,13 @@
           { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/lib/guard.sh\" pretool" }
         ]
       }
+    ],
+    "PermissionDenied": [
+      {
+        "hooks": [
+          { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/lib/denials.sh\" permission-denied" }
+        ]
+      }
     ]
   }
 }

@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # guard.sh — hi-guard's PreToolUse hook: hard limits on every Bash call in every session.
 #
-#   guard.sh pretool      hook JSON on stdin (tool_name, tool_input.command, cwd)
+#   guard.sh pretool      hook JSON on stdin (tool_name, tool_input.command, cwd, session_id)
 #
 # Allow is no stdout and exit 0. Deny (or ask) is exit 0 with one
-# {"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":…}} object.
+# {"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":…}} object, and one
+# line in the denial log (lib/denials.sh).
 # Rules, first match wins:
 #   1. `sudo` as a command word (unquoted, unescaped: `\sudo`, `'su'do`); or anywhere as a word
 #      in an interpreter segment (sh/bash/dash/zsh/ksh/mksh/fish/busybox, su, eval, ssh; not the
@@ -71,6 +72,8 @@
 # slips past it). It must never break a session: bad input, a broken config or a failing
 # check all fall through to allow.
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The denial log (denial_write, DENIAL_MAX). Missing, the guard still decides, unlogged.
+. "$HERE/denials.sh" 2>/dev/null || { DENIAL_MAX=2000; denial_write() { :; }; }
 
 # The quote-blind check, for heredoc bodies kept as commands (and a command the scan cannot
 # close): matched against the text with newlines turned into `;`, since bash's =~ anchors ^ at
@@ -86,9 +89,12 @@ SCAN_MAX=262144
 # quoting inside a literal [[ =~ ]] pattern.
 DUR_RE='^[0-9][0-9.]*[smhd]?$'
 
-_out() {  # _out <deny|ask> <reason>
+_out() {  # _out <deny|ask> <reason>; logs it too (denials.sh), with pretool's sid, cwd, cmd, RULE
   jq -nc --arg d "$1" --arg r "$2" \
     '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:$d,permissionDecisionReason:$r}}'
+  denial_write "$(jq -nc --arg s "${sid:-}" --arg c "${cwd:-}" --arg x "${cmd:0:$DENIAL_MAX}" \
+    --arg rule "${RULE:-}" --arg d "$1" --arg r "$2" \
+    '{time:(now|todate),session:$s,cwd:$c,tool:"Bash",command:$x,by:"hi-guard",rule:$rule,decision:$d,reason:$r}' 2>/dev/null)"
 }
 
 # ---- the scan: a command into simple commands and their words ----
@@ -685,15 +691,15 @@ EOF
 }
 
 pretool() {
-  local vals tool cwd cmd p flat r x='' k=0 scans=0 ok=0 pend j files checked
+  local vals tool cwd cmd sid p flat r x='' k=0 scans=0 ok=0 pend j files checked
   MORE=()
   vals=$(jq -r 'if type == "object" then
-                  [(.tool_name // ""), (.cwd // ""), (.tool_input.command? // "")]
+                  [(.tool_name // ""), (.cwd // ""), (.tool_input.command? // ""), (.session_id // "")]
                   | map(if type == "string" then . else "" end) | @sh
                 else empty end' 2>/dev/null) || return 0
   [ -n "$vals" ] || return 0
   eval "set -- $vals"
-  tool=${1:-} cwd=${2:-} cmd=${3:-}
+  tool=${1:-} cwd=${2:-} cmd=${3:-} sid=${4:-} RULE=sudo
   [ "$tool" = Bash ] && [ -n "$cmd" ] || return 0
 
   # The configuration, read in .cwd. No config file at all (the common case) costs one call.
@@ -760,7 +766,7 @@ EOF
   while IFS= read -r p; do
     [ -n "$p" ] || continue
     if [[ $checked =~ $p ]]; then
-      _out deny "hi-guard: the command matches the denied pattern '$p' (guard.deny_patterns). That access is the user's: do not work around it; tell the user what you need and why, and let them run it or grant it."
+      RULE=deny_patterns; _out deny "hi-guard: the command matches the denied pattern '$p' (guard.deny_patterns). That access is the user's: do not work around it; tell the user what you need and why, and let them run it or grant it."
       return 0
     fi
   done <<EOF
@@ -769,7 +775,7 @@ EOF
 
   # rule 3: guard.checks
   [ -n "$CHECKS" ] || return 0
-  r=$(_checks "$cwd")
+  RULE=checks; r=$(_checks "$cwd")
   case "$r" in
     D$'\t'*) _out deny "${r#D$'\t'}" ;;
     A$'\t'*) _out ask "${r#A$'\t'}" ;;

@@ -66,8 +66,10 @@ cat >"$TR" <<'EOF'
 {"type":"user","timestamp":"2026-01-01T10:41:00.000Z","message":{"content":[{"type":"text","text":"[Request interrupted by user]"}]}}
 EOF
 bash "$C" record proj-7 "{\"transcript\":\"$TR\"}"
-printf '%s\n' "{\"session\":\"tr\",\"tool\":\"Bash\",\"command\":\"rm -rf build\",\"by\":\"hi-guard\"}" \
-  "{\"session\":\"other\",\"cwd\":\"/elsewhere\",\"tool\":\"Bash\"}" >"$HIGHNESS_STATE/denials.jsonl"
+# The lines in the shape hi-guard's lib/denials.sh writes them.
+printf '%s\n' '{"time":"2026-01-01T10:00:04Z","session":"tr","cwd":"/ws","tool":"Bash","command":"rm -rf build","by":"hi-guard","rule":"deny_patterns","decision":"deny","reason":"r"}' \
+  '{"time":"2026-01-01T10:00:09Z","session":"other","cwd":"/elsewhere","tool":"Bash","command":"x","by":"claude-code","rule":"auto-mode classifier","decision":"deny","reason":"[Unauthorized Access]","permission_mode":"auto","tool_use_id":"t"}' \
+  >"$HIGHNESS_STATE/denials.jsonl"
 bash "$C" choice proj-7 '{"question":"q","took":"own","reply":"r"}'
 out=$(bash "$R" gather proj-7)
 has 'signals: the failed tool call' "$out" $'error\t2026-01-01T10:00:05.000Z\tBash\trm -rf build\thook error: denied by rule'
