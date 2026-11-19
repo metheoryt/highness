@@ -50,7 +50,9 @@ this skill" printed above, two levels up.
    other Claude accounts that are under their line now (email, id, config dir, the check). Offer
    a switch to one of them; never switch on your own: which plan pays is the person's call. On
    their yes: `$O account select --agent claude --account <id>`, then hi's `/hi:account` moves
-   the live sessions onto it (without the hi plugin, they restart them by hand).
+   the live sessions onto it (without the hi plugin, they restart them by hand), then
+   `bash "${CLAUDE_PLUGIN_ROOT}/lib/hold.sh" repoint <its config dir>`: the workers the budget
+   paused now wait on the new account, which lets them continue.
    No open tickets: skip steps 2–6. No tickets, no sections and no held autostart: say there is
    nothing on the person and stop.
 2. **What blocks a worker**: `bash "$C" asks` — open questions, decision gates, and escalations

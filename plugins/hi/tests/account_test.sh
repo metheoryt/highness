@@ -154,6 +154,22 @@ session "$A" 203 s-self2 idle term_self2 ptr
 out=$(HI_ACCOUNT_SELF=203 bash "$ACC" move --dry-run)
 assert_contains 'dry-run names this session as self' "$out" "self	term_self2	s-self2"
 
+echo '== a busy session holds back no idle one'
+rm -f "$A"/sessions/*.json "$B"/sessions/*.json; rm -rf "${HI_PROC:?}"/*
+session "$A" 301 s-busy busy term_busy ptr
+session "$A" 302 s-idle idle term_idle ptr
+session "$A" 303 s-dialog waiting term_dialog ptr
+out=$(HI_MOVE_ROUND=1 bash "$ACC" move --wait 2 2>/dev/null)
+assert_eq 'the idle one moved first; the busy and the one on a dialog reported at the deadline' "moved	term_idle
+busy	term_busy
+busy	term_dialog" "$(printf '%s\n' "$out" | cut -f1-2)"
+# A session that turns idle during the wait moves in a later round.
+rm -f "$B"/sessions/*.json
+session "$A" 304 s-later busy term_later ptr
+( sleep 1; jq '.status = "idle"' "$A/sessions/304.json" >"$A/sessions/304.t" && mv "$A/sessions/304.t" "$A/sessions/304.json" ) &
+out=$(HI_MOVE_ROUND=1 bash "$ACC" move --only term_later --wait 10 2>/dev/null); wait
+assert_contains 'turned idle: moved in a later round' "$out" "moved	term_later"
+
 echo '== nothing to move'
 rm -f "$A"/sessions/*.json
 assert_status 'every session on the target: exit 0' 0 "$(bash "$ACC" move >/dev/null 2>&1; echo $?)"

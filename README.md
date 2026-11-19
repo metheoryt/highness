@@ -82,7 +82,8 @@ freshest. A hold that lasts over an hour shows in `/hi-crew:agenda` as
 "autostart held <N> h: <reason>" (`crew.sh held`). When the budget is the reason and another of
 Orca's Claude accounts is under its line (`budget.sh room`), the agenda offers to switch to it.
 It never switches on its own, because which plan pays is your call. On your yes it selects that
-account and `/hi:account` moves the live sessions onto it.
+account and `/hi:account` moves the live sessions onto it. Then `hold.sh repoint <its config dir>`
+points the workers the budget paused at the new account, and they continue if it has room.
 
 **Moving sessions to another account.** After `orca account select`, sessions that are already
 running stay on the old account. `/hi:account` (`lib/account.sh move` in hi) moves them: the

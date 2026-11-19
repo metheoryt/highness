@@ -317,16 +317,28 @@ cmd_move() {
   [ -n "$rows" ] || { say "nothing to move: every session is on $(email_of "$to")"; return 0; }
   self=$(printf '%s\n' "$rows" | cut -f5 | self_pid) || self=''
   deadline=$(($(date +%s) + wait))
-  while IFS= read -r row; do
-    [ -n "$row" ] || continue
-    h=$(printf '%s' "$row" | cut -f1); sid=$(printf '%s' "$row" | cut -f2)
-    from=$(printf '%s' "$row" | cut -f4); pid=$(printf '%s' "$row" | cut -f5)
-    if [ -n "$self" ] && [ "$pid" = "$self" ]; then selfrow=$row; continue; fi
-    move_one "$h" "$sid" "$from" "$pid" "$to" "$deadline" "$dry"; r=$?
-    case "$r" in 0) [ "$(org_of "$from")" = "$org" ] || orgs_differ=1 ;; 3) [ "$rc" = 1 ] || rc=3 ;; *) rc=1 ;; esac
-  done <<EOF
-$rows
+  # Rounds: each round moves every session idle at that moment, so a busy one never holds back
+  # an idle one behind it. A busy one waits for a later round, and is reported only when the
+  # deadline has passed.
+  local pending=$rows next out last=0
+  while [ -n "$pending" ]; do
+    [ "$(date +%s)" -lt "$deadline" ] || last=1
+    next=''
+    while IFS= read -r row; do
+      [ -n "$row" ] || continue
+      h=$(printf '%s' "$row" | cut -f1); sid=$(printf '%s' "$row" | cut -f2)
+      from=$(printf '%s' "$row" | cut -f4); pid=$(printf '%s' "$row" | cut -f5)
+      if [ -n "$self" ] && [ "$pid" = "$self" ]; then selfrow=$row; continue; fi
+      out=$(move_one "$h" "$sid" "$from" "$pid" "$to" 0 "$dry"); r=$?
+      if [ "$r" = 3 ] && [ "$last" = 0 ]; then next="$next$row$NL"; continue; fi
+      printf '%s\n' "$out"
+      case "$r" in 0) [ "$(org_of "$from")" = "$org" ] || orgs_differ=1 ;; 3) [ "$rc" = 1 ] || rc=3 ;; *) rc=1 ;; esac
+    done <<EOF
+$pending
 EOF
+    pending=$next
+    [ -z "$pending" ] || sleep "${HI_MOVE_ROUND:-5}"
+  done
   if [ -n "$selfrow" ]; then
     h=$(printf '%s' "$selfrow" | cut -f1); sid=$(printf '%s' "$selfrow" | cut -f2)
     if [ "$dry" = 1 ]; then
