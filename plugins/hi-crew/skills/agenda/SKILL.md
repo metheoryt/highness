@@ -51,6 +51,10 @@ this skill" printed above, two levels up.
 2. **What blocks a worker**: `bash "$C" asks` — open questions, decision gates, and escalations
    (a worker that stopped without reporting), across the Runs of all open tickets, each with its
    Run. `$O orchestration inbox --limit 100 --full --json` gives the full text.
+   **Answers no worker will act on**: `bash "$C" stranded` — one JSON object per line, `what`:
+   `unanswered` (asked, and the worker is gone), `unheard` (answered, and the worker stopped
+   without a word after it), `unsent` (relay kept a reply Orca refused; `body` is it, and with an
+   `action` the step already ran). `session` names a live session in the workspace, if any.
    **Workers on a dialog**: `bash "$C" prompts` (TSV: key, run, since, tool, kind — `permission`, `input` for an MCP server's input dialog, or `question` for a question form). Such a
    worker waits for someone to click in its terminal and sends no question, so nothing else shows
    it; the person answers it there (`$O terminal list`, or the worker's workspace in Orca).
@@ -76,7 +80,7 @@ One short list, most urgent first, each item with its next step in words:
 
 1. **Waiting on you** — a held autostart's line as it came (its reason says what to fix: the
    budget, a coordinator session to open), open questions and gates (with the worker's proposals), workers on a
-   dialog (since when, which tool), stopped workers, people's new comments on a
+   dialog (since when, which tool), stopped workers, stranded answers ("resume it?"), people's new comments on a
    PR, PRs whose review loop finished and that wait for a person to resolve threads and merge;
    then the sections' `you` items, by section. A thread left unfinished (`paused`) carries its
    open items as a short sublist; no ids, paths or session ids unless asked. The `stale` threads
@@ -100,6 +104,12 @@ and say in one line that Orca now wakes this session, not the other one, for tha
   with `bash "$C" relay <KEY> --id <message_id> <reply-file>`, which sends the reply and records
   the choices in one step (the reply file as `hi-crew:start` says), never with
   `orchestration reply` directly.
+- **A stranded answer** (`stranded`): show it as "answered, but the worker is gone: resume it?"
+  (or "asked, and the worker is gone"). On a yes, carry the answer (`body` for `unsent`, the
+  person's decision otherwise): with a `session`, through `threads-read.sh relay <workspace>
+  <session> <brief file>` as for a thread below; without one, as a new round,
+  `$O orchestration send --to dispatch:<dispatch> --subject … --body …`, and record the new
+  dispatch id, which retires the line.
 - **A person's comment on a PR**: show it with your read; on the user's decision, send the worker a
   round: `$O orchestration send --to dispatch:<dispatch> --subject … --body …`, saying what to
   change and how to reply. Record the new dispatch id from the receipt.

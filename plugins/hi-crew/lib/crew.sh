@@ -15,11 +15,20 @@
 #                                     their loses:/leans on: lines, what the person took ("option",
 #                                     "own" or "reframed"), their reply verbatim. Kept across close,
 #                                     so a person's choices can be read back over many tickets
-#   crew.sh relay <KEY> [--id <message_id>] <reply-file>
+#   crew.sh relay <KEY> [--id <message_id>] [--action <action_id>] <reply-file>
 #                                     THE way to answer a worker's question or decision gate: sends
 #                                     the reply (orchestration reply) and appends its choices in the
 #                                     same step. --id may be left out when <KEY> has one open ask.
+#                                     --action: the person said yes to the worker's prepared action;
+#                                     it runs once here and the worker hears its outcome.
 #                                     The reply file and the record are described at cmd_relay
+#   crew.sh action <KEY> <script-file>
+#   crew.sh action-show <KEY> [<id>]  a step that needs a person's yes, prepared by the worker as
+#                                     exact commands pinned to its HEAD; the coordinator shows it
+#                                     verbatim and runs it with relay --action (lib/action.sh)
+#   crew.sh stranded                  answers no worker will act on (the worker is gone, or a reply
+#                                     Orca refused), one JSON object per line, with the live session
+#                                     in the workspace if any; the agenda asks "resume it?"
 #   crew.sh choices [<KEY>]           the recorded choices, one JSON object per line
 #   crew.sh choices --gaps            answers to hi-crew asks with no choice line (sent without
 #                                     relay), TSV: key, ask id, answered at, the ask's first line
@@ -233,16 +242,22 @@ cmd_choice() {
 # Everything is checked before the reply goes out, so a refusal sends nothing. Each point becomes
 # one choices.jsonl line, with the ask's id, Run, Dispatch, time and verbatim text added; an
 # empty "points" still writes one line (took null), so a relayed reply never shows as a gap.
+# --action <id>: the person said yes to the worker's prepared action (lib/action.sh). It runs
+# once, here, before the reply goes out, and the reply starts with its outcome; the body follows
+# as the person's words. A reply Orca refuses (the worker is gone) is kept for `stranded`, and its
+# choice lines are still written, marked undelivered: the person decided all the same.
 cmd_relay() {
-  local key='' id='' file='' ask reply recs out
+  local key='' id='' file='' aid='' ask reply recs out body outcome
+  local usage='usage: relay <KEY> [--id <message_id>] [--action <action_id>] <reply-file>'
   while [ $# -gt 0 ]; do
     case "$1" in
       --id) id=${2:-}; shift 2 ;;
+      --action) aid=${2:-}; [ -n "$aid" ] || die "$usage"; shift 2 ;;
       -*) die "relay: unknown argument '$1'" ;;
-      *) if [ -z "$key" ]; then key=$1; elif [ -z "$file" ]; then file=$1; else die 'usage: relay <KEY> [--id <message_id>] <reply-file>'; fi; shift ;;
+      *) if [ -z "$key" ]; then key=$1; elif [ -z "$file" ]; then file=$1; else die "$usage"; fi; shift ;;
     esac
   done
-  [ -n "$key" ] && [ -n "$file" ] || die 'usage: relay <KEY> [--id <message_id>] <reply-file>'
+  [ -n "$key" ] && [ -n "$file" ] || die "$usage"
   need_jq
   keyfile "$key" >/dev/null || exit 2
   [ -f "$file" ] || die "relay: no reply file: $file"
@@ -262,17 +277,40 @@ cmd_relay() {
   ask=$(inbox | jq -ce --arg id "$id" 'map(select(.id == $id)) | first
         | select(.type == "question" or .type == "decision_gate")') \
     || die "relay: $id is not a question or decision gate in a hi-crew Run"
-  recs=$(jq -nc --argjson r "$reply" --argjson a "$ask" --arg key "$key" --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
+  mkdir -p "$DIR" && [ -w "$DIR" ] || die "relay: cannot write $DIR"
+  body=$(printf '%s' "$reply" | jq -r .body)
+  if [ -n "$aid" ]; then
+    out=$(act_meta "$key" "$aid")
+    [ -f "$out" ] || die "relay: $key has no action $aid; nothing sent"
+    [ "$(jq -r .status "$out")" = prepared ] \
+      || die "relay: action $aid was run already ($(jq -r .status "$out")); nothing sent. The worker prepares a new one"
+    outcome=$(act_run "$key" "$aid") || die "relay: action $aid was not run; nothing sent"
+    body="$outcome
+
+The person's reply, for context (the step above is done; do not run it yourself):
+$body"
+  fi
+  recs=$(jq -nc --argjson r "$reply" --argjson a "$ask" --arg key "$key" --arg sent "$body" --arg aid "$aid" \
+      --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
     ($a.payload // "{}" | fromjson? // {}) as $p
     | {key: $key, at: $now, ask: $a.id, run: $a.run_id, dispatch: $a.dispatch, asked_at: $a.created_at,
-       ask_body: ($a.body // $p.question // ""), sent: $r.body} as $base
+       ask_body: ($a.body // $p.question // ""), sent: $sent}
+      + (if $aid != "" then {action: $aid} else {} end) as $base
     | (if ($r.points // []) == [] then [{question: null, took: null}] else $r.points end)[]
     | {key: $key, at: $now, question: null}
       + (if (($p.options // []) | length) > 0 then {options: $p.options} else {} end)
       + . + $base') || die 'relay: could not build the choice lines'
-  mkdir -p "$DIR" && [ -w "$DIR" ] || die "relay: cannot write $DIR"
-  out=$("$(orca_cmd)" orchestration reply --id "$id" --body "$(printf '%s' "$reply" | jq -r .body)" --json 2>&1)
-  printf '%s' "$out" | jq -e '.ok == true' >/dev/null 2>&1 || die "relay: the reply was not sent, nothing recorded: $out"
+  out=$("$(orca_cmd)" orchestration reply --id "$id" --body "$body" --json 2>&1)
+  if ! printf '%s' "$out" | jq -e '.ok == true' >/dev/null 2>&1; then
+    keep_unsent "$key" "$(jq -nc --arg key "$key" --argjson a "$ask" --arg body "$body" --arg err "$out" --arg aid "$aid" \
+      --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{key: $key, at: $now, ask: $a.id, dispatch: $a.dispatch,
+        question: (($a.body // $a.subject // "") | split("\n")[0]), body: $body, error: $err}
+        + (if $aid != "" then {action: $aid} else {} end)')"
+    printf '%s\n' "$recs" | jq -c '. + {undelivered: true}' >>"$DIR/choices.jsonl"
+    [ -z "$aid" ] || act_set "$(act_meta "$key" "$aid")" '{"delivered": false}'
+    die "relay: the reply was not sent (kept: crew.sh stranded shows it, to send by a new round)${aid:+; action $aid DID run, its outcome is in the kept reply}: $out"
+  fi
+  [ -z "$aid" ] || act_set "$(act_meta "$key" "$aid")" '{"delivered": true}'
   printf '%s\n' "$recs" >>"$DIR/choices.jsonl" && return 0
   printf 'crew: relay: the reply WAS sent, but %s/choices.jsonl could not be written; record each line with crew.sh choice %s <line>:\n%s\n' \
     "$DIR" "$key" "$recs" >&2
@@ -1135,9 +1173,14 @@ EOF
   return 0
 }
 
+. "$HERE/action.sh"
+
 sub=${1:-}; [ $# -gt 0 ] && shift
 case "$sub" in
   dir) printf '%s\n' "$DIR" ;;
+  action) cmd_action "$@" ;;
+  action-show) cmd_action_show "$@" ;;
+  stranded) cmd_stranded ;;
   record) cmd_record "$@" ;;
   get) cmd_get "$@" ;;
   list) cmd_list ;;

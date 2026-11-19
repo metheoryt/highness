@@ -103,9 +103,13 @@ printf '{"points":[]}' >"$T/r-bad"
 if bash "$C" relay ABC-2 "$T/r-bad" 2>/dev/null; then no 'relay refuses a reply file with no body'; else ok 'relay refuses a reply file with no body'; fi
 printf '{"body":"yes","points":[]}' >"$T/r-min"
 if bash "$C" relay ABC-2 --id msg_e1 "$T/r-min" 2>/dev/null; then no 'relay refuses an escalation'; else ok 'relay refuses an escalation'; fi
+check 'relay: nothing sent or recorded on a refusal' "$(wc -c <"$FAKE_SENT" | tr -d ' ') $(lines)" "0 $n0"
 case "$(FAKE_REPLY_FAIL=1 bash "$C" relay ABC-2 "$T/r-min" 2>&1; echo "exit $?")" in
-  *'was not sent, nothing recorded'*'exit 2') ok 'relay fails when the reply fails' ;; *) no 'relay fails when the reply fails' ;; esac
-check 'relay: nothing sent or recorded on a refusal or a failed send' "$(wc -c <"$FAKE_SENT" | tr -d ' ') $(lines)" "0 $n0"
+  *'was not sent (kept'*'exit 2') ok 'relay fails when the reply fails' ;; *) no 'relay fails when the reply fails' ;; esac
+check 'relay: a failed send sends nothing, keeps the reply, records the choice undelivered' \
+  "$(wc -c <"$FAKE_SENT" | tr -d ' ') $(jq -r '[.ask, .dispatch, .body, .question] | join("|")' "$HIGHNESS_STATE/crew/unsent/ABC-2.jsonl") $(tail -1 "$HIGHNESS_STATE/crew/choices.jsonl" | jq -r .undelivered)" \
+  "0 msg_q2|ctx_b|yes|Open one? true"
+n0=$(lines)
 jq -n '{body: "The person'"'"'s decisions:\n(1) A.\n(2) their own: C.",
   points: [{question: "first", options: [{name: "A", loses: "x", leans_on: "no rule: y"}], took: "option", picked: "A", reply: "A"},
            {question: "second", took: "own", picked: "C", reply: "neither: C"}]}' >"$T/r-two"
@@ -118,6 +122,73 @@ check 'relay: a line carries the point, the ask and what was sent' \
 bash "$C" relay ABC-6 --id msg_q1 "$T/r-min" || no 'relay with --id'
 check 'relay: no points still leaves one line' "$(bash "$C" choices ABC-6 | jq -r '[.ask, (.took // "null"), .sent] | join("|")')" 'msg_q1|null|yes'
 check 'gaps: a relayed answer is no gap' "$(bash "$C" choices --gaps)" ''
+
+# --- actions: a step that needs a person's yes, prepared by the worker, run once by relay --action
+W="$T/ws"; git init -q "$W"; git -C "$W" -c user.name=t -c user.email=t@t commit -q --allow-empty -m one
+bash "$C" record ABC-2 "{\"workspace\":\"$W\",\"root\":\"$W\"}"
+printf '#!/bin/sh\ncase "$(cat)" in *DENYME*) echo '"'"'{"hookSpecificOutput":{"permissionDecision":"deny","permissionDecisionReason":"no DENYME"}}'"'"' ;; esac\n' >"$T/guard"
+export HI_GUARD="$T/guard"
+printf 'echo ran >>"%s"\necho step done\n' "$T/ran" >"$T/step.sh"
+aid=$(bash "$C" action ABC-2 "$T/step.sh") || no 'action stores a script'
+check 'action: pinned to the workspace HEAD, prepared' "$(bash "$C" action-show ABC-2 | cut -f2,4)" "$(printf 'prepared\t%s' "$(git -C "$W" rev-parse HEAD)")"
+check 'action-show: the script verbatim after ---' "$(bash "$C" action-show ABC-2 "$aid" | sed -n '/^---$/,$p' | sed 1d)" "$(cat "$T/step.sh")"
+if [ -w "$HIGHNESS_STATE/crew/actions/ABC-2/$aid.sh" ]; then no 'action: the stored copy is read-only'; else ok 'action: the stored copy is read-only'; fi
+if bash "$C" action-show ABC-2 '../x' 2>/dev/null; then no 'action-show refuses a bad id'; else ok 'action-show refuses a bad id'; fi
+: >"$FAKE_SENT"
+bash "$C" relay ABC-2 --id msg_q2 --action "$aid" "$T/r-min" || no 'relay --action'
+check 'relay --action: ran once, in the workspace' "$(cat "$T/ran")" ran
+case "$(head -1 "$FAKE_SENT")" in "msg_q2|hi-crew ran action $aid once"*) ok 'relay --action: the worker hears the outcome first' ;; *) no 'relay --action: the worker hears the outcome first' ;; esac
+case "$(cat "$FAKE_SENT")" in *'step done'*'do not run it yourself'*yes) ok 'relay --action: output, then the person'"'"'s words' ;; *) no 'relay --action: output, then the person'"'"'s words' ;; esac
+check 'relay --action: applied and delivered' "$(bash "$C" action-show ABC-2 "$aid" | head -1) $(jq -r .delivered "$HIGHNESS_STATE/crew/actions/ABC-2/$aid.json")" "action $aid of ABC-2: applied true"
+check 'relay --action: the choice names the action' "$(tail -1 "$HIGHNESS_STATE/crew/choices.jsonl" | jq -r .action)" "$aid"
+: >"$FAKE_SENT"
+case "$(bash "$C" relay ABC-2 --id msg_q2 --action "$aid" "$T/r-min" 2>&1; echo "exit $?")" in
+  *'run already'*'exit 2') ok 'relay --action: a second run is refused' ;; *) no 'relay --action: a second run is refused' ;; esac
+check 'relay --action: nothing ran or was sent the second time' "$(wc -l <"$T/ran" | tr -d ' ') $(wc -c <"$FAKE_SENT" | tr -d ' ')" '1 0'
+refused() { # <name> <action id> <want in the outcome>
+  : >"$FAKE_SENT"; rm -f "$T/ran"
+  bash "$C" relay ABC-2 --id msg_q2 --action "$2" "$T/r-min" 2>/dev/null || { no "$1: relay failed"; return; }
+  case "$(cat "$FAKE_SENT")" in *'did NOT run'*"$3"*) ok "$1" ;; *) no "$1: got [$(cat "$FAKE_SENT")]" ;; esac
+  [ ! -e "$T/ran" ] || no "$1: the script ran"
+  check "$1: recorded" "$(jq -r .status "$HIGHNESS_STATE/crew/actions/ABC-2/$2.json")" refused
+}
+a=$(bash "$C" action ABC-2 "$T/step.sh"); git -C "$W" -c user.name=t -c user.email=t@t commit -q --allow-empty -m two
+refused 'action refused: the workspace moved' "$a" 'the workspace moved'
+a=$(bash "$C" action ABC-2 "$T/step.sh"); chmod u+w "$HIGHNESS_STATE/crew/actions/ABC-2/$a.sh"; echo 'echo more' >>"$HIGHNESS_STATE/crew/actions/ABC-2/$a.sh"
+refused 'action refused: the stored script changed' "$a" 'script changed'
+printf 'echo DENYME\n' >"$T/deny.sh"; a=$(bash "$C" action ABC-2 "$T/deny.sh")
+refused 'action refused: hi-guard denies it' "$a" 'no DENYME'
+jq -n '{crew: {pr_state: "echo '"'"'{\"head\":\"0000beef\"}'"'"'"}}' >"$HIGHNESS_CONFIG"
+bash "$C" record ABC-2 '{"pr":"https://forge/pr/2"}'; a=$(bash "$C" action ABC-2 "$T/step.sh")
+refused 'action refused: the PR head is not the pinned head' "$a" 'PR head is 0000beef'
+rm -f "$HIGHNESS_CONFIG"
+printf 'echo ran >>"%s"\nexit 3\n' "$T/ran" >"$T/fail.sh"; a=$(bash "$C" action ABC-2 "$T/fail.sh"); : >"$FAKE_SENT"
+bash "$C" relay ABC-2 --id msg_q2 --action "$a" "$T/r-min" || no 'relay --action of a failing step'
+case "$(cat "$FAKE_SENT")" in *'FAILED (exit 3)'*) ok 'relay --action: a failure is told, not retried' ;; *) no 'relay --action: a failure is told' ;; esac
+a=$(bash "$C" action ABC-2 "$T/step.sh"); rm -f "$T/ran"
+FAKE_REPLY_FAIL=1 bash "$C" relay ABC-2 --id msg_q2 --action "$a" "$T/r-min" 2>/dev/null && no 'relay --action: a failed send exits non-zero'
+check 'relay --action, send failed: the action ran, the outcome is kept, not delivered' \
+  "$(cat "$T/ran") $(tail -1 "$HIGHNESS_STATE/crew/unsent/ABC-2.jsonl" | jq -r '.action + " " + (.body | split("\n")[0] | .[0:14])') $(jq -r .delivered "$HIGHNESS_STATE/crew/actions/ABC-2/$a.json")" \
+  "ran $a hi-crew ran ac false"
+unset HI_GUARD
+
+# --- stranded: answers no worker will act on
+check 'stranded: a kept reply, with its workspace' \
+  "$(bash "$C" stranded | jq -r '[.key, .ask, .dispatch, .question, .workspace, .session] | join("|")' | sort -u)" "ABC-2|msg_q2|ctx_b|Open one?|$W|"
+check 'stranded: a gone worker'"'"'s question with a kept reply is not also unanswered' \
+  "$(FAKE_GONE=ctx_b bash "$C" stranded | jq -r .what | sort -u)" unsent
+bash "$C" record ABC-8 '{"run":"run_def456","dispatch":"ctx_d"}'
+check 'stranded: a gone worker'"'"'s gate is unanswered' \
+  "$(FAKE_GONE=ctx_d bash "$C" stranded | jq -r 'select(.key == "ABC-8") | [.what, .ask, .since, .question] | join("|")')" \
+  'unanswered|msg_g1|2026-01-01T14:00:00Z|Deploy to prod?'
+check 'stranded: a live worker'"'"'s gate is not' "$(bash "$C" stranded | jq -r 'select(.key == "ABC-8") | .what')" ''
+bash "$C" close ABC-8
+bash "$C" record ABC-7 '{"run":"run_abc123","dispatch":"ctx_a"}'
+check 'stranded: answered, then nothing from the settled worker: unheard' \
+  "$(FAKE_SETTLED=ctx_a bash "$C" stranded | jq -r 'select(.key == "ABC-7") | [.what, .ask, .since] | join("|")')" 'unheard|msg_q1|2026-01-01T10:05:00Z'
+bash "$C" record ABC-2 '{"dispatch":"ctx_new"}'
+check 'stranded: a new round retires the kept replies' "$(bash "$C" stranded | jq -r 'select(.key == "ABC-2") | .what')" ''
+bash "$C" close ABC-7
 unset ORCA_CLI_COMMAND
 
 # --- the team's digest sections
