@@ -988,7 +988,7 @@ _claude_json() {
 # Code and Orca take (<file>.lock, a directory; Orca treats it as stale only after days, so it is
 # removed on any exit) and keeps the file's mode.
 _pretrust() {
-  local w f c keys k tmp n=0 tw='' imp=null ans srcs done=''
+  local w f c keys k tmp n=0 tw='' imp=null ans srcs
   w=$(cd "$1" 2>/dev/null && pwd -P) || return 0
   f=$(_claude_json "$2")
   [ -f "$f" ] || { say "dispatch: no Claude Code config at $f — the session may stop on the folder-trust dialog"; return 0; }
