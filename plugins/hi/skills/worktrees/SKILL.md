@@ -104,7 +104,8 @@ the options "Remove the <n> safe ones" (recommended, only the 🗑 rows), "Let m
   which and shows it),
   `via=busy`, or an Orca chat is open there, `via=chat`: Orca cannot type into a chat, so tell the
   user to paste the line stderr names into it; exit 6: the new session opened on a dialog — most
-  often Claude Code's folder trust, when nothing of the repo is trusted yet — show the user the
+  often Claude Code's folder trust or external CLAUDE.md imports, when the person never answered
+  it for the repo's main checkout — show the user the
   screen tail and the terminal; it waits there until someone answers). Stdout:
   `session<TAB>via<TAB>handle`; `via=print` → line 2 is the command for the user to run.
 - **"Land it"** (a `ticket` or `work` workspace whose branch goes straight onto the trunk, no PR) →

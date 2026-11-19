@@ -965,49 +965,88 @@ _claude_json() {
 }
 
 # _pretrust <workspace> <config dir or empty> <kind>: make sure the new session there does not stop on
-# Claude Code's folder-trust dialog ("Is this a project you created or one you trust?",
-# highness#9), which nobody watching a dispatched terminal answers. Measured on Claude Code
-# 2.1.322: trust is projects[<path>].hasTrustDialogAccepted in the config file above, keyed by the
-# physical path; a worktree counts as trusted when its own path or its repo's main checkout is;
-# a trusted folder above a git repo does not count. Trust is the person's decision about this
-# repo's code, so it is copied, never made: the workspace's key is written only when the main
-# checkout or another worktree of the repo is already trusted — in the session's config or in
-# the dispatcher's own. A review tree holds someone else's branch, whose .claude/ settings the
-# dialog guards: for it only the main checkout's trust counts, as it does for Claude Code itself.
+# a start-up dialog the person has already answered for this repo, since nobody watching a
+# dispatched terminal answers it. Two dialogs, both kept in the config file above (measured on
+# Claude Code 2.1.322 and again on 2.1.328):
+# - folder trust ("Is this a project you created or one you trust?", highness#9):
+#   projects[<path>].hasTrustDialogAccepted, keyed by the physical path; a worktree counts as
+#   trusted when its own path or its repo's main checkout is; a trusted folder above a git repo
+#   does not count (so trusting a workspaces root does nothing for the worktrees under it).
+# - "Allow external CLAUDE.md file imports" (highness#64): projects[<main checkout>] only —
+#   a worktree's session reads and writes its repo's main checkout key, never its own.
+#   hasClaudeMdExternalIncludesWarningShown true is an answer (Approved says which); a key with
+#   both false is what Claude Code writes when nobody was asked, so it is no answer.
+# Both are the person's decisions about this repo, so they are copied, never made: from the
+# session's config, the dispatcher's own, Claude Code's default one and each of Orca's Claude
+# profiles (_claude_configs) into the session's config. Trust: the workspace's key is written
+# when the main checkout or another worktree of the repo is trusted in one of them. Imports: the
+# main checkout's answer is copied when every config that has one gives the same. A review tree
+# holds someone else's branch, whose .claude/ settings and CLAUDE.md the dialogs guard: for it
+# only the main checkout's trust counts, as it does for Claude Code itself, and only a "no" to
+# imports is copied — the branch can import files the person never approved.
 # Otherwise the session asks, and dispatch reports the dialog. The write takes the lock Claude
 # Code and Orca take (<file>.lock, a directory; Orca treats it as stale only after days, so it is
 # removed on any exit) and keeps the file's mode.
 _pretrust() {
-  local w f own keys k tmp n=0
+  local w f c keys k tmp n=0 tw='' imp=null ans srcs done=''
   w=$(cd "$1" 2>/dev/null && pwd -P) || return 0
-  f=$(_claude_json "$2"); own=$(_claude_json "${CLAUDE_CONFIG_DIR:-}")
+  f=$(_claude_json "$2")
   [ -f "$f" ] || { say "dispatch: no Claude Code config at $f — the session may stop on the folder-trust dialog"; return 0; }
+  srcs=$(_claude_configs "$f")
   keys=$( { printf '%s\n' "$MAIN"
             [ "${3:-}" = review ] ||
             git -C "$MAIN" worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p' |
               while IFS= read -r k; do (cd "$k" 2>/dev/null && pwd -P); done; } |
           jq -Rsc 'split("\n") | map(select(. != "")) | unique')
-  _trust_has "$f" "$(jq -cn --arg w "$w" --arg m "$MAIN" '[$w, $m]')" && return 0
-  _trust_has "$f" "$keys" || { [ "$own" != "$f" ] && [ -f "$own" ] && _trust_has "$own" "$keys"; } || {
-    say "dispatch: this repo is not trusted in $f — the session will ask whether to trust $w"
-    return 0
-  }
+  if ! _trust_has "$f" "$(jq -cn --arg w "$w" --arg m "$MAIN" '[$w, $m]')"; then
+    while IFS= read -r c; do
+      [ -n "$c" ] && _trust_has "$c" "$keys" && { tw=$w; break; }
+    done <<EOF
+$srcs
+EOF
+    [ -n "$tw" ] || say "dispatch: this repo is not trusted in $f — the session will ask whether to trust $w"
+  fi
+  if [ -z "$(_imports_answer "$f")" ]; then
+    ans=$(while IFS= read -r c; do [ -n "$c" ] && _imports_answer "$c"; done <<EOF | sort -u
+$srcs
+EOF
+)
+    case "$ans" in
+      yes) if [ "${3:-}" = review ]; then
+             say "dispatch: external CLAUDE.md imports are approved for $MAIN, but not copied for a review tree — the session may ask"
+           else imp=true; fi ;;
+      no) imp=false ;;
+      ?*) say "dispatch: Claude Code configs disagree on external CLAUDE.md imports for $MAIN — not copied; the session may ask" ;;
+    esac
+  fi
+  [ -n "$tw" ] || [ "$imp" != null ] || return 0
   while ! mkdir "$f.lock" 2>/dev/null; do
     n=$((n + 1))
-    [ "$n" -ge "${HI_TRUST_TRIES:-10}" ] && { say "dispatch: $f.lock is held — $w not pre-trusted; the session may ask"; return 0; }
+    [ "$n" -ge "${HI_TRUST_TRIES:-10}" ] && { say "dispatch: $f.lock is held — $w not prepared; the session may ask"; return 0; }
     sleep 0.2
   done
   tmp="$f.hi-trust.$$"
   trap "rm -f $(_q "$tmp"); rmdir $(_q "$f.lock") 2>/dev/null" EXIT
   trap "rm -f $(_q "$tmp"); rmdir $(_q "$f.lock") 2>/dev/null; exit 130" INT TERM
+  # A main checkout key Claude Code has not written yet starts from its own defaults, so the
+  # entry has the shape it expects; keys already there win, and trust is never touched there.
   if cp -p "$f" "$tmp" 2>/dev/null &&
-     jq --arg k "$w" 'if (.projects // {} | type) == "object"
-                      then .projects[$k] = ((.projects[$k] // {}) + {hasTrustDialogAccepted: true})
-                      else error("projects is not an object") end' "$f" > "$tmp" 2>/dev/null &&
+     jq --arg w "$tw" --arg m "$MAIN" --argjson imp "$imp" '
+       if (.projects // {} | type) != "object" then error("projects is not an object") else . end
+       | if $w != "" then .projects[$w] = ((.projects[$w] // {}) + {hasTrustDialogAccepted: true}) else . end
+       | if $imp != null then .projects[$m] = ({allowedTools: [], mcpContextUris: [], mcpServers: {},
+             enabledMcpjsonServers: [], disabledMcpjsonServers: [], hasTrustDialogAccepted: false}
+             + (.projects[$m] // {})
+             + {hasClaudeMdExternalIncludesApproved: $imp, hasClaudeMdExternalIncludesWarningShown: true})
+         else . end' "$f" > "$tmp" 2>/dev/null &&
      mv "$tmp" "$f"; then
-    say "dispatch: trusted $w in $f, as its repo already is"
+    [ -n "$tw" ] && say "dispatch: trusted $w in $f, as its repo already is"
+    case "$imp" in
+      true) say "dispatch: allowed external CLAUDE.md imports for $MAIN in $f, as already allowed there" ;;
+      false) say "dispatch: declined external CLAUDE.md imports for $MAIN in $f, as already declined there" ;;
+    esac
   else
-    rm -f "$tmp"; say "dispatch: could not write $f — $w not pre-trusted; the session may ask"
+    rm -f "$tmp"; say "dispatch: could not write $f — $w not prepared; the session may ask"
   fi
   rmdir "$f.lock" 2>/dev/null
   trap - EXIT INT TERM
@@ -1018,6 +1057,38 @@ _pretrust() {
 _trust_has() {
   jq -e --argjson ks "$2" '. as $r | any($ks[]; . as $k | $r.projects[$k].hasTrustDialogAccepted? == true)' \
     "$1" >/dev/null 2>&1
+}
+
+# _imports_answer <config file>: yes or no when the person answered the external-imports dialog
+# for the main checkout there, nothing when they never did.
+_imports_answer() {
+  jq -r --arg m "$MAIN" '.projects[$m] // {} | if .hasClaudeMdExternalIncludesApproved == true then "yes"
+    elif .hasClaudeMdExternalIncludesWarningShown == true then "no" else empty end' "$1" 2>/dev/null
+}
+
+# _claude_configs <session's config file>: the config files that hold the person's own answers,
+# one per line, the session's first: the dispatcher's own (CLAUDE_CONFIG_DIR), Claude Code's
+# default and each Orca Claude profile's (<orca data>/claude-profiles/*/home). Existing files
+# only, each once.
+_claude_configs() {
+  local c o p seen=''
+  {
+    printf '%s\n' "$1"
+    _claude_json "${CLAUDE_CONFIG_DIR:-}"; echo
+    _claude_json ''; echo
+    for o in "$HOME/Library/Application Support/orca" "$HOME/.config/orca" "$HOME/AppData/Roaming/orca"; do
+      for p in "$o"/claude-profiles/*/home; do [ -d "$p" ] && { _claude_json "$p"; echo; }; done
+    done
+  } | while IFS= read -r c; do
+    [ -n "$c" ] && [ -f "$c" ] || continue
+    case "$seen" in *"
+$c
+"*) continue ;; esac
+    seen="$seen
+$c
+"
+    printf '%s\n' "$c"
+  done
 }
 
 # _launch_screen <via> <target>: the rows a new session's terminal shows now, or nothing — an
@@ -1032,8 +1103,8 @@ _launch_screen() {
 
 # _launch_watch <via> <target>: watch a new session's screen, up to HI_LAUNCH_READS reads
 # (default 10) a second apart. Exit 6 when it shows a dialog: the session waits for an answer
-# nobody gives (highness#9). The screen tail is left in _SEND_SCREEN, and _LAUNCH_TRUST=1
-# when the dialog is folder trust. Exit 0 once a turn runs — the session's hook line
+# nobody gives (highness#9). The screen tail is left in _SEND_SCREEN, and _LAUNCH_TRUST is 1
+# when the dialog is folder trust, imports when it is external CLAUDE.md imports. Exit 0 once a turn runs — the session's hook line
 # (<workspace> <session id>, written at or after <started-at>) says working, or the screen's
 # mode line does — or when no dialog was seen. Folder trust comes before any hook runs, so the
 # screen is read either way.
@@ -1057,6 +1128,8 @@ _launch_watch() {
         _SEND_SCREEN=$(printf '%s\n' "$scr" | awk 'NF { l[++k] = $0 } END { for (i = (k > 8 ? k - 7 : 1); i <= k; i++) print l[i] }')
         printf '%s\n' "$scr" | tr '[:upper:]' '[:lower:]' |
           grep -Eq 'trust this folder|a project you created or one you trust' && _LAUNCH_TRUST=1
+        printf '%s\n' "$scr" | tr '[:upper:]' '[:lower:]' |
+          grep -q 'allow external claude.md file imports' && _LAUNCH_TRUST=imports
         return 6 ;;
     esac
   done
@@ -1268,7 +1341,9 @@ EOF
   fi
   [ "$via" = tmux ] && handle=${wid:-$handle}
   _launch_watch "$via" "$handle" "$wt" "$uuid" "$sent" && return 0
-  if [ -n "$_LAUNCH_TRUST" ]; then
+  if [ "$_LAUNCH_TRUST" = imports ]; then
+    say "dispatch: the new session in $wt stopped on Claude Code's \"Allow external CLAUDE.md file imports\" dialog — nothing runs until someone answers it in that terminal (or answers it once in $MAIN, then dispatches again)"
+  elif [ -n "$_LAUNCH_TRUST" ]; then
     say "dispatch: the new session in $wt stopped on Claude Code's folder-trust dialog — nothing runs until someone answers it in that terminal (or trusts the repo once, then dispatches again)"
   else
     say "dispatch: the new session in $wt opened a dialog and waits for an answer — look at that terminal"

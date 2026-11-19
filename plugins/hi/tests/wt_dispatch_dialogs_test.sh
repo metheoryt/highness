@@ -95,6 +95,74 @@ assert_contains "review: says the session will ask" "$(cat "$SANDBOX/err")" "wil
 D5="$SANDBOX/acct5"; mkdir -p "$D5"; cfg "$D5/.claude.json"; cfg "$CJ" "$RP"
 HI_TMUX=none bash "$WT" dispatch "$RV" --brief "$SANDBOX/brief.md" --config-dir "$D5" >/dev/null 2>&1
 assert_eq "review: the main checkout's trust is copied" true "$(trusted "$D5/.claude.json" "$RVP")"
+# Claude Code's default config and Orca's Claude profiles hold the person's answers too: trust of
+# the main checkout there is copied into the session's account
+OPF="$HOME/.config/orca/claude-profiles/p1/home"; mkdir -p "$OPF"; cfg "$OPF/.claude.json" "$RP"
+cfg "$CJ" /elsewhere
+go >/dev/null
+assert_eq "an Orca profile's trust: copied" true "$(trusted "$CJ" "$PP")"
+rm -rf "$HOME/.config/orca"
+cfg "$HOME/.claude.json" "$RP"; cfg "$CJ" /elsewhere
+go >/dev/null
+assert_eq "the default config's trust: copied" true "$(trusted "$CJ" "$PP")"
+rm -f "$HOME/.claude.json"
+
+# --- external CLAUDE.md imports (highness#64): the answer lives on the main checkout's key only
+# imp <file> <approved> <shown>: set the main checkout's answer there (trusted, as it would be)
+imp() { jq --arg m "$RP" --argjson a "$2" --argjson s "$3" \
+  '.projects[$m] = ((.projects[$m] // {}) + {hasTrustDialogAccepted: true, hasClaudeMdExternalIncludesApproved: $a, hasClaudeMdExternalIncludesWarningShown: $s})' \
+  "$1" > "$1.t" && mv "$1.t" "$1"; }
+ans() { jq -c --arg m "$2" '.projects[$m] // {} | [.hasClaudeMdExternalIncludesApproved, .hasClaudeMdExternalIncludesWarningShown]' "$1"; }
+A="$SANDBOX/acct-imp"; mkdir -p "$A"
+# allowed in the dispatcher's config, absent in the session's: copied onto the main checkout key,
+# in Claude Code's default entry shape, the worktree's own key untouched
+cfg "$CJ" "$RP"; imp "$CJ" true true; cfg "$A/.claude.json" "$O"
+go --config-dir "$A" >/dev/null
+assert_eq "imports: allowed copied" '[true,true]' "$(ans "$A/.claude.json" "$RP")"
+assert_eq "imports: the entry has Claude Code's shape" '[[],{}]' "$(jq -c --arg m "$RP" '.projects[$m] | [.allowedTools, .mcpServers]' "$A/.claude.json")"
+assert_eq "imports: the main checkout's trust is not made" false "$(trusted "$A/.claude.json" "$RP")"
+assert_eq "imports: not on the worktree key" '[null,null]' "$(ans "$A/.claude.json" "$PP")"
+assert_eq "imports: trust copied in the same write" true "$(trusted "$A/.claude.json" "$PP")"
+assert_contains "imports: said" "$(cat "$SANDBOX/err")" "allowed external CLAUDE.md imports for $RP in $A/.claude.json"
+assert_eq "imports: no lock left" no "$([ -e "$A/.claude.json.lock" ] && echo yes || echo no)"
+# keys already on the main checkout entry win over the defaults
+cfg "$A/.claude.json" "$RP"; jq --arg m "$RP" '.projects[$m].allowedTools = ["Bash(ls)"]' "$A/.claude.json" > "$A/t" && mv "$A/t" "$A/.claude.json"
+go --config-dir "$A" >/dev/null
+assert_eq "imports: existing keys kept" '["Bash(ls)"]' "$(jq -c --arg m "$RP" '.projects[$m].allowedTools' "$A/.claude.json")"
+assert_eq "imports: existing trust kept" true "$(trusted "$A/.claude.json" "$RP")"
+# a "no" is an answer too, and is copied as one
+cfg "$A/.claude.json" "$RP"; imp "$CJ" false true
+go --config-dir "$A" >/dev/null
+assert_eq "imports: declined copied" '[false,true]' "$(ans "$A/.claude.json" "$RP")"
+# both false is what Claude Code writes when nobody was asked: no answer, nothing copied
+cfg "$A/.claude.json" "$RP"; imp "$CJ" false false
+go --config-dir "$A" >/dev/null
+assert_eq "imports: never asked, nothing copied" '[null,null]' "$(ans "$A/.claude.json" "$RP")"
+# the session's config already has an answer: left as it is, even against another config's
+cfg "$A/.claude.json" "$RP"; imp "$A/.claude.json" false true; imp "$CJ" true true
+go --config-dir "$A" >/dev/null
+assert_eq "imports: the session's own answer kept" '[false,true]' "$(ans "$A/.claude.json" "$RP")"
+# configs that disagree: nothing copied, said
+OPF="$HOME/.config/orca/claude-profiles/p2/home"; mkdir -p "$OPF"; cfg "$OPF/.claude.json" "$RP"; imp "$OPF/.claude.json" false true
+cfg "$A/.claude.json" "$RP"; imp "$CJ" true true
+go --config-dir "$A" >/dev/null
+assert_eq "imports: disagreeing configs, nothing copied" '[null,null]' "$(ans "$A/.claude.json" "$RP")"
+assert_contains "imports: disagreement said" "$(cat "$SANDBOX/err")" "disagree on external CLAUDE.md imports"
+rm -rf "$HOME/.config/orca"
+# a sibling worktree's key is not where Claude Code keeps the answer: not read
+cfg "$A/.claude.json" "$RP"; cfg "$CJ" "$RP"
+jq --arg k "$O" '.projects[$k] += {hasClaudeMdExternalIncludesApproved: true, hasClaudeMdExternalIncludesWarningShown: true}' "$CJ" > "$CJ.t" && mv "$CJ.t" "$CJ"
+go --config-dir "$A" >/dev/null
+assert_eq "imports: a sibling's key is not read" '[null,null]' "$(ans "$A/.claude.json" "$RP")"
+# a review tree: a "yes" is not copied (the branch may import other files), a "no" is
+cfg "$A/.claude.json" "$RP"; cfg "$CJ" "$RP"; imp "$CJ" true true
+HI_TMUX=none bash "$WT" dispatch "$RV" --brief "$SANDBOX/brief.md" --config-dir "$A" >/dev/null 2>"$SANDBOX/err"
+assert_eq "imports review: a yes is not copied" '[null,null]' "$(ans "$A/.claude.json" "$RP")"
+assert_contains "imports review: said" "$(cat "$SANDBOX/err")" "not copied for a review tree"
+imp "$CJ" false true
+HI_TMUX=none bash "$WT" dispatch "$RV" --brief "$SANDBOX/brief.md" --config-dir "$A" >/dev/null 2>&1
+assert_eq "imports review: a no is copied" '[false,true]' "$(ans "$A/.claude.json" "$RP")"
+
 # no config file: none created
 rm -f "$CJ"
 go >/dev/null
@@ -115,6 +183,15 @@ assert_eq "tmux trust dialog: the row is printed" "$U	tmux	hi:AB-7 trust" "$out"
 assert_contains "tmux trust dialog: names it" "$(cat "$SANDBOX/err")" "stopped on Claude Code's folder-trust dialog"
 assert_contains "tmux trust dialog: the screen tail" "$(cat "$SANDBOX/err")" "Yes, I trust this folder"
 assert_contains "tmux: the pane is read by window id" "$(logged)" "tmux capture-pane -p -t @7"
+# the external-imports dialog (as Claude Code 2.1.328 draws it): exit 6, named
+printf '%s\n' "$RULE" "  Allow external CLAUDE.md file imports?" \
+  "  This project's CLAUDE.md or .claude/rules imports files outside the current working directory." \
+  "  External imports:" "    /elsewhere/notes.md" "  ❯ No, disable external imports" "    Yes, allow external imports" \
+  "  Enter to confirm · Esc to cancel" > "$FX/tmux-pane"
+bash "$WT" dispatch "$P" --brief "$SANDBOX/brief.md" >/dev/null 2>"$SANDBOX/err"
+assert_status "tmux imports dialog: exit 6" 6 "$?"
+assert_contains "tmux imports dialog: names it" "$(cat "$SANDBOX/err")" "\"Allow external CLAUDE.md file imports\" dialog"
+assert_contains "tmux imports dialog: the screen tail" "$(cat "$SANDBOX/err")" "Yes, allow external imports"
 printf '%s\n%s\n%s\n' "$RULE" " Do you want to proceed?" " ❯ 1. Yes" > "$FX/tmux-pane"
 printf '%s\n' "   2. No" " Esc to cancel" >> "$FX/tmux-pane"
 bash "$WT" dispatch "$P" --brief "$SANDBOX/brief.md" >/dev/null 2>"$SANDBOX/err"
