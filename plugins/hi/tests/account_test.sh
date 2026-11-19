@@ -94,6 +94,11 @@ out=$(bash "$ACC" move --dry-run --only term_1)
 assert_contains 'the relaunch keeps its flags' "$out" "would-move	term_1	s-one	claude --resume s-one --plugin-dir /x/agent-view --dangerously-skip-permissions --model haiku"
 assert_not_contains 'an earlier --resume is dropped' "$out" old-id
 assert_contains 'the lost connectors reach the session' "$out" "--append-system-prompt 'This session moved from the Claude account a@x to b@x. The claude.ai connectors Meetings, Google Docs are not available"
+session "$A" 110 s-again idle term_again ptr --model haiku --append-system-prompt 'This session moved from the Claude account x to a@x.' --append-system-prompt 'keep me'
+out=$(bash "$ACC" move --dry-run --only term_again)
+assert_eq 'a second move drops the earlier note, keeps another prompt' 1 "$(printf '%s' "$out" | grep -o 'This session moved' | wc -l | tr -d ' ')"
+assert_contains 'the other appended prompt stays' "$out" "--append-system-prompt 'keep me'"
+rm -rf "$HI_PROC/110" "$A/sessions/110.json"
 assert_not_contains 'a session already on the target is left' "$(bash "$ACC" move --dry-run)" term_3
 assert_eq 'dry-run types nothing' '' "$(grep 'terminal send' "$LOG")"
 

@@ -46,6 +46,11 @@ this skill" printed above, two levels up.
    autostart has started nothing for over an hour because every pass stopped short (the budget,
    no coordinator, no root); nothing otherwise. A hold starts no worker and makes no event, so this
    line is the only place it shows. `bash "$C" account` names the config dir whose budget it reads.
+   When the hold is the budget, `bash "${CLAUDE_PLUGIN_ROOT}/lib/budget.sh" room` lists Orca's
+   other Claude accounts that are under their line now (email, id, config dir, the check). Offer
+   a switch to one of them; never switch on your own: which plan pays is the person's call. On
+   their yes: `$O account select --agent claude --account <id>`, then hi's `/hi:account` moves
+   the live sessions onto it (without the hi plugin, they restart them by hand).
    No open tickets: skip steps 2–6. No tickets, no sections and no held autostart: say there is
    nothing on the person and stop.
 2. **What blocks a worker**: `bash "$C" asks` — open questions, decision gates, and escalations
@@ -81,7 +86,7 @@ this skill" printed above, two levels up.
 One short list, most urgent first, each item with its next step in words:
 
 1. **Waiting on you** — a held autostart's line as it came (its reason says what to fix: the
-   budget, a coordinator session to open), open questions and gates (with the worker's proposals), workers on a
+   budget, a coordinator session to open; for the budget, with the account that has room, if any), open questions and gates (with the worker's proposals), workers on a
    dialog (since when, which tool), stopped workers, stranded answers ("resume it?"), people's new comments on a
    PR, PRs whose review loop finished and that wait for a person to resolve threads and merge;
    then the sections' `you` items, by section. A thread left unfinished (`paused`) carries its

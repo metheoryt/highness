@@ -206,11 +206,15 @@ self_pid() {
 NL='
 '
 
-# relaunch_args <pid>: the session's flags, without arg0 and any earlier resume, one per line.
+# relaunch_args <pid>: the session's flags, without arg0, any earlier resume and the note of an
+# earlier move, one per line.
 relaunch_args() {
   pargv "$1" | awk '
     NR == 1 { next }
     skip { skip = 0; next }
+    asp { asp = 0; if (index($0, "This session moved from the Claude account") == 1) next
+          print "--append-system-prompt"; print; next }
+    $0 == "--append-system-prompt" { asp = 1; next }
     $0 == "--resume" || $0 == "-r" || $0 == "--session-id" { skip = 1; next }
     $0 ~ /^--resume=/ || $0 ~ /^--session-id=/ { next }
     $0 == "--continue" || $0 == "-c" || $0 == "--fork-session" { next }
