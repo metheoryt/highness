@@ -176,6 +176,14 @@ a=$(bash "$C" action ABC-2 "$T/step.sh"); chmod u+w "$HIGHNESS_STATE/crew/action
 refused 'action refused: the stored script changed' "$a" 'script changed'
 printf 'echo DENYME\n' >"$T/deny.sh"; a=$(bash "$C" action ABC-2 "$T/deny.sh")
 refused 'action refused: hi-guard denies it' "$a" 'no DENYME'
+# The real hi-guard, with a check that asks: the approved action runs and its probe is not logged
+# in the denial log as an ask nobody met.
+printf '#!/bin/sh\ngrep -q ASKME && printf "A\\tcheck: ask\\n"\nexit 0\n' >"$T/askcheck"; chmod +x "$T/askcheck"
+jq -n --arg c "$T/askcheck" '{guard: {checks: [$c]}}' >"$HIGHNESS_CONFIG"
+printf 'echo ASKME >>"%s"\n' "$T/ran" >"$T/ask.sh"; a=$(bash "$C" action ABC-2 "$T/ask.sh"); rm -f "$T/ran"
+HI_GUARD="$HERE/../../hi-guard/lib/guard.sh" bash "$C" relay ABC-2 --id msg_q2 --action "$a" "$T/r-min" || no 'relay --action under the real guard'
+check 'relay --action: an ask from the probe does not stop the approved action' "$(cat "$T/ran" 2>/dev/null)" ASKME
+check 'relay --action: the probe leaves no line in the denial log' "$(cat "$HIGHNESS_STATE/denials.jsonl" 2>/dev/null)" ''
 jq -n '{crew: {pr_state: "echo '"'"'{\"head\":\"0000beef\"}'"'"'"}}' >"$HIGHNESS_CONFIG"
 bash "$C" record ABC-2 '{"pr":"https://forge/pr/2"}'; a=$(bash "$C" action ABC-2 "$T/step.sh")
 refused 'action refused: the PR head is not the pinned head' "$a" 'PR head is 0000beef'

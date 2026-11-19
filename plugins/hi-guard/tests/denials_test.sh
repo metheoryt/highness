@@ -46,6 +46,15 @@ assert_eq 'check ask: the line' 'checks|ask|check: merging is the user'"'"'s cal
   "$(last '[.rule, .decision, .reason] | join("|")')"
 assert_eq 'three decisions, three lines' 3 "$(lines)"
 
+# A probe (hi-crew putting an approved action to the guard): the same decisions, no line.
+HI_GUARD_PROBE=1 pre 'gh pr merge 6'
+assert_eq 'probe ask: still an ask' ask "$(printf '%s' "$OUT" | jq -r .hookSpecificOutput.permissionDecision)"
+HI_GUARD_PROBE=1 pre 'sudo id'
+assert_eq 'probe deny: still a deny' deny "$(printf '%s' "$OUT" | jq -r .hookSpecificOutput.permissionDecision)"
+assert_eq 'probe: nothing logged' 3 "$(lines)"
+pre 'gh pr merge 6'
+assert_eq 'a real ask after a probe still logs' '4|ask|gh pr merge 6' "$(lines)|$(last '[.decision, .command] | join("|")')"
+
 big=$(printf 'sudo x %0*d' 5000 0)
 pre "$big"
 assert_eq 'a long command is cut' 2000 "$(last '.command | length')"
