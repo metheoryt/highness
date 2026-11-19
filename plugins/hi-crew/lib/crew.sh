@@ -9,7 +9,8 @@
 #   crew.sh record <KEY> <json>       merge a JSON object into <KEY>'s facts (creates them)
 #   crew.sh get <KEY>                 <KEY>'s facts; exit 1 when there are none
 #   crew.sh list                      one JSON object per line, every open ticket
-#   crew.sh close <KEY>               move <KEY>'s facts to closed/ (the ticket is settled)
+#   crew.sh close <KEY>               move <KEY>'s facts to closed/ (the ticket is settled) and
+#                                     drop the watch's notes on it
 #   crew.sh choice <KEY> <json>       append one answered ask to choices.jsonl: the options with
 #                                     their loses:/leans on: lines, what the person took ("option",
 #                                     "own" or "reframed"), their reply verbatim. Kept across close,
@@ -59,12 +60,17 @@
 #                                     {{KEY}}`, `move`, `comment`: lib/tracker.sh), {{KEY}} the key.
 #                                     crew.merge sets the merge line: "never" (default) leaves
 #                                     merging to a person; "on_green" has the worker merge its own
-#                                     PR once ready and green, unless its brief says otherwise
-#   crew.sh watch                     look at the PR of every open ticket and, when something a
+#                                     PR once ready and green, unless its brief says otherwise.
+#                                     {{CREW}} in the template becomes this crew.sh as a command,
+#                                     for the worker's own `record <KEY> '{"pr":…}'`
+#   crew.sh watch                    look at the PR of every open ticket and, when something a
 #                                     person should see changed since the last look (merged or
 #                                     closed, CI failed, new comments from people), append it to the
 #                                     watch events and wake the ticket's coordinator with a status
 #                                     message to its Run. The first look at a ticket only records it.
+#                                     A ticket with no `pr` yet gets its PR looked up with gh by the
+#                                     workspace's branch, and recorded when found (the worker records
+#                                     it itself at its draft-PR step: {{CREW}} in the spec)
 #                                     Run by the Orca automation below, from its precheck, which then
 #                                     exits 1 so no agent ever starts
 #   crew.sh watch-install [<cron>]    create or update that automation (default every 10 minutes)
@@ -189,7 +195,11 @@ cmd_close() {
   [ -f "$f" ] || die "no open facts for $1"
   jq -e '.retro_at' "$f" >/dev/null 2>&1 || printf 'crew: %s closed without a retro (lib/retro.sh, reference/retro.md)\n' "$1" >&2
   mkdir -p "$DIR/closed"
-  mv "$f" "$DIR/closed/$1.$(date -u +%Y%m%dT%H%M%SZ).json"
+  mv "$f" "$DIR/closed/$1.$(date -u +%Y%m%dT%H%M%SZ).json" || exit 1
+  # The watch's notes on it (last PR state, the dialog and tool call told), so a ticket opened
+  # again under the same key starts from a first look. Named one by one: a glob on "<KEY>.*"
+  # would also take a key that extends this one ("A-1" and "A-1.2").
+  rm -f "$DIR/watch/$1.json" "$DIR/watch/$1.prompt" "$DIR/watch/$1.tool"
 }
 
 # $DIR/run lists every Run hi-crew made, one per line (it once held a single shared Run).
@@ -401,7 +411,7 @@ cmd_reports() {
 }
 
 cmd_spec() {
-  local key='' title='' brief_file='' brief='' process marker merge root=''
+  local key='' title='' brief_file='' brief='' process marker merge crew root=''
   while [ $# -gt 0 ]; do
     case "$1" in
       --root) root=${2:-}; shift 2 ;;
@@ -428,8 +438,12 @@ cmd_spec() {
     on_green) merge="Merge your own pull request once it is ready for review and its checks pass, the way the team's process below says. If your brief says merging is the person's call, it is: then never merge." ;;
     *) die "crew.merge '$merge' is not never or on_green" ;;
   esac
+  # {{CREW}}: this crew.sh as one command, so the worker records facts (its PR) where the watch
+  # reads them; a state dir set by HIGHNESS_STATE is carried, since the worker's shell may not have it.
+  crew="bash $(q "$HERE/crew.sh")"
+  [ -z "${HIGHNESS_STATE:-}" ] || crew="HIGHNESS_STATE=$(q "$HIGHNESS_STATE") $crew"
   # Placeholders are replaced in a fixed order by awk with literal strings (no regex, no &).
-  KEY=$key TITLE=$title BRIEF=$brief PROCESS=$process MARKER=$marker MERGE=$merge ROOT=$root TRACKER=$(tracker_cmd "$root") awk '
+  KEY=$key TITLE=$title BRIEF=$brief PROCESS=$process MARKER=$marker MERGE=$merge CREW=$crew ROOT=$root TRACKER=$(tracker_cmd "$root") awk '
     function rep(s, ph, val,   out, i) {
       out = ""
       while ((i = index(s, ph)) > 0) { out = out substr(s, 1, i - 1) val; s = substr(s, i + length(ph)) }
@@ -440,6 +454,7 @@ cmd_spec() {
       line = rep(line, "{{TITLE}}", ENVIRON["TITLE"])
       line = rep(line, "{{MARKER}}", ENVIRON["MARKER"])
       line = rep(line, "{{MERGE}}", ENVIRON["MERGE"])
+      line = rep(line, "{{CREW}}", ENVIRON["CREW"])
       if (line == "{{BRIEF}}") { print ENVIRON["BRIEF"]; next }
       if (line == "{{PROCESS}}") {
         print rep(rep(rep(ENVIRON["PROCESS"], "{{ROOT}}", ENVIRON["ROOT"]), "{{TRACKER}}", ENVIRON["TRACKER"]), "{{KEY}}", ENVIRON["KEY"])
@@ -493,6 +508,21 @@ pr_state() { # <facts json>
   fi
   line=$(PR=$(q "$pr") ROOT=$(q "$root") MARKER=$(q "$marker") fill <<<"$cmd")
   (cd "$root" && sh -c "$line") 2>/dev/null
+}
+
+# The PR of facts that have none recorded, found by the workspace's branch: the branch checked
+# out there now (a worker may have renamed it), else the recorded `branch`. Asked with gh from the
+# workspace, so it reaches the workspace's own forge repo; the newest PR from that branch, any
+# state. Prints its url; exit 1 when there is none or gh cannot tell.
+find_pr() { # <facts json>
+  local ws branch
+  ws=$(printf '%s' "$1" | jq -r '.workspace // empty')
+  [ -n "$ws" ] && [ -d "$ws" ] || return 1
+  branch=$(git -C "$ws" branch --show-current 2>/dev/null) || branch=''
+  [ -n "$branch" ] || branch=$(printf '%s' "$1" | jq -r '.branch // empty')
+  [ -n "$branch" ] || return 1
+  (cd "$ws" && gh pr list --head "$branch" --state all --limit 20 --json number,url 2>/dev/null) \
+    | jq -er 'max_by(.number) | .url // empty' 2>/dev/null
 }
 
 # stdin with {{PR}}, {{ROOT}}, {{MARKER}} and {{TRACKER}} replaced by $PR, $ROOT, $MARKER and
@@ -580,7 +610,13 @@ cmd_watch() {
           "has had one $tool call open for $(( ($(date +%s) - since) / 60 )) min — a hung command?"
       fi
     fi
-    [ -n "$pr" ] || continue
+    # No PR recorded yet (the worker records it at its draft-PR step): look it up by the branch,
+    # and record what is found, so the digest and later passes read it from the facts.
+    if [ -z "$pr" ]; then
+      pr=$(find_pr "$t") || continue
+      (cmd_record "$key" "$(jq -cn --arg pr "$pr" '{pr: $pr}')") || continue
+      t=$(printf '%s' "$t" | jq -c --arg pr "$pr" '.pr = $pr')
+    fi
     now=$(pr_state "$t") && printf '%s' "$now" | jq -e 'type == "object"' >/dev/null 2>&1 || continue
     snap="$w/$key.json"
     if [ -f "$snap" ]; then
