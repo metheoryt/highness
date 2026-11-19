@@ -23,9 +23,16 @@
 # Configuration: lib/config.sh (a copy of shared/config.sh), read in the hook's .cwd: the user
 # file ${HIGHNESS_CONFIG:-~/.config/highness/config.json} and the repo's .claude/highness.json,
 # arrays concatenated. All keys are optional; with none set, only rule 1 applies.
-# guard.exempt_commands and guard.checks come from the USER file only (config.sh --user): a repo's
-# file arrives with every clone, and these two keys switch rule 1 off or run a program on every
-# Bash call. A repo can only add deny patterns.
+# The user file's `repos` overlays (`repos.<owner/repo>`, `repos.<owner>`, keys lowercase, matched
+# against the cwd's `origin`) may carry guard.deny_patterns and guard.checks, which then apply only
+# in sessions whose repo matches; the top level's apply everywhere. A team's production deny and
+# its ready-gate check go under `repos.<team-owner>`, so they stay out of the person's own repos.
+# guard.exempt_commands and guard.checks never come from a repo's file: it arrives with every
+# clone, and these two keys switch rule 1 off or run a program on every Bash call. A repo can only
+# add deny patterns. guard.exempt_commands is read from the user file's top level only (config.sh
+# --user): an overlay is chosen by a remote name any clone can carry. guard.checks is read with
+# its overlays (config.sh --personal): a check is the person's own program and can only add a D or
+# an A, so a clone that borrows a remote name can at most have more of them run.
 #   guard.deny_patterns    EREs for rule 2.
 #   guard.exempt_commands  basenames. A segment whose command word (or the script right after a
 #                          `bash`/`sh` command word) has one of these basenames is exempt from
@@ -33,7 +40,8 @@
 #                          $(…) and `…` are commands of their own and stay checked, as does
 #                          every other segment of the line. Default: none.
 #   guard.checks           absolute paths (or ~/…) of executables, run in order after rules 1
-#                          and 2 allow. Each runs in .cwd with .cwd as $1 and, on stdin, every
+#                          and 2 allow: the matching `repos.<owner/repo>` overlay's, then
+#                          `repos.<owner>`'s, then the top level's. Each runs in .cwd with .cwd as $1 and, on stdin, every
 #                          simple command the scan found, one per line:
 #                            <moved><TAB><word1><US><word2>…
 #                          US is \x1f. Words are unquoted and unescaped, redirections dropped; a
@@ -657,10 +665,17 @@ _feed() {
 
 # _limited <cmd> <args…>: run a check with a time limit (HI_GUARD_CHECK_TIMEOUT seconds,
 # default 5), so a hung check cannot stall every Bash call; past it the check counts as failed
-# (allow). perl's alarm is on macOS and most Linux; without perl the check runs unlimited.
+# (allow). The check runs in a process group of its own and the whole group is killed at the
+# limit: killing only the check left a child of it (a `sleep`) holding the output pipe open, so
+# the hook waited for that child anyway. perl is on macOS and most Linux; without perl the check
+# runs unlimited.
 _limited() {
   local t=${HI_GUARD_CHECK_TIMEOUT:-5}
-  if command -v perl >/dev/null 2>&1; then perl -e 'alarm shift; exec @ARGV or exit 127' "$t" "$@"
+  if command -v perl >/dev/null 2>&1; then
+    perl -e 'my $t = shift; my $p = fork; defined $p or exit 127;
+             if (!$p) { setpgrp(0, 0); exec @ARGV or exit 127 }
+             $SIG{ALRM} = sub { kill "KILL", -$p; kill "KILL", $p; exit 124 };
+             alarm $t; waitpid($p, 0); exit($? & 127 ? 124 : $? >> 8)' "$t" "$@"
   else "$@"; fi
 }
 
@@ -713,7 +728,7 @@ pretool() {
 $(_cfg list --user .guard.exempt_commands)
 EOF
     [ -z "$EXS" ] || EXS=$'\037'$EXS
-    CHECKS=$(_cfg list --user .guard.checks)
+    CHECKS=$(_cfg list --personal .guard.checks)
     [ -z "$CHECKS" ] || ALLC=1
   fi
 

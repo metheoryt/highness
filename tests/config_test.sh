@@ -31,6 +31,13 @@ check 'list adds up overlays then top'                  "$(g shop list .deny | t
 mkdir -p "$T/shop/.claude" && printf '{"x":"team","deny":["t"]}' >"$T/shop/.claude/highness.json"
 check 'repo file wins over every overlay'               "$(g shop get .x)"  team
 check 'list: repo file first'                           "$(g shop list .deny | tr '\n' ' ')" 't r o u '
+check '--personal: overlays, never the repo file'       "$(g shop get --personal .x)" repo
+check '--personal list: overlays then top, no repo file' "$(g shop list --personal .deny | tr '\n' ' ')" 'r o u '
+check '--personal: the owner overlay'                   "$(g other list --personal .deny | tr '\n' ' ')" 'o u '
+check '--personal: no overlay for an unrelated origin'  "$(g mine list --personal .deny | tr '\n' ' ')" 'u '
+check '--personal: outside a repo, the top level'       "$(g plain get --personal .x)" top
+check '--personal files: the user file only'            "$(g shop files --personal)" "$HIGHNESS_CONFIG"
+check '--user list: the top level only'                 "$(g shop list --user .deny | tr '\n' ' ')" 'u '
 if g mine get .nothing >/dev/null; then check 'unset key exits 1' set unset; else check 'unset key exits 1' unset unset; fi
 
 # has: a key set to null counts (a person leaving it to the default on purpose); get does not see it.
@@ -43,6 +50,8 @@ if (cd "$T/mine" && HIGHNESS_CONFIG="$T/user2.json" bash "$C" get .crew.model >/
 if h mine .crew.agent; then check 'has: an absent key' yes no; else check 'has: an absent key' no no; fi
 if h other .crew.agent; then check 'has: through an owner overlay' yes yes; else check 'has: through an owner overlay' no yes; fi
 if h mine .nothing.deeper; then check 'has: under an absent parent' yes no; else check 'has: under an absent parent' no no; fi
+if (cd "$T/other" && HIGHNESS_CONFIG="$T/user2.json" bash "$C" has --personal .crew.agent >/dev/null); then check 'has --personal: through an owner overlay' yes yes; else check 'has --personal: through an owner overlay' no yes; fi
+if (cd "$T/other" && HIGHNESS_CONFIG="$T/user2.json" bash "$C" has --user .crew.agent >/dev/null); then check 'has --user: not through an overlay' yes no; else check 'has --user: not through an overlay' no no; fi
 
 # An umbrella: a checkout with the team file and a repos.txt listing the clones inside it. A child
 # clone with no file of its own takes the umbrella's; one the umbrella does not list takes none.
