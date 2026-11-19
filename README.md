@@ -4,7 +4,7 @@ A harness for Claude Code agents, as a plugin marketplace. Each plugin is enable
 
 | plugin | what it gives |
 |---|---|
-| `hi` | `/hi:worktrees` — one workspace per piece of work, over Orca worktrees or plain git worktrees, with lineage, a removal check and a per-tree setup (gortex tracking when gortex is installed, local config links, the repo's own setup script). `/hi:repo-setup` — check and wire a repo for that. `/hi:setup` — check and fix a machine and a person for hi and hi-crew, then the repo. `/hi:meet` — seed your working preferences from your own past sessions, each line with its evidence, written only where you say yes. |
+| `hi` | `/hi:worktrees` — one workspace per piece of work, over Orca worktrees or plain git worktrees, with lineage, a removal check and a per-tree setup (gortex tracking when gortex is installed, local config links, the repo's own setup script). `/hi:repo-setup` — check and wire a repo for that. `/hi:setup` — check and fix a machine and a person for hi and hi-crew, then the repo. `/hi:meet` — seed your working preferences from your own past sessions, each line with its evidence, written only where you say yes. `/hi:account` — after an Orca account switch, move the live agent sessions onto the selected account, each resuming its own chat in its own pane. |
 | `hi-guard` | A PreToolUse hook on Bash: denies `sudo` from an agent session (quote-aware, through `bash -c`, `ssh`, `eval`…) and any configured deny pattern. Other tools can add checks. Every deny and ask it makes, and every refusal of Claude Code's auto-mode classifier (a `PermissionDenied` hook), goes to one local log, `<state>/denials.jsonl` (JSON lines: time, session, cwd, tool, the command or path, who denied it and why), which the hi-crew retro reads to find false denials. |
 | `hi-docs` | `/hi-docs:write-doc` and `/hi-docs:reader-test` — documents that read in short sittings, tested on a reader with no context. |
 | `hi-crew` | `/hi-crew:start <KEY>` — a worker agent on a ticket, in its own Orca workspace, carrying it to a reviewed pull request and stopping only for a person's decision. Before it asks, a worker does its own research and takes the obvious calls; what it brings is a trade-off, each option with what it loses and the rule it leans on (or `no rule`), and it states its direction before building so a wrong one is caught early. Each answered ask is recorded (`crew.sh choices`), so a person's choices can be read back across tickets. `/hi-crew:agenda` — what the workers wait on you for: their questions, people's comments on their PRs, PRs ready to merge. A watch (an Orca automation that never starts an agent) wakes the worker itself, with a round, when its PR's CI fails or a review bot leaves findings, and wakes the coordinator when the PR is merged or closed, a person comments or approves, the worker sits on a dialog, or one of its tool calls stays open too long. Bots on normal accounts are named in `crew.bots`, so their comments wake no one. Its hooks keep one small state line per Claude Code session (working, blocked or idle), which `/hi:worktrees` dispatch reads before the screen. A worker first checks its ticket is not already done (landed on the trunk, a merged PR, the result present) and then reports that instead of opening a PR; any session that does work belonging to an open ticket comments on that ticket. Needs Orca with orchestration turned on, and `jq`. Team settings under `crew` in `.claude/highness.json`: `process`, `agent`, `model`, `marker`, `pr_state`, `bots`; and `agenda.sections`, the team's own digest sections (its tickets, its PRs, reviews waiting), each a command that prints JSON lines, so the digest covers the person's whole plate without hi knowing the team's tracker or forge. A tracker adapter for Jira, YouTrack and GitHub Issues (`tracker` in the config) gives those sections, the autostart candidates and the workers' ticket reads, moves and comments without glue of the team's own (see Tracker below). Opt-in autostart: the watch starts labelled tickets into free slots, after a check of the plan's usage (see below). |
@@ -79,7 +79,23 @@ The account is the one Orca launches agents on (`crew.sh account` prints it): Or
 account; with none, the profile home `claude-profiles/selected-host` in Orca's data dir names; else
 `crew.budget.config_dir` in your own config; else the profile home whose statusline cache is the
 freshest. A hold that lasts over an hour shows in `/hi-crew:agenda` as
-"autostart held <N> h: <reason>" (`crew.sh held`).
+"autostart held <N> h: <reason>" (`crew.sh held`). When the budget is the reason and another of
+Orca's Claude accounts is under its line (`budget.sh room`), the agenda offers to switch to it.
+It never switches on its own, because which plan pays is your call. On your yes it selects that
+account and `/hi:account` moves the live sessions onto it. Then `hold.sh repoint <its config dir>`
+points the workers the budget paused at the new account, and they continue if it has room.
+
+**Moving sessions to another account.** After `orca account select`, sessions that are already
+running stay on the old account. `/hi:account` (`lib/account.sh move` in hi) moves them: the
+coordinator, the workers and your other work sessions. It waits until each session is idle, then
+types `/exit` into its Orca pane and `claude --resume <its session> <its flags>`. Orca's pane shell
+starts that line on the selected account, and every account reads the same transcripts. The pane
+keeps its terminal handle, so a worker keeps its Dispatch and the coordinator its Run. A session
+mid-turn is never interrupted: it moves once idle, or is reported `busy` when the wait runs out.
+The session that runs the move goes last, in the background, after its turn. claude.ai connectors
+belong to the account. Each one the new account lacks is named in the report and to the session
+itself. A move to another organization makes each session's first turn slower and dearer, because
+Claude cannot reuse thinking written under another organization.
 
 **Pausing a running worker.** Each watch pass also writes the verdict for the account as a flag
 (`<config dir>/highness-hold`, `lib/hold.sh pass`). While it is there, an autostarted worker's next

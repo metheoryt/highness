@@ -113,4 +113,22 @@ bash "$H" pass >/dev/null
 [ -f "$A/highness-hold" ] && ok 'the account a worker ran on is marked' || no 'the worker account was not marked'
 [ -f "$B2/highness-hold" ] && no 'an idle account was marked' || ok 'an idle account is not asked'
 
+# --- repoint: the sessions moved to another account (highness#106); their markers follow it
+rm -rf "$T/state/held" "$T/state/accounts" "$T/state/crew"/*.json; rm -f "$T/wt.log" "$A/highness-hold" "$B2/highness-hold"
+live 60 10; bash "$H" mark "$A" >/dev/null; hook --worker >/dev/null
+check 'a session stopped on the old account' "$(markers)" 1
+# The new account under its line, read from its own cache; the old one still over.
+jq -n --argjson now "$HI_NOW" '{five_hour: {used_percentage: 10, resets_at: ($now + 18000)},
+  seven_day: {used_percentage: 10, resets_at: ($now + 604800)}, updated_at: ($now - 60)}' >"$B2/highness-usage.json"
+check 'repoint resumes it on the new account' "$(HI_BUDGET_RESPONSE=fail bash "$H" repoint "$B2")" "resumed	$W"
+has 'with the new account as its config dir' "$(cat "$T/wt.log" 2>/dev/null)" "--config-dir $B2"
+check 'the marker is gone' "$(markers)" 0
+rm -f "$T/wt.log"
+live 60 10; bash "$H" mark "$A" >/dev/null; hook --worker >/dev/null
+echo '{}' >"$B2/highness-usage.json"
+HI_BUDGET_RESPONSE=fail bash "$H" repoint "$B2" >/dev/null
+[ -f "$T/wt.log" ] && no 'the new account cannot be read: typed into anyway' || ok 'the new account cannot be read: it waits'
+check 'its marker now names the new account' "$(bash "$H" held | cut -f3)" "$B2"
+bash "$H" repoint "$T/nope" >/dev/null 2>&1; check 'repoint without a dir: usage' "$?" 2
+
 exit $fail

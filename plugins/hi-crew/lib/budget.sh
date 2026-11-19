@@ -3,6 +3,7 @@
 #
 #   budget.sh check [<config dir>]   one line saying why; exit 0 = go, 1 = hold
 #   budget.sh show  [<config dir>]   window<TAB>used%<TAB>line%<TAB>resets_at (epoch or -), one per window
+#   budget.sh room                   Orca's other Claude accounts under their line now (cmd_room)
 #
 # The person keeps a reserve of each plan window for their own sessions, and the reserve shrinks
 # as the window nears its reset — the leftover of a window about to reset is lost anyway:
@@ -188,9 +189,35 @@ EOF
   printf '%s on %s [%s]; go\n' "$out" "$d" "$SRC"
 }
 
+# room: Orca's other Claude accounts that are under their line now, one per line:
+# email<TAB>account id<TAB>config dir<TAB>the check's line. Exit 1 when none has room (or Orca
+# cannot list them). The selected account is left out: it is the one being measured. Offering a
+# switch is all this does; choosing which plan pays is the person's call (highness#106).
+orca_cmd() {
+  if [ -n "${ORCA_CLI_COMMAND:-}" ]; then printf '%s\n' "$ORCA_CLI_COMMAND"; return; fi
+  if [ "$(uname -s)" = Linux ] && [ -z "${ORCA_TERMINAL_HANDLE:-}" ]; then echo orca-ide; return; fi
+  echo orca
+}
+cmd_room() {
+  local j rows id email home out found=1
+  j=$("$(orca_cmd)" account list --json 2>/dev/null </dev/null | jq -c '.result.claude // empty' 2>/dev/null)
+  [ -n "$j" ] || return 1
+  rows=$(printf '%s' "$j" | jq -r '(.activeAccountIdsByRuntime.host // .activeAccountId // "system") as $a
+    | .accounts[]? | select(.id != $a and (.home | type) == "string") | [.id, (.email // .id), .home] | @tsv')
+  while IFS="$(printf '\t')" read -r id email home; do
+    [ -n "$id" ] && [ -d "$home" ] || continue
+    out=$(cmd_check "$home") || continue
+    printf '%s\t%s\t%s\t%s\n' "$email" "$id" "$home" "$out"; found=0
+  done <<EOF
+$rows
+EOF
+  return "$found"
+}
+
 sub=${1:-}; [ $# -gt 0 ] && shift
 case "$sub" in
   check) cmd_check "$@" ;;
   show) cmd_show "$@" ;;
-  *) die 'usage: budget.sh check|show [<config dir>]' ;;
+  room) cmd_room ;;
+  *) die 'usage: budget.sh check|show [<config dir>] | room' ;;
 esac

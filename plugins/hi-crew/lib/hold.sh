@@ -10,6 +10,8 @@
 #   hold.sh resume                 type "continue" into every session the hook stopped whose
 #                                  account no longer holds
 #   hold.sh held                   the stopped sessions, TSV: workspace, session, config dir, since
+#   hold.sh repoint <config dir>   the stopped sessions moved to that account: their markers follow,
+#                                  then its budget is checked and they resume (cmd_repoint)
 #
 # Who is a worker. `--worker` says so: wt.sh dispatch --pretool puts `hold.sh hook --worker` in
 # the session's own --settings, so it reaches the autostarted session and nothing else — not a
@@ -150,6 +152,25 @@ cmd_resume() {
   return 0
 }
 
+# repoint <config dir>: after the sessions moved to another account (hi's /hi:account), every
+# stopped session waits on that account now: rewrite the markers to it, check its budget, and
+# resume what it allows. Without this a marker keeps the old account, so the resume waits for the
+# old account's window, and a relaunch would go back to it (highness#106).
+cmd_repoint() {
+  local d m tmp
+  [ $# -eq 1 ] && [ -d "$1" ] || { printf 'usage: hold.sh repoint <config dir>\n' >&2; return 2; }
+  command -v jq >/dev/null 2>&1 || return 0
+  d=$(dir_of "$1")
+  for m in "$HELD"/*.json; do
+    [ -f "$m" ] || continue
+    tmp="$m.tmp.$$"
+    jq --arg d "$d" '.config_dir = $d' "$m" >"$tmp" 2>/dev/null && mv "$tmp" "$m" || rm -f "$tmp"
+  done
+  log "repoint	$d"
+  cmd_mark "$d" >/dev/null || :
+  cmd_resume
+}
+
 cmd_held() {
   local m
   for m in "$HELD"/*.json; do
@@ -179,5 +200,6 @@ case "$sub" in
   hook) cmd_hook "$@"; exit 0 ;;
   resume) cmd_resume ;;
   held) cmd_held ;;
-  *) printf 'usage: hold.sh pass|mark|hook|resume|held\n' >&2; exit 2 ;;
+  repoint) cmd_repoint "$@" ;;
+  *) printf 'usage: hold.sh pass|mark|hook|resume|held|repoint <config dir>\n' >&2; exit 2 ;;
 esac

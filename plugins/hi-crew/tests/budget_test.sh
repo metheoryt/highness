@@ -117,4 +117,23 @@ rm -f "$T/curl.stdin"; mkdir -p "$T/home/.claude"
 PATH="$T/bin:$PATH" HOME="$T/home" HI_BUDGET_KEYCHAIN=1 HI_BUDGET_RESPONSE='' bash "$B" check "$T/home/.claude" >/dev/null 2>&1
 has '~/.claude reads the bare entry first' "$(cat "$T/curl.stdin" 2>/dev/null)" 'Bearer sk-bare'
 
+# --- room: Orca's other accounts under their line (highness#106), read here from each one's cache
+usage() { # <dir> <5h %>
+  mkdir -p "$1"
+  jq -n --argjson now "$HI_NOW" --argjson p "$2" '{five_hour: {used_percentage: $p, resets_at: ($now + 18000)},
+    seven_day: {used_percentage: 5, resets_at: ($now + 604800)}, updated_at: ($now - 60)}' >"$1/highness-usage.json"
+}
+usage "$T/p/sel" 90; usage "$T/p/full" 70; usage "$T/p/free" 10
+jq -n --arg t "$T/p" '{result: {claude: {activeAccountId: "sel", activeAccountIdsByRuntime: {host: "sel"}, accounts: [
+  {id: "sel", email: "sel@x", home: "\($t)/sel"}, {id: "full", email: "full@x", home: "\($t)/full"},
+  {id: "free", email: "free@x", home: "\($t)/free"}]}}}' >"$T/accounts.json"
+printf '#!/bin/sh\n[ "$1 $2" = "account list" ] && cat "%s/accounts.json"\n' "$T" >"$T/bin/orca-stub"; chmod +x "$T/bin/orca-stub"
+out=$(ORCA_CLI_COMMAND="$T/bin/orca-stub" HI_BUDGET_RESPONSE=fail bash "$B" room); rc=$?
+check 'room: exit 0 when an account has room' "$rc" 0
+check 'room: only the account under its line, the selected one left out' "$(printf '%s\n' "$out" | cut -f1-3)" "free@x	free	$T/p/free"
+has 'room: with its check line' "$out" '5h 10% (agents up to 50%'
+usage "$T/p/free" 80
+ORCA_CLI_COMMAND="$T/bin/orca-stub" HI_BUDGET_RESPONSE=fail bash "$B" room >/dev/null; rc=$?
+check 'room: exit 1 when none has room' "$rc" 1
+
 exit $fail
