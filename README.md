@@ -108,6 +108,17 @@ Known gaps:
   It skips the start instead. Switching Orca's selected account would also move your own new
   sessions.
 
+### The retro at close
+
+When a ticket is settled, the coordinator runs a short retro in its own session before
+`crew.sh close` (`hi-crew/reference/retro.md`): it reads the worker's spec, the ticket, the PR and
+the signals `lib/retro.sh gather` pulls from the worker's transcript and the denial log, and files
+at most 3 findings (a tool fault, a gap in the worker spec, a process question), each
+deduplicated against open items. Then it comments the ticket, first line `<!-- hi:retro -->`.
+Findings go to GitHub issues unless the team sets `crew.retro_sink`, a command with `{{KIND}}`
+(`tool`, `brief` or `decision`), `{{TITLE}}`, `{{BODY_FILE}}`, `{{TICKET}}` and `{{ROOT}}`
+filled in shell-quoted, which prints the created key or URL, or `dup <key>`.
+
 ## Configuration
 
 Optional JSON, read by every plugin: `~/.config/highness/config.json` (or `$HIGHNESS_CONFIG`) for one

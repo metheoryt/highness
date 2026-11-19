@@ -187,6 +187,7 @@ cmd_close() {
   [ $# -eq 1 ] || die 'usage: close <KEY>'
   local f; f=$(keyfile "$1") || exit 2
   [ -f "$f" ] || die "no open facts for $1"
+  jq -e '.retro_at' "$f" >/dev/null 2>&1 || printf 'crew: %s closed without a retro (lib/retro.sh, reference/retro.md)\n' "$1" >&2
   mkdir -p "$DIR/closed"
   mv "$f" "$DIR/closed/$1.$(date -u +%Y%m%dT%H%M%SZ).json"
 }
