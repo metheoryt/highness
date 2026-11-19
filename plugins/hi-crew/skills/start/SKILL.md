@@ -89,8 +89,9 @@ Below, `$O` stands for that executable.
    ticket: Orca would stop waking that session for its workers.
 5. **Spec:** write the brief to a file in the scratchpad, then
    `bash "$C" spec --key <KEY> --title '<title>' --brief-file <file> > <spec-file>` (it reads the
-   team's settings at the coordinator root). Read it once before starting: a `Team process (none
-   configured…)` there means no team file applies at that root.
+   team's settings at the coordinator root, and keeps a copy at `$(bash "$C" dir)/specs/<KEY>.md`).
+   Read it once before starting: a `Team process (none configured…)` there means no team file
+   applies at that root.
 6. **Start.** First the team's branch name:
    `bash "$C" branch --key <KEY> --title '<title>' [--type <feat|fix|…, from the ticket>] [--slug '<short slug>']`.
    - It prints nothing (exit 1): no `crew.branch`, so Orca names the branch:
@@ -114,9 +115,10 @@ Below, `$O` stands for that executable.
 7. **Record the facts** from the receipt, with the branch read from the workspace
    (`git -C <workspace path> branch --show-current`: Orca adds a suffix when the name is taken;
    until the worker records its PR, the digest and the watch find the PR by it):
-   `bash "$C" record <KEY> '{"title":…,"repo":…,"workspace":…,"branch":…,"dispatch":…,"task":…,"run":…,"agent":…,"model":…,"root":…}'`,
+   `bash "$C" record <KEY> '{"title":…,"repo":…,"workspace":…,"branch":…,"dispatch":…,"task":…,"run":…,"agent":…,"model":…,"root":…,"spec":…}'`,
    where `root` is the coordinator root (`bash "$C" root`), never re-derived from the cwd: the watch
-   reads the team's settings there.
+   reads the team's settings there; `spec` is the copy step 5 kept. After a compaction the
+   worker's session is pointed back at it (`crew.sh reentry`), and the retro reads it.
 8. Tell the user in one or two lines: the ticket, the workspace, what the worker will do, that its
    questions come here. Then **end your turn**. Never poll; Orca wakes you.
 
