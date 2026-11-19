@@ -119,6 +119,24 @@ check 'relay: one choice line per point' "$(( $(lines) - n0 ))" 2
 check 'relay: a line carries the point, the ask and what was sent' \
   "$(bash "$C" choices ABC-2 | tail -2 | jq -r '[.key, .question, .took, .picked, .reply, .ask, .run, .dispatch, .asked_at, .ask_body, (.sent | split("\n")[0]), (.options // [] | length | tostring)] | join("|")' | tr '\n' ' ')" \
   "ABC-2|first|option|A|A|msg_q2|run_abc123|ctx_b|2026-01-01T11:00:00Z|Open one? second line|The person's decisions:|1 ABC-2|second|own|C|neither: C|msg_q2|run_abc123|ctx_b|2026-01-01T11:00:00Z|Open one? second line|The person's decisions:|0 "
+check 'relay: a point with no recommended records null, and as_recommended is null' \
+  "$(bash "$C" choices ABC-2 | tail -2 | jq -r '[(.recommended | tostring), (.as_recommended | tostring)] | join("|")' | tr '\n' ' ')" 'null|null null|null '
+check 'relay: the stored line carries recommended, not the derived as_recommended' \
+  "$(tail -1 "$HIGHNESS_STATE/crew/choices.jsonl" | jq -r '[has("recommended"), has("as_recommended")] | map(tostring) | join(" ")')" 'true false'
+jq -n '{body: "decisions", points: [
+  {question: "r1", options: [{name: "A"}, {name: "B"}], recommended: "A", took: "option", picked: "a ", reply: "yes"},
+  {question: "r2", options: [{name: "A"}, {name: "B"}], recommended: "A", took: "option", picked: "B", reply: "B"},
+  {question: "r3", recommended: "A", took: "own", picked: "C", reply: "C"},
+  {question: "r4", recommended: "A", took: "reframed", reply: "wrong question"}]}' >"$T/r-rec"
+bash "$C" relay ABC-2 --id msg_q2 "$T/r-rec" || no 'relay with recommended options'
+check 'relay: recommended recorded; as recommended, against, own and reframed read apart' \
+  "$(bash "$C" choices ABC-2 | tail -4 | jq -r '[.question, .recommended, (.as_recommended | tostring)] | join("|")' | tr '\n' ' ')" \
+  'r1|A|true r2|A|false r3|A|false r4|A|false '
+bash "$C" choice ABC-1 '{"question":"q3","took":"option","picked":"A","recommended":"A"}'
+check 'choice: a line written by hand derives as_recommended too' "$(bash "$C" choices ABC-1 | tail -1 | jq -r .as_recommended)" true
+printf '%s\n' '{"key":"ABC-1","at":"2026-01-01T00:00:00Z","question":"old","took":"option","picked":"A"}' >>"$HIGHNESS_STATE/crew/choices.jsonl"
+check 'choices: an old line without recommended still reads, as_recommended null' \
+  "$(bash "$C" choices ABC-1 | tail -1 | jq -r '[.question, .picked, (has("recommended") | tostring), (.as_recommended | tostring)] | join("|")')" 'old|A|false|null'
 bash "$C" relay ABC-6 --id msg_q1 "$T/r-min" || no 'relay with --id'
 check 'relay: no points still leaves one line' "$(bash "$C" choices ABC-6 | jq -r '[.ask, (.took // "null"), .sent] | join("|")')" 'msg_q1|null|yes'
 check 'gaps: a relayed answer is no gap' "$(bash "$C" choices --gaps)" ''

@@ -36,15 +36,21 @@
 #                                     (<state dir>/specs/<KEY>.resumed.md, for that dispatch:
 #                                     `resumed_for`). Refuses when the workspace is gone, the
 #                                     PR is merged or closed, or the worker is still live (cmd_resume)
-#   crew.sh choices [<KEY>]           the recorded choices, one JSON object per line
+#   crew.sh choices [<KEY>]           the recorded choices, one JSON object per line, each with
+#                                     as_recommended derived (below)
 #   crew.sh choices --gaps            answers to hi-crew asks with no choice line (sent without
 #                                     relay), TSV: key, ask id, answered at, the ask's first line
 #
 # A choice line (choices.jsonl; stable, read back over many tickets, e.g. to learn a person's
 # preferences): key, at, question, options [{name, loses, leans_on}], took (option | own |
-# reframed | null), picked, reply (the person's words, verbatim). relay adds ask (the message id),
-# run, dispatch, asked_at, ask_body (the ask verbatim: its options are usually prose in it) and
-# sent (the body relayed). New fields may be added; these keep their names and meaning.
+# reframed | null), picked, reply (the person's words, verbatim), recommended (the option name
+# the asker recommended, null when the ask made no recommendation; absent on lines written
+# before it was recorded). relay adds ask (the message id), run, dispatch, asked_at, ask_body
+# (the ask verbatim: its options are usually prose in it) and sent (the body relayed). New
+# fields may be added; these keep their names and meaning. `choices` adds as_recommended, not
+# stored: true when the person took the recommended option, false when they took another one,
+# their own or reframed the question, null when there was no recommendation (or none recorded)
+# or no decision (took null).
 #   crew.sh run                       this session's hi-crew Orca Run: the Run Orca has bound to
 #                                     this terminal, when it is one hi-crew made (exit 1: none)
 #   crew.sh run <run_id>              register a Run hi-crew made, and pin its coordinator root
@@ -286,10 +292,12 @@ cmd_choice() {
 # record the person's choices in one step. The reply file is JSON:
 #   {"body": "<the text sent to the worker>",
 #    "points": [{"question":…, "options":[{"name":…,"loses":…,"leans_on":…}],
+#                "recommended":<option name>|null,
 #                "took":"option"|"own"|"reframed", "picked":…, "reply":"<their words, verbatim>"}]}
 # Everything is checked before the reply goes out, so a refusal sends nothing. Each point becomes
-# one choices.jsonl line, with the ask's id, Run, Dispatch, time and verbatim text added; an
-# empty "points" still writes one line (took null), so a relayed reply never shows as a gap.
+# one choices.jsonl line, with the ask's id, Run, Dispatch, time and verbatim text added, and
+# recommended null when the point leaves it out; an empty "points" still writes one line (took
+# null), so a relayed reply never shows as a gap.
 # --action <id>: the person said yes to the worker's prepared action (lib/action.sh). It runs
 # once, here, before the reply goes out, and the reply starts with its outcome; the body follows
 # as the person's words. A reply Orca refuses (the worker is gone) is kept for `stranded`, and its
@@ -345,7 +353,7 @@ $body"
        ask_body: ($a.body // $p.question // ""), sent: $sent}
       + (if $aid != "" then {action: $aid} else {} end) as $base
     | (if ($r.points // []) == [] then [{question: null, took: null}] else $r.points end)[]
-    | {key: $key, at: $now, question: null}
+    | {key: $key, at: $now, question: null, recommended: null}
       + (if (($p.options // []) | length) > 0 then {options: $p.options} else {} end)
       + . + $base') || die 'relay: could not build the choice lines'
   out=$("$(orca_cmd)" orchestration reply --id "$id" --body "$body" --json 2>&1)
@@ -390,13 +398,15 @@ cmd_choices() {
   [ $# -le 1 ] || die 'usage: choices [<KEY>] | choices --gaps'
   need_jq
   [ -f "$DIR/choices.jsonl" ] || return 0
-  if [ $# -eq 1 ]; then
-    keyfile "$1" >/dev/null || exit 2
-    jq -c --arg key "$1" 'select(.key == $key)' "$DIR/choices.jsonl"
-  else
-    jq -c . "$DIR/choices.jsonl"
-  fi
+  [ $# -eq 0 ] || keyfile "$1" >/dev/null || exit 2
+  jq -c --arg key "${1:-}" "select(\$key == \"\" or .key == \$key) | $CHOICE_AS_RECOMMENDED" "$DIR/choices.jsonl"
 }
+
+# as_recommended, derived when read (see the choice line above). Names compare trimmed and
+# case-blind, so "Option A" picked against a recommended "option a" still counts as taken.
+CHOICE_AS_RECOMMENDED='def nm: tostring | ascii_downcase | sub("^\\s+"; "") | sub("\\s+$"; "");
+  . + {as_recommended: (if .recommended == null or .took == null then null
+    else (.took == "option" and .picked != null and (.picked | nm) == (.recommended | nm)) end)}'
 
 cmd_run() {
   if [ $# -eq 1 ]; then
