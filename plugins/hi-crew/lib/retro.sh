@@ -36,8 +36,8 @@
 # denials.jsonl (HI_RETRO_DENIALS overrides), one object per denial with at least "session" or
 # "cwd"; the retro keeps the lines of the worker's session or workspace. Absent: "no denial log".
 #
-# Proposed preference lines from the ticket's choice records (the `choices` part of the bundle)
-# are a later step of the close; this script only hands those records over.
+# Proposed preference lines and team-rule drafts from the choice records (the `choices` part of
+# the bundle) are lib/prefs.sh's; this script only hands those records over.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

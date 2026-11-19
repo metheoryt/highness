@@ -62,7 +62,9 @@
 #                                     merging to a person; "on_green" has the worker merge its own
 #                                     PR once ready and green, unless its brief says otherwise.
 #                                     {{CREW}} in the template becomes this crew.sh as a command,
-#                                     for the worker's own `record <KEY> '{"pr":…}'`
+#                                     for the worker's own `record <KEY> '{"pr":…}'`.
+#                                     The person's preference files (prefs.sh paths) are cited in
+#                                     the Asking part by path, never inlined; none, no line
 #   crew.sh watch                    look at the PR of every open ticket and, when something a
 #                                     person should see changed since the last look (merged or
 #                                     closed, CI failed, new comments from people), append it to the
@@ -411,7 +413,7 @@ cmd_reports() {
 }
 
 cmd_spec() {
-  local key='' title='' brief_file='' brief='' process marker merge crew root=''
+  local key='' title='' brief_file='' brief='' process marker merge crew root='' prefs
   while [ $# -gt 0 ]; do
     case "$1" in
       --root) root=${2:-}; shift 2 ;;
@@ -438,12 +440,17 @@ cmd_spec() {
     on_green) merge="Merge your own pull request once it is ready for review and its checks pass, the way the team's process below says. If your brief says merging is the person's call, it is: then never merge." ;;
     *) die "crew.merge '$merge' is not never or on_green" ;;
   esac
+  # The person's preference files, cited by path (never inlined: such stores can be large).
+  prefs=$(bash "$HERE/prefs.sh" paths 2>/dev/null | awk '
+    NR == 1 { print "- The person'"'"'s own preferences are in these files; read the headings that bear on" }
+    NR == 1 { print "  the question, and cite one by file and heading in `leans on:`:" }
+    { print "  - `" $0 "`" }')
   # {{CREW}}: this crew.sh as one command, so the worker records facts (its PR) where the watch
   # reads them; a state dir set by HIGHNESS_STATE is carried, since the worker's shell may not have it.
   crew="bash $(q "$HERE/crew.sh")"
   [ -z "${HIGHNESS_STATE:-}" ] || crew="HIGHNESS_STATE=$(q "$HIGHNESS_STATE") $crew"
   # Placeholders are replaced in a fixed order by awk with literal strings (no regex, no &).
-  KEY=$key TITLE=$title BRIEF=$brief PROCESS=$process MARKER=$marker MERGE=$merge CREW=$crew ROOT=$root TRACKER=$(tracker_cmd "$root") awk '
+  PREFS=$prefs KEY=$key TITLE=$title BRIEF=$brief PROCESS=$process MARKER=$marker MERGE=$merge CREW=$crew ROOT=$root TRACKER=$(tracker_cmd "$root") awk '
     function rep(s, ph, val,   out, i) {
       out = ""
       while ((i = index(s, ph)) > 0) { out = out substr(s, 1, i - 1) val; s = substr(s, i + length(ph)) }
@@ -456,6 +463,7 @@ cmd_spec() {
       line = rep(line, "{{MERGE}}", ENVIRON["MERGE"])
       line = rep(line, "{{CREW}}", ENVIRON["CREW"])
       if (line == "{{BRIEF}}") { print ENVIRON["BRIEF"]; next }
+      if (line == "{{PREFERENCES}}") { if (ENVIRON["PREFS"] != "") print ENVIRON["PREFS"]; next }
       if (line == "{{PROCESS}}") {
         print rep(rep(rep(ENVIRON["PROCESS"], "{{ROOT}}", ENVIRON["ROOT"]), "{{TRACKER}}", ENVIRON["TRACKER"]), "{{KEY}}", ENVIRON["KEY"])
         next }

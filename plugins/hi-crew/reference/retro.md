@@ -63,11 +63,35 @@ Where they go is `crew.retro_sink` in the team's settings (a command that files 
 see `lib/retro.sh`); unset, GitHub issues. A `failed:` result is shown to the person; the
 retro goes on.
 
-## 3. Preferences (a later step)
+## 3. Preferences
 
-The `choices` part of the bundle is what the person decided on this ticket. Proposing lines for
-the person's own preferences from those records is a step this retro will gain later; today,
-leave the records as they are.
+The `choices` part of the bundle is what the person decided on this ticket. Some of it is worth
+keeping as a line in their own preferences, so the next worker reads it before asking again.
+`P="${CLAUDE_PLUGIN_ROOT}/lib/prefs.sh"`.
+
+1. `bash "$P" propose <KEY>` prints raw candidate lines, grouped under the file each fits best
+   (the one the picked option leans on, else the person's first preference file, else the
+   default `highness/preferences.md`). Keep only those that say something general about how the
+   person works; a choice that only fits this ticket is not a preference. Reword each as a rule
+   in the person's terms, one line, ending with the ticket key. None worth keeping: skip to 3.
+2. Write the lines to a scratchpad file and show `bash "$P" diff <file> <lines> [--under
+   '<heading>']` to the person. On their yes, and only then, `bash "$P" write` with the same
+   arguments; it writes only to a file `prefs.sh targets` lists. The person's own sync carries
+   it from there: never copy it anywhere else.
+3. `bash "$P" repeats` lists a choice made the same way on two or more tickets. For one that
+   would serve the whole team (not one person's taste), `bash "$P" draft-rule <basis> <value>`
+   drafts a team rule as a pull request body: reword its rule line in the team's terms first.
+   Its `target:` is the team's rules file (`crew.team_rules` in the team's settings, a path in
+   the coordinator root's repo). Show the draft; on the person's yes, open it as a draft PR to
+   that repo from a fresh worktree off its trunk (never the main checkout), adding the rule line
+   to that file. `target: none`: offer the draft as an issue in that repo instead. The team
+   accepts or rejects it in review; nothing becomes a team rule without that.
+
+These lines and drafts never go into the retro comment or the filed findings: the person's
+replies are theirs, and the draft carries none of them verbatim. The draft's question and picked
+columns are the worker's own ask text: before showing it, scrub them as step 2 says (host names,
+home paths, company and people's names, anything from a private repo), since the team's repo may
+be public.
 
 ## 4. Comment, then close
 
