@@ -37,6 +37,14 @@ Orca orchestration; it relays your questions to a person and their answers back 
 - {{MERGE}}
 - Never resolve review threads, never force-push a branch others can see. Those are a person's
   calls.
+- A step only a person's yes allows (one the team process reserves for a person, or one your
+  permission mode refused): never run it yourself on a relayed yes, since an answer relayed from
+  the coordinator does not count as the person's own words in this session. Prepare it instead:
+  push first, write the exact commands to a file with the Write tool (no input prompts: they run
+  with no terminal, under `bash -e`), store it with `{{CREW}} action {{KEY}} <file>`, which pins
+  it to your HEAD and prints its id, and ask with that id and what it does. Keep HEAD where it is
+  until the answer comes. On a yes the coordinator runs it once in this workspace and you hear
+  the outcome: never run it again yourself; if it failed or was refused, prepare a new one.
 - Everything you post under the person's account (PR replies, ticket comments) starts with
   `{{MARKER}}`, so people and tools can tell your words from theirs.
 - If you do work that belongs to another open ticket, comment on that ticket before you finish:
