@@ -47,6 +47,8 @@ Below, `$O` stands for that executable.
   | `crew.merge` | `on_green`: the worker merges its own PR once it is ready and its checks pass (a brief that says merging is the person's call still wins). For repos where the person has decided agents merge | `never`: merging is a person's call |
   | `crew.agent` | Orca agent id for workers | `claude` |
   | `crew.model` | provider model id for workers | say so to the user once; Orca then uses the agent's own default, which differs per person |
+  | `crew.branch` | the worker's branch name, for a team whose forge accepts only its own scheme: `{{KEY}}`, `{{SLUG}}` (a short slug of the title), `{{TYPE}}` (`feat`, `fix`, … from the ticket; default `feat`), `{{OWNER}}` (`crew.owner`). Example: `{{TYPE}}/{{OWNER}}/{{KEY}}-{{SLUG}}` | Orca names the branch from `--name` |
+  | `crew.owner` | the person's own name in branch names, for `{{OWNER}}`; set it in the person's own file, not the team's | a template with `{{OWNER}}` refuses to start |
   | `crew.marker` | the prefix workers put on everything they post under the person's account | `(agent)` |
   | `crew.pr_state` | a command that prints one PR's state as JSON, for the watch (below; the fields are in `lib/crew.sh`'s header); `{{PR}}`, `{{ROOT}}`, `{{MARKER}}`, `{{BOTS}}` become the shell-quoted PR url, the coordinator root, the marker and the JSON array of logins that are not people. It runs outside any terminal, so it finds its own credentials | `gh` for a github.com PR; other forges go unwatched |
   | `crew.bots` | logins that are not people, added to the forge Actions users (`github-actions`, `forgejo-actions`, `gitea-actions`) and any `[bot]` or Bot account: a team's AI reviewer or gatekeeper on a normal account. Their comments wake no one; their inline comments and change requests are findings, sent to the worker | the Actions users only |
@@ -91,17 +93,29 @@ Below, `$O` stands for that executable.
    team's settings at the coordinator root, and keeps a copy at `$(bash "$C" dir)/specs/<KEY>.md`).
    Read it once before starting: a `Team process (none configured…)` there means no team file
    applies at that root.
-6. **Start:**
-   ```bash
-   $O orchestration worker-start --spec-file <spec-file> --task-title '<KEY>: <title>' \
-     --worktree new-top-level --repo id:<repo-id> --name <KEY>-<short-slug> \
-     --base-branch origin/<trunk> --agent <crew.agent> [--model <crew.model>] --json
-   ```
-   If it fails, do not rerun it: read `failedStage` and load
+6. **Start.** First the team's branch name:
+   `bash "$C" branch --key <KEY> --title '<title>' [--type <feat|fix|…, from the ticket>] [--slug '<short slug>']`.
+   - It prints nothing (exit 1): no `crew.branch`, so Orca names the branch:
+     ```bash
+     $O orchestration worker-start --spec-file <spec-file> --task-title '<KEY>: <title>' \
+       --worktree new-top-level --repo id:<repo-id> --name <KEY>-<short-slug> \
+       --base-branch origin/<trunk> --agent <crew.agent> [--model <crew.model>] --json
+     ```
+   - It prints a name: worker-start cannot name a branch, so create the workspace on it first,
+     then start the worker there (`--keep-open`, or the worker closes when it reports):
+     ```bash
+     bash "$C" workspace --repo id:<repo-id> --name <KEY> --branch <name> --base origin/<trunk>
+     $O orchestration worker-start --spec-file <spec-file> --task-title '<KEY>: <title>' \
+       --worktree path:<the printed path> --keep-open --agent <crew.agent> [--model <crew.model>] --json
+     ```
+     The workspace is the printed path, not the receipt's.
+   - Exit 2 (a placeholder with no value, a bad template): show the error and stop.
+
+   If worker-start fails, do not rerun it: read `failedStage` and load
    `$O skills get orchestration --reference references/recovery-and-cleanup.md`.
 7. **Record the facts** from the receipt, with the branch read from the workspace
-   (`git -C <workspace path> branch --show-current`; until the worker records its PR, the digest
-   and the watch find the PR by it):
+   (`git -C <workspace path> branch --show-current`: Orca adds a suffix when the name is taken;
+   until the worker records its PR, the digest and the watch find the PR by it):
    `bash "$C" record <KEY> '{"title":…,"repo":…,"workspace":…,"branch":…,"dispatch":…,"task":…,"run":…,"agent":…,"model":…,"root":…,"spec":…}'`,
    where `root` is the coordinator root (`bash "$C" root`), never re-derived from the cwd: the watch
    reads the team's settings there; `spec` is the copy step 5 kept. After a compaction the

@@ -81,6 +81,25 @@
 #                                     of an open ticket's worker (its cwd in the ticket's
 #                                     `workspace`), one context line naming the ticket and its spec
 #                                     to re-read; anywhere else nothing. Never fails a start
+#   crew.sh branch --key K --title T [--type X] [--slug S] [--root R]
+#                                     the worker's branch name from the team's crew.branch template,
+#                                     read at R (default: `crew.sh root`); exit 1, printing nothing,
+#                                     when crew.branch is unset (Orca then names the branch from
+#                                     worker-start --name, as before). Placeholders: {{KEY}}, {{SLUG}}
+#                                     (S, else the title: lowercase ASCII words joined by "-", at
+#                                     most 5 words and 40 characters, "work" when none), {{TYPE}} (X,
+#                                     default feat), {{OWNER}} (crew.owner, the person's own name in
+#                                     branches, from their file). A placeholder with no value, an
+#                                     unknown one, or a result git refuses as a branch name: exit 2
+#   crew.sh workspace --repo SEL --name N --branch B --base REF
+#                                     create a top-level Orca workspace on branch B (no name prefix;
+#                                     Orca adds a numeric suffix when B is taken, so read the branch
+#                                     back from the workspace), and print its path. The repo's setup
+#                                     runs per its Orca policy in a terminal of its own, and this
+#                                     returns without waiting for it. Start the worker in it with
+#                                     worker-start --worktree path:<path> --keep-open (a worker in
+#                                     an existing workspace otherwise closes when it reports).
+#                                     worker-start has no branch option
 #   crew.sh watch                    look at the PR of every open ticket and, when something changed
 #                                     since the last look, append it to the watch events and wake
 #                                     whoever handles it. The worker itself, by a round sent to its
@@ -571,6 +590,74 @@ EOF
   return 0
 }
 
+# A slug from free text: lowercase ASCII words joined by "-", at most 5 words and 40 characters.
+# Bytes outside [a-z0-9] split words (LC_ALL=C), so a title with no ASCII words gives "work".
+slugify() {
+  local s
+  s=$(printf '%s' "$1" | LC_ALL=C tr '[:upper:]' '[:lower:]' | LC_ALL=C sed 's/[^a-z0-9][^a-z0-9]*/-/g; s/^-//; s/-$//' |
+      cut -d- -f1-5 | cut -c1-40 | sed 's/-$//')
+  printf '%s\n' "${s:-work}"
+}
+
+cmd_branch() {
+  local key='' title='' type='' slug='' root='' tpl owner='' name
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --root) root=${2:-}; shift 2 ;;
+      --key) key=${2:-}; shift 2 ;;
+      --title) title=${2:-}; shift 2 ;;
+      --type) type=${2:-}; shift 2 ;;
+      --slug) slug=${2:-}; shift 2 ;;
+      *) die "branch: unknown argument '$1'" ;;
+    esac
+  done
+  [ -n "$key" ] && [ -n "$title" ] || die 'usage: branch --key K --title T [--type X] [--slug S] [--root R]'
+  keyfile "$key" >/dev/null || exit 2
+  [ -n "$root" ] || root=$(cmd_root)
+  [ -d "$root" ] || die "branch: the root is not a directory: '$root'"
+  tpl=$(cd "$root" && bash "$CONFIG" get '.crew.branch') || return 1
+  [ -n "$tpl" ] || return 1
+  case "$tpl" in
+    *'{{OWNER}}'*) owner=$(cd "$root" && bash "$CONFIG" get '.crew.owner') || owner=''
+      [ -n "$owner" ] || die "branch: crew.branch '$tpl' uses {{OWNER}}: set crew.owner (your name in branches) in your own highness config" ;;
+  esac
+  slug=$(slugify "${slug:-$title}")
+  name=$(KEY=$key SLUG=$slug TYPE=${type:-feat} OWNER=$owner awk '
+    function rep(s, ph, val,   out, i) {
+      out = ""
+      while ((i = index(s, ph)) > 0) { out = out substr(s, 1, i - 1) val; s = substr(s, i + length(ph)) }
+      return out s
+    }
+    { print rep(rep(rep(rep($0, "{{KEY}}", ENVIRON["KEY"]), "{{SLUG}}", ENVIRON["SLUG"]), "{{TYPE}}", ENVIRON["TYPE"]), "{{OWNER}}", ENVIRON["OWNER"]) }' <<<"$tpl")
+  case "$name" in *'{{'*'}}'*) die "branch: crew.branch '$tpl' has a placeholder other than {{KEY}}, {{SLUG}}, {{TYPE}}, {{OWNER}}" ;; esac
+  git check-ref-format --branch "$name" >/dev/null 2>&1 || die "branch: '$name' (from crew.branch '$tpl') is not a valid branch name"
+  printf '%s\n' "$name"
+}
+
+cmd_workspace() {
+  need_jq
+  local repo='' name='' branch='' base='' out path err
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --repo) repo=${2:-}; shift 2 ;;
+      --name) name=${2:-}; shift 2 ;;
+      --branch) branch=${2:-}; shift 2 ;;
+      --base) base=${2:-}; shift 2 ;;
+      *) die "workspace: unknown argument '$1'" ;;
+    esac
+  done
+  [ -n "$repo" ] && [ -n "$name" ] && [ -n "$branch" ] && [ -n "$base" ] \
+    || die 'usage: workspace --repo SEL --name N --branch B --base REF'
+  out=$("$(orca_cmd)" worktree create --repo "$repo" --name "$name" --branch "$branch" --base-branch "$base" \
+    --no-parent --json 2>&1)
+  path=$(printf '%s' "$out" | jq -r 'select(.ok == true) | .result.worktree.path // empty' 2>/dev/null) || path=''
+  if [ -z "$path" ]; then
+    err=$(first_err "$out"); [ -n "$err" ] || err=$(printf '%s\n' "$out" | head -1)
+    die "workspace: orca worktree create failed: ${err:-no path in its answer}"
+  fi
+  printf '%s\n' "$path"
+}
+
 # One shell word: 'it''s' -> 'it'\''s'.
 q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 
@@ -1051,8 +1138,8 @@ cmd_setup_status() {
 #                                settings are read there, the candidates command runs there, and
 #                                it is the `root` of each started ticket's facts. Required
 #   crew.autostart.candidates    a command printing one JSON object per ready ticket that carries
-#                                the label: {"key", "title", "url", "repo"?, "created"?}; {{LABEL}}
-#                                and {{ROOT}} become the shell-quoted label and root, {{TRACKER}}
+#                                the label: {"key", "title", "url", "repo"?, "created"?, "type"?}
+#                                ("type" fills crew.branch's {{TYPE}}); {{LABEL}} and {{ROOT}} become the shell-quoted label and root, {{TRACKER}}
 #                                the tracker adapter. Unset: with tracker.kind set at the root,
 #                                the adapter's ready tickets (role todo) with the label; else the
 #                                root's GitHub issues with the label, keyed <repo name>-<number>
@@ -1240,14 +1327,32 @@ as_usage() {
 
 as_start() { # <candidate json> <root> <run> <handle> <dry>
   local c=$1 root=$2 run=$3 handle=$4 key title url repo base agent model label sf bf out ws path branch err
+  local named='' wpath='' place
   key=$(printf '%s' "$c" | jq -r .key); title=$(printf '%s' "$c" | jq -r '.title // .key')
   url=$(printf '%s' "$c" | jq -r '.url // ""')
   repo=$(printf '%s' "$c" | jq -r '.repo // empty'); [ -n "$repo" ] || repo=$(as_get repo) || repo=$root
   case "$repo" in (id:*|name:*|path:*) ;; (/*) repo="path:$repo" ;; (*) repo="path:$root/$repo" ;; esac
   base=$(as_get base) || base=origin/main
   label=$(as_get label) || label=auto
-  if [ -n "$5" ]; then as_log would-start "$key" "$repo from $base: $title"; return 0; fi
+  # The team's branch template (crew.branch), when it has one: exit 1 is unset, 2 an error.
+  named=$(bash "$HERE/crew.sh" branch --key "$key" --title "$title" --root "$root" \
+    --type "$(printf '%s' "$c" | jq -r '.type // empty')" 2>&1)
+  case $? in
+    0) ;;
+    1) named='' ;;
+    *) as_log failed "$key" "$(printf '%s\n' "$named" | sed 's/^crew: //' | head -1)"; return 1 ;;
+  esac
+  if [ -n "$5" ]; then as_log would-start "$key" "$repo from $base${named:+ as $named}: $title"; return 0; fi
   mkdir -p "$AS_DIR/tried" && date -u +%Y-%m-%dT%H:%M:%SZ >"$AS_DIR/tried/$key"
+  if [ -n "$named" ]; then
+    # worker-start has no branch option: create the workspace on the branch, then start in it.
+    wpath=$(cd "$root" && bash "$HERE/crew.sh" workspace --repo "$repo" --name "$key" --branch "$named" --base "$base" 2>&1) || {
+      as_log failed "$key" "$(printf '%s\n' "$wpath" | sed 's/^crew: //' | head -1); not retried (rm $AS_DIR/tried/$key to retry)"
+      return 1; }
+    place=(--worktree "path:$wpath" --keep-open)
+  else
+    place=(--worktree new-top-level --repo "$repo" --name "$key" --base-branch "$base")
+  fi
   agent=$(cd "$root" && bash "$CONFIG" get '.crew.agent') || agent=claude
   model=$(cd "$root" && bash "$CONFIG" get '.crew.model') || model=''
   bf=$(mktemp "${TMPDIR:-/tmp}/hi-crew-brief.XXXXXX") && sf="$bf.spec" || return 1
@@ -1256,17 +1361,17 @@ as_start() { # <candidate json> <root> <run> <handle> <dry>
   (cd "$root" && bash "$HERE/crew.sh" spec --key "$key" --title "$title" --brief-file "$bf" --root "$root") >"$sf" \
     || { rm -f "$bf" "$sf"; as_log failed "$key" "could not build the spec"; return 1; }
   out=$(cd "$root" && "$(orca_cmd)" orchestration worker-start --spec-file "$sf" --task-title "$key: $title" \
-    --worktree new-top-level --repo "$repo" --name "$key" --base-branch "$base" --agent "$agent" \
+    "${place[@]}" --agent "$agent" \
     ${model:+--model "$model"} --run "$run" --from "$handle" --timeout-ms 90000 --json 2>&1)
   local rc=$?
   rm -f "$bf" "$sf"
   if [ $rc -ne 0 ] || [ "$(printf '%s' "$out" | jq -r '.ok // false' 2>/dev/null)" != true ]; then
     err=$(first_err "$out"); [ -n "$err" ] || err=$(printf '%s\n' "$out" | head -1)
-    as_log failed "$key" "worker-start: ${err:-exit $rc}; not retried (rm $AS_DIR/tried/$key to retry)"
+    as_log failed "$key" "worker-start: ${err:-exit $rc}${wpath:+ (its workspace $wpath was created)}; not retried (rm $AS_DIR/tried/$key to retry)"
     return 1
   fi
   ws=$(printf '%s' "$out" | jq -r '.result.workspace // empty')
-  path=${ws#*::}
+  path=${ws#*::}; [ -z "$wpath" ] || path=$wpath
   branch=$(git -C "$path" branch --show-current 2>/dev/null) || branch=''
   bash "$HERE/crew.sh" record "$key" "$(printf '%s' "$out" | jq -c --arg t "$title" --arg r "$repo" --arg p "$path" \
       --arg b "$branch" --arg root "$root" --arg a "$agent" --arg m "$model" --arg u "$url" --arg s "$DIR/specs/$key.md" '
@@ -1346,6 +1451,8 @@ case "$sub" in
   reports) cmd_reports ;;
   spec) cmd_spec "$@" ;;
   reentry) cmd_reentry; exit 0 ;;
+  branch) cmd_branch "$@" ;;
+  workspace) cmd_workspace "$@" ;;
   watch) cmd_watch ;;
   watch-install) cmd_watch_install "$@" ;;
   autostart) cmd_autostart "$@" ;;
