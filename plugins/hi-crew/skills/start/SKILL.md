@@ -136,8 +136,11 @@ Several tickets: run steps 1–7 for each, then end the turn once.
   the reply and records the user's choices in the same step, so they can be read back across
   tickets. Never answer a worker with `orchestration reply` directly; `bash "$C" choices --gaps`
   lists every answer sent that way. Write a reply file:
-  `{"body":"<the user's decisions, said to be the user's>","points":[{"question":…,"options":[{"name":…,"loses":…,"leans_on":…}],"took":"option"|"own"|"reframed","picked":…,"reply":"<their words, verbatim>"}]}`,
+  `{"body":"<the user's decisions, said to be the user's>","points":[{"question":…,"options":[{"name":…,"loses":…,"leans_on":…}],"recommended":<option name>|null,"took":"option"|"own"|"reframed","picked":…,"reply":"<their words, verbatim>"}]}`,
   one point per decision, then `bash "$C" relay <KEY> --id <message_id> <reply-file>`.
+  `recommended` is the option the worker recommended in its ask, by its `name` there (the one
+  `picked` holds when they take it), and null when the ask recommended none; `bash "$C" choices`
+  then reads each answer as taken as recommended or against it.
   `took` is `own` when they wrote an option of their own and `reframed` when they rejected the
   question's framing; those say the most about what the options missed. If relay says the reply
   was sent but not recorded, record each line it prints with `bash "$C" choice <KEY> '<line>'`.
