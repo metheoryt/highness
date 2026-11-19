@@ -92,9 +92,10 @@ Replying or sending needs the worker's Run bound to this session. When it is ano
 (`bash "$C" run` prints something else, or nothing), `$O orchestration run-use --id <run>` first,
 and say in one line that Orca now wakes this session, not the other one, for that Run's workers.
 
-- **A question**: show it point by point with your read; get the user's decisions; relay with
-  `$O orchestration reply --id <message_id> --body "…"`, marked as the user's.
-  Then record each decided point with `bash "$C" choice <KEY> '{…}'`, as `hi-crew:start` says.
+- **A question**: show it point by point with your read; get the user's decisions; answer only
+  with `bash "$C" relay <KEY> --id <message_id> <reply-file>`, which sends the reply and records
+  the choices in one step (the reply file as `hi-crew:start` says), never with
+  `orchestration reply` directly.
 - **A person's comment on a PR**: show it with your read; on the user's decision, send the worker a
   round: `$O orchestration send --to dispatch:<dispatch> --subject … --body …`, saying what to
   change and how to reply. Record the new dispatch id from the receipt.
