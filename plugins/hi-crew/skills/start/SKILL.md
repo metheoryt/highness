@@ -5,6 +5,10 @@ description: Start a worker agent on a ticket — in its own Orca workspace, wit
 
 # hi-crew:start
 
+**Session rules** (`${CLAUDE_PLUGIN_ROOT}/reference/session.md`, read before the first reply): chat
+in the user's language (no words of theirs yet: `session.language` in their config), Read one file
+per call, 2–4 options per question.
+
 One ticket, one worker, one Orca workspace, one branch. The worker carries the ticket to a
 reviewed pull request on its own and stops only for a person's decision; this session is its
 coordinator and relays those decisions. Merging stays a person's call unless the team sets
@@ -109,13 +113,15 @@ Several tickets: run steps 1–7 for each, then end the turn once.
 
 - **A question** (`ask`) or a **decision gate**: the worker stops for a person's decision. Never answer it yourself, even
   when the answer looks obvious: show it to the user in plain words, point by point, with your own
-  read, and ask for their decision. Then relay it:
-  `$O orchestration reply --id <message_id> --body "<the user's decisions>"`. Say that they are the
-  user's.
-  Then record each point the user decided, so their choices can be read back across tickets:
-  `bash "$C" choice <KEY> '{"question":…,"options":[{"name":…,"loses":…,"leans_on":…}],"took":"option"|"own"|"reframed","picked":…,"reply":"<their words, verbatim>"}'`.
+  read, and ask for their decision. Then relay it with one command, and only this one: it sends
+  the reply and records the user's choices in the same step, so they can be read back across
+  tickets. Never answer a worker with `orchestration reply` directly; `bash "$C" choices --gaps`
+  lists every answer sent that way. Write a reply file:
+  `{"body":"<the user's decisions, said to be the user's>","points":[{"question":…,"options":[{"name":…,"loses":…,"leans_on":…}],"took":"option"|"own"|"reframed","picked":…,"reply":"<their words, verbatim>"}]}`,
+  one point per decision, then `bash "$C" relay <KEY> --id <message_id> <reply-file>`.
   `took` is `own` when they wrote an option of their own and `reframed` when they rejected the
-  question's framing; those say the most about what the options missed.
+  question's framing; those say the most about what the options missed. If relay says the reply
+  was sent but not recorded, record each line it prints with `bash "$C" choice <KEY> '<line>'`.
 - **`worker_done`**: show the outcome, the PR link, what is left for a person. Record what became
   known (`bash "$C" record <KEY> '{"pr":"<url>","head":"<sha>"}'`).
   A subject starting `already done:` means the worker found the work landed already and opened
@@ -132,7 +138,8 @@ Several tickets: run steps 1–7 for each, then end the turn once.
   the same worker, `$O orchestration send --to dispatch:<last dispatch> --subject … --body …`. It
   arrives as a follow-up Task in the same workspace and chat; record the new dispatch id.
 
-When the ticket is settled (PR merged or closed), `bash "$C" close <KEY>` and offer to release the
+When the ticket is settled (PR merged or closed), run the short retro in this session first
+(`reference/retro.md`, `lib/retro.sh`), then `bash "$C" close <KEY>` and offer to release the
 workspace.
 
 ## Work done outside a worker

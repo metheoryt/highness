@@ -14,7 +14,20 @@
 #                                     their loses:/leans on: lines, what the person took ("option",
 #                                     "own" or "reframed"), their reply verbatim. Kept across close,
 #                                     so a person's choices can be read back over many tickets
+#   crew.sh relay <KEY> [--id <message_id>] <reply-file>
+#                                     THE way to answer a worker's question or decision gate: sends
+#                                     the reply (orchestration reply) and appends its choices in the
+#                                     same step. --id may be left out when <KEY> has one open ask.
+#                                     The reply file and the record are described at cmd_relay
 #   crew.sh choices [<KEY>]           the recorded choices, one JSON object per line
+#   crew.sh choices --gaps            answers to hi-crew asks with no choice line (sent without
+#                                     relay), TSV: key, ask id, answered at, the ask's first line
+#
+# A choice line (choices.jsonl; stable, read back over many tickets, e.g. to learn a person's
+# preferences): key, at, question, options [{name, loses, leans_on}], took (option | own |
+# reframed | null), picked, reply (the person's words, verbatim). relay adds ask (the message id),
+# run, dispatch, asked_at, ask_body (the ask verbatim: its options are usually prose in it) and
+# sent (the body relayed). New fields may be added; these keep their names and meaning.
 #   crew.sh run                       this session's hi-crew Orca Run: the Run Orca has bound to
 #                                     this terminal, when it is one hi-crew made (exit 1: none)
 #   crew.sh run <run_id>              register a Run hi-crew made, and pin its coordinator root
@@ -174,6 +187,7 @@ cmd_close() {
   [ $# -eq 1 ] || die 'usage: close <KEY>'
   local f; f=$(keyfile "$1") || exit 2
   [ -f "$f" ] || die "no open facts for $1"
+  jq -e '.retro_at' "$f" >/dev/null 2>&1 || printf 'crew: %s closed without a retro (lib/retro.sh, reference/retro.md)\n' "$1" >&2
   mkdir -p "$DIR/closed"
   mv "$f" "$DIR/closed/$1.$(date -u +%Y%m%dT%H%M%SZ).json"
 }
@@ -197,8 +211,83 @@ cmd_choice() {
     '{key: $key, at: $now} + $add' >>"$DIR/choices.jsonl" || die "choice: could not write $DIR/choices.jsonl"
 }
 
+# relay <KEY> [--id <message_id>] <reply-file>: answer a worker's question or decision gate and
+# record the person's choices in one step. The reply file is JSON:
+#   {"body": "<the text sent to the worker>",
+#    "points": [{"question":…, "options":[{"name":…,"loses":…,"leans_on":…}],
+#                "took":"option"|"own"|"reframed", "picked":…, "reply":"<their words, verbatim>"}]}
+# Everything is checked before the reply goes out, so a refusal sends nothing. Each point becomes
+# one choices.jsonl line, with the ask's id, Run, Dispatch, time and verbatim text added; an
+# empty "points" still writes one line (took null), so a relayed reply never shows as a gap.
+cmd_relay() {
+  local key='' id='' file='' ask reply recs out
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --id) id=${2:-}; shift 2 ;;
+      -*) die "relay: unknown argument '$1'" ;;
+      *) if [ -z "$key" ]; then key=$1; elif [ -z "$file" ]; then file=$1; else die 'usage: relay <KEY> [--id <message_id>] <reply-file>'; fi; shift ;;
+    esac
+  done
+  [ -n "$key" ] && [ -n "$file" ] || die 'usage: relay <KEY> [--id <message_id>] <reply-file>'
+  need_jq
+  keyfile "$key" >/dev/null || exit 2
+  [ -f "$file" ] || die "relay: no reply file: $file"
+  reply=$(jq -ce 'select(type == "object" and (.body | type) == "string" and .body != ""
+                         and ((.points // []) | type) == "array" and all((.points // [])[]; type == "object"))' "$file" 2>/dev/null) \
+    || die 'relay: the reply file must be a JSON object with a non-empty "body" and a "points" array of objects'
+  if [ -z "$id" ]; then
+    local d ids
+    d=$(cmd_get "$key" 2>/dev/null | jq -r '.dispatch // empty')
+    [ -n "$d" ] || die "relay: no dispatch recorded for $key; pass --id <message_id>"
+    ids=$(cmd_asks | awk -F'\t' -v d="$d" '($2 == "question" || $2 == "decision_gate") && $4 == d { print $1 }')
+    [ -n "$ids" ] || die "relay: $key has no open question; pass --id <message_id>"
+    [ "$(printf '%s\n' "$ids" | wc -l | tr -d ' ')" -eq 1 ] \
+      || die "relay: $key has several open questions ($(printf '%s' "$ids" | tr '\n' ' ')); pass --id"
+    id=$ids
+  fi
+  ask=$(inbox | jq -ce --arg id "$id" 'map(select(.id == $id)) | first
+        | select(.type == "question" or .type == "decision_gate")') \
+    || die "relay: $id is not a question or decision gate in a hi-crew Run"
+  recs=$(jq -nc --argjson r "$reply" --argjson a "$ask" --arg key "$key" --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
+    ($a.payload // "{}" | fromjson? // {}) as $p
+    | {key: $key, at: $now, ask: $a.id, run: $a.run_id, dispatch: $a.dispatch, asked_at: $a.created_at,
+       ask_body: ($a.body // $p.question // ""), sent: $r.body} as $base
+    | (if ($r.points // []) == [] then [{question: null, took: null}] else $r.points end)[]
+    | {key: $key, at: $now, question: null}
+      + (if (($p.options // []) | length) > 0 then {options: $p.options} else {} end)
+      + . + $base') || die 'relay: could not build the choice lines'
+  mkdir -p "$DIR" && [ -w "$DIR" ] || die "relay: cannot write $DIR"
+  out=$("$(orca_cmd)" orchestration reply --id "$id" --body "$(printf '%s' "$reply" | jq -r .body)" --json 2>&1)
+  printf '%s' "$out" | jq -e '.ok == true' >/dev/null 2>&1 || die "relay: the reply was not sent, nothing recorded: $out"
+  printf '%s\n' "$recs" >>"$DIR/choices.jsonl" && return 0
+  printf 'crew: relay: the reply WAS sent, but %s/choices.jsonl could not be written; record each line with crew.sh choice %s <line>:\n%s\n' \
+    "$DIR" "$key" "$recs" >&2
+  exit 2
+}
+
+# choices --gaps: the answers to hi-crew asks that no choice line names (sent without relay), TSV:
+# key (- when no facts name the dispatch), ask id, answered at, the ask's first line. Lines
+# recorded before relay existed carry no ask id, so their asks show here too.
+choice_gaps() {
+  local keys m seen
+  [ -s "$DIR/run" ] || return 0
+  seen=$(jq -sc 'map(.ask // empty)' "$DIR/choices.jsonl" 2>/dev/null) || seen='[]'
+  [ -n "$seen" ] || seen='[]'
+  keys=$(cat "$DIR"/*.json "$DIR"/closed/*.json 2>/dev/null | jq -sc 'map(select(.dispatch) | {(.dispatch): .key}) | add // {}')
+  # Every Run hi-crew made, not only the open tickets' ones: a closed ticket's gap still counts.
+  m=$(inbox "$(jq -Rsc 'split("\n") | map(select(. != ""))' "$DIR/run")") || return 1
+  printf '%s' "$m" | jq -r --argjson keys "$keys" --argjson seen "$seen" '
+    . as $m
+    | $m[] | select(.type == "question" or .type == "decision_gate")
+    | . as $q
+    | ([ $m[] | select(.thread_id == $q.id and .id != $q.id) | .created_at ] | min) as $ans
+    | select($ans != null and ($seen | index($q.id) | not))
+    | [ ($keys[$q.dispatch] // "-"), $q.id, $ans, (($q.body // $q.subject // "") | split("\n")[0]) ] | @tsv'
+}
+
 cmd_choices() {
-  [ $# -le 1 ] || die 'usage: choices [<KEY>]'
+  if [ "${1:-}" = --gaps ]; then [ $# -eq 1 ] || die 'usage: choices --gaps'; need_jq; choice_gaps; return; fi
+  [ $# -le 1 ] || die 'usage: choices [<KEY>] | choices --gaps'
   need_jq
   [ -f "$DIR/choices.jsonl" ] || return 0
   if [ $# -eq 1 ]; then
@@ -257,9 +346,9 @@ cmd_runs() {
   cmd_list | jq -r '.run // empty' | sort -u
 }
 
-inbox() {
-  local runs
-  runs=$(cmd_runs | jq -Rsc 'split("\n") | map(select(. != ""))')
+inbox() { # [<runs json array>] (default: the open tickets' Runs)
+  local runs=${1:-}
+  [ -n "$runs" ] || runs=$(cmd_runs | jq -Rsc 'split("\n") | map(select(. != ""))')
   [ "$runs" != '[]' ] || { echo '[]'; return; }
   "$(orca_cmd)" orchestration inbox --limit 500 --json --full 2>/dev/null \
     | jq -c --argjson runs "$runs" '(.result.messages // []) | map(select(.run_id as $r | $runs | index($r)))
@@ -1005,6 +1094,7 @@ case "$sub" in
   close) cmd_close "$@" ;;
   choice) cmd_choice "$@" ;;
   choices) cmd_choices "$@" ;;
+  relay) cmd_relay "$@" ;;
   run) cmd_run "$@" ;;
   root) cmd_root "$@" ;;
   runs) cmd_runs ;;

@@ -108,6 +108,17 @@ Known gaps:
   It skips the start instead. Switching Orca's selected account would also move your own new
   sessions.
 
+### The retro at close
+
+When a ticket is settled, the coordinator runs a short retro in its own session before
+`crew.sh close` (`hi-crew/reference/retro.md`): it reads the worker's spec, the ticket, the PR and
+the signals `lib/retro.sh gather` pulls from the worker's transcript and the denial log, and files
+at most 3 findings (a tool fault, a gap in the worker spec, a process question), each
+deduplicated against open items. Then it comments the ticket, first line `<!-- hi:retro -->`.
+Findings go to GitHub issues unless the team sets `crew.retro_sink`, a command with `{{KIND}}`
+(`tool`, `brief` or `decision`), `{{TITLE}}`, `{{BODY_FILE}}`, `{{TICKET}}` and `{{ROOT}}`
+filled in shell-quoted, which prints the created key or URL, or `dup <key>`.
+
 ## Configuration
 
 Optional JSON, read by every plugin: `~/.config/highness/config.json` (or `$HIGHNESS_CONFIG`) for one
@@ -126,9 +137,14 @@ it runs the repo's own tests, code any clone already carries.
   "land": { "test": "bash tests/run.sh </dev/null" },
   "dispatch": { "read_dirs": ["~/plugins/team-skills"] },
   "docs": { "conventions": "docs/writing.md" },
-  "review": { "intent": "Specs live in docs/specs/<KEY>.md; the key is in the PR title.", "bots": ["lint-helper"], "voice": "~/notes/review-voice.md" }
+  "review": { "intent": "Specs live in docs/specs/<KEY>.md; the key is in the PR title.", "bots": ["lint-helper"], "voice": "~/notes/review-voice.md" },
+  "session": { "language": "Russian" }
 }
 ```
+
+`session.language` (personal file only) is the language every highness skill answers in when the
+session has no words of the person's yet — a bare `/hi-crew:agenda` or `/hi-crew:start KEY`. Once
+the person writes, the chat follows what they write; unset, it is English.
 
 `review.intent` is a text the team writes: where its specs live and how a PR leads to them;
 `/hi-review:review` reads it beside the PR body and the issues the PR closes. `review.bots` lists
