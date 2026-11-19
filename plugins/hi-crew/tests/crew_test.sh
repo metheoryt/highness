@@ -571,7 +571,7 @@ check 'gh_state' "$GS" '{"state":"open","draft":false,"head":"abc","ci":"failure
 cat >"$W/bin/gh" <<'EOF'
 #!/bin/sh
 if [ "$1" = api ]; then
-  case "$*" in *'repos/o/r/pulls/3/comments'*) ;; *) exit 1 ;; esac
+  case "$*" in *'repos/o/r/pulls/3/comments'*) ;; *'repos/o/r/issues/3/comments'*|*'repos/o/r/pulls/3/reviews'*) echo '[]'; exit 0 ;; *) exit 1 ;; esac
   # --paginate prints one array per page
   echo '[{"user":{"login":"reviewer-x[bot]","type":"Bot"},"body":"nit: rename","updated_at":"2026-01-10T00:00:00Z"}]'
   echo '[{"user":{"login":"rev","type":"User"},"body":"rename?","updated_at":"2026-01-03T12:00:00Z"},
@@ -595,6 +595,38 @@ GS=$(PATH="$W/bin:$PATH" bash -c 'eval "$(sed -n "/^gh_state()/,/^}/p" "$1")"; g
 check 'gh_state: bots, findings, approvals' "$GS" '{"state":"open","draft":true,"head":"abc","ci":"","people_at":"2026-01-03T12:00:00Z","people":3,"findings":2,"approvals":["lead","rev"]}'
 GS=$(PATH="$W/bin:$PATH" bash -c 'eval "$(sed -n "/^gh_state()/,/^}/p" "$1")"; gh_state https://github.com/o/r/pull/4 "(agent)" "[]"' _ "$C")
 check 'gh_state: no inline comments, no state' "$GS" ''
+# gh pr view reads comments and reviews through GraphQL: a bot's login has no [bot] and no type.
+# REST names the same accounts with the suffix and type Bot, so they are not people, with no
+# crew.bots entry; a person's comment beside them still counts.
+cat >"$W/bin/gh" <<'EOF'
+#!/bin/sh
+if [ "$1" = api ]; then
+  case "$*" in
+    *'repos/o/r/pulls/5/comments'*) echo '[]' ;;
+    *'repos/o/r/issues/5/comments'*)
+      [ -n "$FAIL_TYPED" ] && exit 1
+      echo '[{"user":{"login":"coderabbitai[bot]","type":"Bot"}},{"user":{"login":"lead","type":"User"}}]'
+      echo '[{"user":{"login":"github-actions[bot]","type":"Bot"}}]' ;;
+    *'repos/o/r/pulls/5/reviews'*) echo '[{"user":{"login":"cursor[bot]","type":"Bot"}},{"user":{"login":"lead","type":"User"}}]' ;;
+    *) exit 1 ;;
+  esac
+  exit 0
+fi
+cat <<'JSON'
+{"state":"OPEN","isDraft":false,"headRefOid":"abc","statusCheckRollup":[],
+ "comments":[{"author":{"login":"coderabbitai"},"body":"Walkthrough ...","updatedAt":"2026-02-03T00:00:00Z"},
+             {"author":{"login":"github-actions"},"body":"preview deployed","updatedAt":"2026-02-04T00:00:00Z"},
+             {"author":{"login":"lead"},"body":"why this way?","updatedAt":"2026-02-01T00:00:00Z"}],
+ "reviews":[{"author":{"login":"cursor"},"body":"Bugbot reviewed your changes","state":"COMMENTED","submittedAt":"2026-02-05T00:00:00Z"},
+            {"author":{"login":"coderabbitai"},"body":"Actionable comments posted: 2","state":"CHANGES_REQUESTED","submittedAt":"2026-02-06T00:00:00Z"},
+            {"author":{"login":"lead"},"body":"see above","state":"COMMENTED","submittedAt":"2026-02-02T00:00:00Z"}],
+ "latestReviews":[{"author":{"login":"cursor"},"state":"APPROVED"}]}
+JSON
+EOF
+GS=$(PATH="$W/bin:$PATH" bash -c 'eval "$(sed -n "/^gh_state()/,/^}/p" "$1")"; gh_state https://github.com/o/r/pull/5 "(agent)" "[]"' _ "$C")
+check 'gh_state: GraphQL bot logins are not people' "$GS" '{"state":"open","draft":false,"head":"abc","ci":"","people_at":"2026-02-02T00:00:00Z","people":2,"findings":1,"approvals":[]}'
+GS=$(FAIL_TYPED=1 PATH="$W/bin:$PATH" bash -c 'eval "$(sed -n "/^gh_state()/,/^}/p" "$1")"; gh_state https://github.com/o/r/pull/5 "(agent)" "[]"' _ "$C")
+check 'gh_state: authors untyped, no state' "$GS" ''
 check 'crew.bots adds to the Actions users' "$(cd "$WR" && HIGHNESS_CONFIG="$W/bots.json" bash -c 'printf "{\"crew\":{\"bots\":[\"gatekeeper\"]}}" >"$HIGHNESS_CONFIG"; eval "$(sed -n "/^BOTS_DEFAULT=/p;/^bots_json()/,/^}/p" "$1")"; CONFIG="$2"; bots_json .' _ "$C" "$(cd "$HERE/../lib" && pwd)/config.sh")" '["forgejo-actions","gatekeeper","gitea-actions","github-actions"]'
 
 QR=$(bash -c 'source /dev/stdin <<<"$(sed -n "/^q()/p" "$1")"; q "it'"'"'s a b"' _ "$C")

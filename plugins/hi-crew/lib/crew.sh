@@ -677,20 +677,31 @@ cmd_workspace() {
 q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 
 # The PR state of a github.com PR when the team set no crew.pr_state. Inline review comments come
-# from the REST API (gh pr view has none); when that call fails the whole state fails, so a
-# missing list never reads as findings gone and then back.
+# from the REST API (gh pr view has none). gh pr view reads comments and reviews through GraphQL,
+# whose author is a bare login: "coderabbitai", never "coderabbitai[bot]", and no type. So the
+# Bot accounts among the authors of comments and reviews are read through REST too (user.type),
+# by login without the [bot] suffix. When a REST call fails the whole state fails, so a missing
+# list never reads as findings gone and then back, or a bot's comment as a person's.
 gh_state() { # <pr url> <marker> <bots json array>
-  local view api inline
+  local view api n inline typed page
   view=$(gh pr view "$1" --json state,isDraft,headRefOid,statusCheckRollup,comments,reviews,latestReviews 2>/dev/null) || return 1
-  api=$(printf '%s\n' "$1" | sed -n 's#^https://github\.com/\([^/]*\)/\([^/]*\)/pull/\([0-9][0-9]*\).*#repos/\1/\2/pulls/\3/comments#p')
-  inline='[]'
+  api=$(printf '%s\n' "$1" | sed -n 's#^https://github\.com/\([^/]*\)/\([^/]*\)/pull/\([0-9][0-9]*\).*#repos/\1/\2 \3#p')
+  inline='[]' typed='[]'
   if [ -n "$api" ]; then
-    inline=$(gh api --paginate "$api" 2>/dev/null) || return 1
+    n=${api#* } api=${api% *}
+    inline=$(gh api --paginate "$api/pulls/$n/comments" 2>/dev/null) || return 1
     inline=$(printf '%s' "$inline" | jq -sc 'add // []') || return 1
+    typed=''
+    for page in "issues/$n/comments" "pulls/$n/reviews"; do
+      page=$(gh api --paginate "$api/$page" 2>/dev/null) || return 1
+      typed="$typed$page"
+    done
+    typed=$(printf '%s' "$typed" | jq -sc '[add // [] | .[] | .user | select(.type == "Bot") | .login // "" | sub("\\[bot\\]$"; "")] | unique') || return 1
   fi
-  printf '%s' "$view" | jq -c --arg m "$2" --argjson bots "${3:-[]}" --argjson inline "$inline" '
-    # Not a person: a [bot] login, a forge Bot account, or a login on the bots list.
-    def bot($l; $t): ($l | test("\\[bot\\]$")) or $t == "Bot" or any($bots[]; . == $l);
+  printf '%s' "$view" | jq -c --arg m "$2" --argjson bots "${3:-[]}" --argjson inline "$inline" --argjson typed "$typed" '
+    # Not a person: a [bot] login, a forge Bot account (by type, or by login when the source
+    # has no type), or a login on the bots list.
+    def bot($l; $t): ($l | test("\\[bot\\]$")) or $t == "Bot" or any($bots[], $typed[]; . == $l);
     def own: (.body // "") as $b | ($b | startswith($m))
              or (($m | endswith(")")) and ($b | startswith(($m | rtrimstr(")")) + ",")));
     ([.comments[]? | {who: (.author.login // ""), at: (.updatedAt // .createdAt // ""), body}]
