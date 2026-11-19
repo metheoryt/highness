@@ -81,11 +81,16 @@
 #                                     of an open ticket's worker (its cwd in the ticket's
 #                                     `workspace`), one context line naming the ticket and its spec
 #                                     to re-read; anywhere else nothing. Never fails a start
-#   crew.sh watch                    look at the PR of every open ticket and, when something a
-#                                     person should see changed since the last look (merged or
-#                                     closed, CI failed, new comments from people), append it to the
-#                                     watch events and wake the ticket's coordinator with a status
-#                                     message to its Run. The first look at a ticket only records it.
+#   crew.sh watch                    look at the PR of every open ticket and, when something changed
+#                                     since the last look, append it to the watch events and wake
+#                                     whoever handles it. The worker itself, by a round sent to its
+#                                     Dispatch: CI failed, new findings from review bots, and an
+#                                     approval when crew.merge is on_green. The coordinator, by a
+#                                     status message to its Run: merged or closed, new comments from
+#                                     people, an approval otherwise, and a worker event no Dispatch
+#                                     took. Bots' plain comments, a bot review with no findings, the
+#                                     workers' own comments, labels and cross-references wake no one.
+#                                     The first look at a ticket only records it.
 #                                     A ticket with no `pr` yet gets its PR looked up with gh by the
 #                                     workspace's branch, and recorded when found (the worker records
 #                                     it itself at its draft-PR step: {{CREW}} in the spec)
@@ -108,7 +113,8 @@
 #   crew.sh usage-save                read Claude Code's statusline JSON on stdin and keep its
 #                                     rate_limits in <config dir>/highness-usage.json for `usage`
 #                                     (call it from your statusline command)
-#   crew.sh events [--ack]            watch events no one has seen, TSV: time, key, run, pr, what;
+#   crew.sh events [--ack]            watch events no one has seen, TSV: time, key, run, pr, what,
+#                                     woken (worker | coordinator; empty on older lines);
 #                                     --ack marks them seen
 #   crew.sh prompts                   the open tickets whose worker sits on a permission dialog, an
 #                                     MCP server's input dialog or a question form, TSV: key, run,
@@ -143,12 +149,19 @@
 # PR state comes from the config key crew.pr_state, read at the ticket's `root` (the coordinator
 # root, recorded at start): a command that prints one JSON object for a PR,
 #   {"state": "open|merged|closed", "draft": bool, "head": sha, "ci": "success|failure|pending|",
-#    "people": <count of comments by people>, "people_at": <latest time one was written or edited>}
-# with {{PR}}, {{ROOT}} and {{MARKER}} replaced by the shell-quoted PR url, root and crew.marker.
-# A comment is a person's when it is not the review bot's and not the workers' own: it does not
-# start with the marker, or with the marker extended inside its brackets ("(agent, ...) ..."). Unset, a
-# github.com PR is read with gh. The command runs from an automation, outside any terminal, so
-# it must find its own credentials; the precheck runs it in a login interactive shell.
+#    "people": <count of comments by people>, "people_at": <latest time one was written or edited>,
+#    "findings": <count of review bots' findings>, "approvals": [<logins of people who approve>]}
+# with {{PR}}, {{ROOT}}, {{MARKER}} and {{BOTS}} replaced by the shell-quoted PR url, root,
+# crew.marker and the JSON array of logins that are not people. findings and approvals are
+# optional: a state without them never fires their events.
+# Not people: a [bot] login, a forge Bot account, the forge Actions users (github-actions,
+# forgejo-actions, gitea-actions) and every login in crew.bots (a list; a team's AI reviewer or
+# gatekeeper on a normal account goes there). A comment is a person's when its author is a person
+# and it is not the workers' own: it does not start with the marker, or with the marker extended
+# inside its brackets ("(agent, ...) ..."); an approval's text counts as the approval, not as a
+# comment. A finding is a not-a-person's inline review comment, or its review requesting changes.
+# Unset, a github.com PR is read with gh. The command runs from an automation, outside any
+# terminal, so it must find its own credentials; the precheck runs it in a login interactive shell.
 #
 # State dir: ${HIGHNESS_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/highness}/crew
 set -uo pipefail
@@ -561,49 +574,118 @@ EOF
 # One shell word: 'it''s' -> 'it'\''s'.
 q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 
-# The PR state of a github.com PR when the team set no crew.pr_state.
-gh_state() {
-  gh pr view "$1" --json state,isDraft,headRefOid,statusCheckRollup,comments,reviews 2>/dev/null \
-    | jq -c --arg m "$2" '
-      def mine: (.author.login // "" | test("\\[bot\\]$|^github-actions$"))
-        or ((.body // "") as $b | ($b | startswith($m))
-            or (($m | endswith(")")) and ($b | startswith(($m | rtrimstr(")")) + ","))));
-      { state: (.state | ascii_downcase), draft: .isDraft, head: .headRefOid,
+# The PR state of a github.com PR when the team set no crew.pr_state. Inline review comments come
+# from the REST API (gh pr view has none); when that call fails the whole state fails, so a
+# missing list never reads as findings gone and then back.
+gh_state() { # <pr url> <marker> <bots json array>
+  local view api inline
+  view=$(gh pr view "$1" --json state,isDraft,headRefOid,statusCheckRollup,comments,reviews,latestReviews 2>/dev/null) || return 1
+  api=$(printf '%s\n' "$1" | sed -n 's#^https://github\.com/\([^/]*\)/\([^/]*\)/pull/\([0-9][0-9]*\).*#repos/\1/\2/pulls/\3/comments#p')
+  inline='[]'
+  if [ -n "$api" ]; then
+    inline=$(gh api --paginate "$api" 2>/dev/null) || return 1
+    inline=$(printf '%s' "$inline" | jq -sc 'add // []') || return 1
+  fi
+  printf '%s' "$view" | jq -c --arg m "$2" --argjson bots "${3:-[]}" --argjson inline "$inline" '
+    # Not a person: a [bot] login, a forge Bot account, or a login on the bots list.
+    def bot($l; $t): ($l | test("\\[bot\\]$")) or $t == "Bot" or any($bots[]; . == $l);
+    def own: (.body // "") as $b | ($b | startswith($m))
+             or (($m | endswith(")")) and ($b | startswith(($m | rtrimstr(")")) + ",")));
+    ([.comments[]? | {who: (.author.login // ""), at: (.updatedAt // .createdAt // ""), body}]
+     + [.reviews[]? | select(.state != "PENDING")
+        | {who: (.author.login // ""), at: (.submittedAt // ""), body, state}]
+     + [$inline[]? | {who: (.user.login // ""), type: (.user.type // ""), at: (.updated_at // .created_at // ""), body,
+                      inline: true}]
+     | map(. + {bot: bot(.who; .type // "")})) as $all
+    # A person: what they wrote, apart from an approval (its own event) and the workers own words.
+    | [$all[] | select((.bot | not) and (own | not) and (.body // "") != "" and .state != "APPROVED")] as $people
+    # A review bot finding: its inline comment, or its review that requests changes. Its plain
+    # comments (a CI summary rewritten on every push) and a review with neither find nothing.
+    | [$all[] | select(.bot and (.inline or .state == "CHANGES_REQUESTED"))] as $found
+    | { state: (.state | ascii_downcase), draft: .isDraft, head: .headRefOid,
         ci: ([.statusCheckRollup[]? | (.conclusion // .state // "" | ascii_upcase)] as $c
              | if ($c | length) == 0 then ""
                elif any($c[]; . == "FAILURE" or . == "ERROR" or . == "CANCELLED" or . == "TIMED_OUT") then "failure"
                elif all($c[]; . == "SUCCESS" or . == "NEUTRAL" or . == "SKIPPED") then "success"
                else "pending" end),
-        people_at: ([.comments[]?, (.reviews[]? | select((.body // "") != "" and .state != "PENDING"))] | map(select(mine | not))
-                    | map(.updatedAt // .submittedAt // .createdAt // "") | max // ""),
-        people: ([.comments[]?, (.reviews[]? | select((.body // "") != "" and .state != "PENDING"))] | map(select(mine | not)) | length) }'
+        people_at: ($people | map(.at) | max // ""),
+        people: ($people | length),
+        findings: ($found | length),
+        approvals: ([.latestReviews[]? | select(.state == "APPROVED") | .author.login // ""
+                     | select(. != "" and (bot(.; "") | not))] | unique) }'
 }
 
-# What a person should hear about, between two PR states.
-changes() {
-  jq -rn --argjson a "$1" --argjson b "$2" '
+# What changed between two PR states, one line each: who is woken (worker | coordinator), TAB,
+# what. The worker gets what is its own to handle (a CI failure, review bots' findings, and an
+# approval when it merges its own PR); the coordinator what needs a person. A field the earlier
+# state lacks is no event, so a state command that does not report it never fires one.
+changes() { # <before> <after> <approval goes to: worker | coordinator>
+  jq -rn --argjson a "$1" --argjson b "$2" --arg ap "${3:-coordinator}" '
     if ($b.state // "") != ($a.state // "") and (($b.state // "") | test("^(merged|closed)$"))
-      then "PR \($b.state)" else empty end,
-    if ($b.ci // "") != ($a.ci // "") and ($b.ci // "") == "failure"
-      then "CI failed on \(($b.head // "")[0:8])" else empty end,
+      then "coordinator\tPR \($b.state)" else empty end,
+    # A failure on a new head is a new failure, even when the poll missed the pending between.
+    if ($b.ci // "") == "failure"
+       and (($a.ci // "") != "failure" or (($b.head // "") != "" and ($b.head // "") != ($a.head // "")))
+      then "worker\tCI failed on \(($b.head // "")[0:8])" else empty end,
     if ($b.people // 0) > ($a.people // 0)
-      then "\(($b.people // 0) - ($a.people // 0)) new comment(s) from people"
+      then "coordinator\t\(($b.people // 0) - ($a.people // 0)) new comment(s) from people"
     elif ($a | has("people_at")) and ($b.people_at // "") > $a.people_at
-      then "a comment from people was written or edited" else empty end'
+      then "coordinator\ta comment from people was written or edited" else empty end,
+    if ($a | has("findings")) and ($b.findings // 0) > $a.findings
+      then "worker\t\(($b.findings // 0) - $a.findings) new finding(s) from review bots" else empty end,
+    if ($a | has("approvals")) then
+      (($b.approvals // []) - $a.approvals) as $new
+      | if ($new | length) > 0 then "\($ap)\tapproved by \($new | join(", "))" else empty end
+    else empty end'
+}
+
+# The coordinator root of a ticket's facts: its recorded `root`, else derived from the cwd.
+facts_root() { # <facts json>
+  local root
+  root=$(printf '%s' "$1" | jq -r '.root // empty')
+  [ -n "$root" ] && [ -d "$root" ] || root=$(derive_root)
+  printf '%s\n' "$root"
+}
+
+# The logins that are not people, as a JSON array: the forge Actions users (whose CI jobs write
+# and rewrite summary comments), then crew.bots from every config source at <root>. A [bot]
+# login and a forge Bot account are never people either (gh_state).
+BOTS_DEFAULT='github-actions forgejo-actions gitea-actions'
+bots_json() { # <root>
+  { printf '%s\n' $BOTS_DEFAULT; (cd "$1" && bash "$CONFIG" list '.crew.bots') 2>/dev/null; } \
+    | jq -Rsc 'split("\n") | map(select(. != "")) | unique'
 }
 
 pr_state() { # <facts json>
-  local pr root cmd marker line
+  local pr root cmd marker line bots
   pr=$(printf '%s' "$1" | jq -r '.pr // empty')
-  root=$(printf '%s' "$1" | jq -r '.root // empty')
-  [ -n "$root" ] && [ -d "$root" ] || root=$(derive_root)
+  root=$(facts_root "$1")
   cmd=$(cd "$root" && bash "$CONFIG" get '.crew.pr_state') || cmd=''
   marker=$(cd "$root" && bash "$CONFIG" get '.crew.marker') || marker='(agent)'
+  bots=$(bots_json "$root")
   if [ -z "$cmd" ]; then
-    case "$pr" in https://github.com/*) gh_state "$pr" "$marker"; return ;; *) return 1 ;; esac
+    case "$pr" in https://github.com/*) gh_state "$pr" "$marker" "$bots"; return ;; *) return 1 ;; esac
   fi
-  line=$(PR=$(q "$pr") ROOT=$(q "$root") MARKER=$(q "$marker") fill <<<"$cmd")
+  line=$(PR=$(q "$pr") ROOT=$(q "$root") MARKER=$(q "$marker") BOTS=$(q "$bots") fill <<<"$cmd")
   (cd "$root" && sh -c "$line") 2>/dev/null
+}
+
+# The worker's Dispatch to wake for these facts: a follow-up round gets a new Dispatch in the same
+# workspace, so it is looked up in the Run by the workspace (a live one first, then the newest
+# Orca lists), else the recorded `dispatch`. Exit 1 when there is none.
+worker_dispatch() { # <facts json>
+  local ws run d found
+  ws=$(printf '%s' "$1" | jq -r '.workspace // empty')
+  run=$(printf '%s' "$1" | jq -r '.run // empty')
+  d=$(printf '%s' "$1" | jq -r '.dispatch // empty')
+  if [ -n "$ws" ] && [ -n "$run" ]; then
+    found=$("$(orca_cmd)" orchestration worker-list --run "$run" --limit 100 --json 2>/dev/null | jq -r --arg ws "$ws" '
+      [.result.workers[]? | select((.workspace // "") | sub("^[^:]*::"; "") == $ws)]
+      | (map(select(.liveness == "live")) + .) | .[0].dispatchId // empty' 2>/dev/null) || found=''
+    [ -n "$found" ] && d=$found
+  fi
+  [ -n "$d" ] || return 1
+  printf '%s\n' "$d"
 }
 
 # The PR of facts that have none recorded, found by the workspace's branch: the branch checked
@@ -621,8 +703,8 @@ find_pr() { # <facts json>
     | jq -er 'max_by(.number) | .url // empty' 2>/dev/null
 }
 
-# stdin with {{PR}}, {{ROOT}}, {{MARKER}} and {{TRACKER}} replaced by $PR, $ROOT, $MARKER and
-# $TRACKER (each may be unset).
+# stdin with {{PR}}, {{ROOT}}, {{MARKER}}, {{TRACKER}} and {{BOTS}} replaced by $PR, $ROOT,
+# $MARKER, $TRACKER and $BOTS (each may be unset).
 fill() {
   awk '
     function rep(s, ph, val,   out, i) {
@@ -630,7 +712,7 @@ fill() {
       while ((i = index(s, ph)) > 0) { out = out substr(s, 1, i - 1) val; s = substr(s, i + length(ph)) }
       return out s
     }
-    { print rep(rep(rep(rep($0, "{{PR}}", ENVIRON["PR"]), "{{ROOT}}", ENVIRON["ROOT"]), "{{MARKER}}", ENVIRON["MARKER"]), "{{TRACKER}}", ENVIRON["TRACKER"]) }'
+    { print rep(rep(rep(rep(rep($0, "{{PR}}", ENVIRON["PR"]), "{{ROOT}}", ENVIRON["ROOT"]), "{{MARKER}}", ENVIRON["MARKER"]), "{{TRACKER}}", ENVIRON["TRACKER"]), "{{BOTS}}", ENVIRON["BOTS"]) }'
 }
 
 # The tracker adapter (lib/tracker.sh) as one shell command reading its config at <root>: what
@@ -676,7 +758,7 @@ cmd_sections() {
 
 cmd_watch() {
   need_jq
-  local w="$DIR/watch" lock="$DIR/watch/lock" t key pr run now snap what hit since tool kind hs
+  local w="$DIR/watch" lock="$DIR/watch/lock" t key pr run now snap what hit since tool kind hs ap to
   mkdir -p "$w"
   if ! mkdir "$lock" 2>/dev/null; then
     [ -n "$(find "$lock" -maxdepth 0 -mmin +30 2>/dev/null)" ] || return 0  # another watch runs
@@ -716,9 +798,17 @@ cmd_watch() {
     now=$(pr_state "$t") && printf '%s' "$now" | jq -e 'type == "object"' >/dev/null 2>&1 || continue
     snap="$w/$key.json"
     if [ -f "$snap" ]; then
-      changes "$(cat "$snap")" "$now" | while IFS= read -r what; do event "$key" "$run" "$pr" "$what"; done
+      # An approval is the worker's when it merges its own PR (crew.merge on_green), else a person's.
+      ap=coordinator
+      [ "$(cd "$(facts_root "$t")" && bash "$CONFIG" get '.crew.merge' 2>/dev/null)" = on_green ] && ap=worker
+      # A note from before v2 counted people another way (approval texts in, inline comments out):
+      # its people count is taken from now, so the switch neither fires nor swallows a comment.
+      changes "$(jq -c --argjson b "$now" 'if .v == 2 then . else . + ($b | {people, people_at} | with_entries(select(.value != null))) end' "$snap")" \
+          "$now" "$ap" | while IFS="$(printf '\t')" read -r to what; do
+        if [ "$to" = worker ]; then event "$key" "$run" "$pr" "$what" "$t"; else event "$key" "$run" "$pr" "$what"; fi
+      done
     fi
-    printf '%s\n' "$now" >"$snap"
+    printf '%s' "$now" | jq -c '. + {v: 2}' >"$snap"
   done
   # The budget hold (lib/hold.sh): pause the autostarted workers of an account over the person's
   # reserve, resume them when it is back. Before the slot count, which returns early exactly when
@@ -780,12 +870,25 @@ cmd_prompts() {
   return 0
 }
 
-# Append one watch event and wake the ticket's coordinator with it.
-event() { # <key> <run> <pr or workspace> <what>
-  local w="$DIR/watch" handle
+# Append one watch event and wake the ticket's coordinator with it, or, given the ticket's facts,
+# its worker: a round to the worker's Dispatch, which a working worker reads when its turn ends
+# and a finished one gets as a follow-up Task. When no Dispatch is found or Orca refuses the send,
+# the coordinator is woken instead. The events line ends with who was woken: worker | coordinator.
+event() { # <key> <run> <pr or workspace> <what> [<facts json>]
+  local w="$DIR/watch" handle d out to=coordinator
   mkdir -p "$w"
-  printf '%s\t%s\t%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" "$3" "$4" >>"$w/events"
   handle=$(cat "$DIR/handles/$2" 2>/dev/null) || handle=''
+  if [ $# -ge 5 ] && [ -n "$handle" ] && d=$(worker_dispatch "$5"); then
+    out=$("$(orca_cmd)" orchestration send --to "dispatch:$d" --from "$handle" --type status --subject "$1: $4" \
+      --body "hi-crew watch: $4 on $3. This is yours to handle, as your spec says: read it on the PR and act on it. Ask the coordinator only when a person must decide." \
+      --json 2>/dev/null) || out=''
+    if printf '%s' "$out" | jq -e '.ok == true' >/dev/null 2>&1; then
+      to=worker
+      [ "$d" = "$(printf '%s' "$5" | jq -r '.dispatch // empty')" ] || (cmd_record "$1" "$(jq -cn --arg d "$d" '{dispatch: $d}')")
+    fi
+  fi
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" "$3" "$4" "$to" >>"$w/events"
+  [ "$to" = coordinator ] || return 0
   [ -n "$2" ] && [ -n "$handle" ] || return 0
   "$(orca_cmd)" orchestration send --to "run:$2" --from "$handle" --type status \
     --subject "$1: $4" --body "hi-crew watch: $4 on $3" >/dev/null 2>&1 || :
