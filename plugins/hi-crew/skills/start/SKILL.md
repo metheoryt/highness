@@ -139,6 +139,13 @@ Several tickets: run steps 1–7 for each, then end the turn once.
   `took` is `own` when they wrote an option of their own and `reframed` when they rejected the
   question's framing; those say the most about what the options missed. If relay says the reply
   was sent but not recorded, record each line it prints with `bash "$C" choice <KEY> '<line>'`.
+  If it says the reply was not sent (the worker is gone), it kept it: offer the round below
+  (`bash "$C" stranded` shows the kept body).
+- **A question that names an action** (the worker prepared a step only a person's yes allows):
+  `bash "$C" action-show <KEY> <id>` and show the user its script verbatim, with the pinned head,
+  next to the question. On a yes, relay with `--action <id>`: the script runs once in the
+  workspace, here, and the worker hears its outcome first. Write the body as the user's words for
+  context, never as an instruction to run the step. On a no, relay without `--action`.
 - **`worker_done`**: show the outcome, the PR link, what is left for a person. Record what became
   known (`bash "$C" record <KEY> '{"pr":"<url>","head":"<sha>"}'`).
   A subject starting `already done:` means the worker found the work landed already and opened
