@@ -77,12 +77,14 @@
 #                                     unknown one, or a result git refuses as a branch name: exit 2
 #   crew.sh workspace --repo SEL --name N --branch B --base REF
 #                                     create a top-level Orca workspace on branch B (no name prefix;
-#                                     Orca adds a numeric suffix when B is taken), running the repo's
-#                                     setup as worker-start would, and print its path. Start the
-#                                     worker in it with worker-start --worktree path:<path>
-#                                     --keep-open (a worker in an existing workspace otherwise
-#                                     closes when it reports). worker-start has no branch option
-#   crew.sh watch                   look at the PR of every open ticket and, when something a
+#                                     Orca adds a numeric suffix when B is taken, so read the branch
+#                                     back from the workspace), and print its path. The repo's setup
+#                                     runs per its Orca policy in a terminal of its own, and this
+#                                     returns without waiting for it. Start the worker in it with
+#                                     worker-start --worktree path:<path> --keep-open (a worker in
+#                                     an existing workspace otherwise closes when it reports).
+#                                     worker-start has no branch option
+#   crew.sh watch                    look at the PR of every open ticket and, when something a
 #                                     person should see changed since the last look (merged or
 #                                     closed, CI failed, new comments from people), append it to the
 #                                     watch events and wake the ticket's coordinator with a status
@@ -947,8 +949,8 @@ cmd_setup_status() {
 #                                settings are read there, the candidates command runs there, and
 #                                it is the `root` of each started ticket's facts. Required
 #   crew.autostart.candidates    a command printing one JSON object per ready ticket that carries
-#                                the label: {"key", "title", "url", "repo"?, "created"?}; {{LABEL}}
-#                                and {{ROOT}} become the shell-quoted label and root, {{TRACKER}}
+#                                the label: {"key", "title", "url", "repo"?, "created"?, "type"?}
+#                                ("type" fills crew.branch's {{TYPE}}); {{LABEL}} and {{ROOT}} become the shell-quoted label and root, {{TRACKER}}
 #                                the tracker adapter. Unset: with tracker.kind set at the root,
 #                                the adapter's ready tickets (role todo) with the label; else the
 #                                root's GitHub issues with the label, keyed <repo name>-<number>
