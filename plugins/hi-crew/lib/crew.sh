@@ -73,7 +73,14 @@
 #                                     {{CREW}} in the template becomes this crew.sh as a command,
 #                                     for the worker's own `record <KEY> '{"pr":…}'`.
 #                                     The person's preference files (prefs.sh paths) are cited in
-#                                     the Asking part by path, never inlined; none, no line
+#                                     the Asking part by path, never inlined; none, no line.
+#                                     A copy is kept at <state dir>/specs/<KEY>.md (the last spec
+#                                     built for K): record it as the facts' `spec`, so the retro
+#                                     and `reentry` can point at it
+#   crew.sh reentry                   SessionStart(compact) hook, payload on stdin: in the session
+#                                     of an open ticket's worker (its cwd in the ticket's
+#                                     `workspace`), one context line naming the ticket and its spec
+#                                     to re-read; anywhere else nothing. Never fails a start
 #   crew.sh watch                    look at the PR of every open ticket and, when something a
 #                                     person should see changed since the last look (merged or
 #                                     closed, CI failed, new comments from people), append it to the
@@ -453,7 +460,7 @@ cmd_reports() {
 }
 
 cmd_spec() {
-  local key='' title='' brief_file='' brief='' process marker merge crew root='' prefs
+  local key='' title='' brief_file='' brief='' process marker merge crew root='' prefs copy
   while [ $# -gt 0 ]; do
     case "$1" in
       --root) root=${2:-}; shift 2 ;;
@@ -489,6 +496,10 @@ cmd_spec() {
   # reads them; a state dir set by HIGHNESS_STATE is carried, since the worker's shell may not have it.
   crew="bash $(q "$HERE/crew.sh")"
   [ -z "${HIGHNESS_STATE:-}" ] || crew="HIGHNESS_STATE=$(q "$HIGHNESS_STATE") $crew"
+  # The copy the facts' `spec` names: written beside the output, never in its way (a state dir
+  # that cannot be written still prints the spec).
+  copy="$DIR/specs/$key.md"
+  mkdir -p "$DIR/specs" 2>/dev/null
   # Placeholders are replaced in a fixed order by awk with literal strings (no regex, no &).
   PREFS=$prefs KEY=$key TITLE=$title BRIEF=$brief PROCESS=$process MARKER=$marker MERGE=$merge CREW=$crew ROOT=$root TRACKER=$(tracker_cmd "$root") awk '
     function rep(s, ph, val,   out, i) {
@@ -507,7 +518,44 @@ cmd_spec() {
       if (line == "{{PROCESS}}") {
         print rep(rep(rep(ENVIRON["PROCESS"], "{{ROOT}}", ENVIRON["ROOT"]), "{{TRACKER}}", ENVIRON["TRACKER"]), "{{KEY}}", ENVIRON["KEY"])
         next }
-      print line }' "$TEMPLATE"
+      print line }' "$TEMPLATE" | tee "$copy.tmp.$$" 2>/dev/null
+  local rc=${PIPESTATUS[0]}   # awk's: a copy that could not be written does not fail the spec
+  if [ "$rc" -eq 0 ] && [ -f "$copy.tmp.$$" ]; then mv -f "$copy.tmp.$$" "$copy" 2>/dev/null; else rm -f "$copy.tmp.$$" 2>/dev/null; fi
+  return "$rc"
+}
+
+# SessionStart(compact): a compaction keeps what happened, not the spec's rules (asking, merging,
+# markers, the team process), and nothing else points the worker back at them. In an open
+# ticket's workspace this prints one context line naming the spec to re-read; the spec itself is
+# never inlined (it is long). Every error is silence: a session start must never fail on it.
+cmd_reentry() {
+  local in cwd real f row key title spec pr msg
+  in=$(head -c 16384 2>/dev/null); cat >/dev/null 2>&1
+  command -v jq >/dev/null 2>&1 || return 0
+  cwd=$(printf '%s' "$in" | jq -r '.cwd // empty' 2>/dev/null)
+  [ -n "$cwd" ] || cwd=$PWD
+  real=$(cd "$cwd" 2>/dev/null && pwd -P) || real=$cwd
+  for f in "$DIR"/*.json; do
+    [ -f "$f" ] || continue
+    row=$(jq -r --arg a "$cwd" --arg b "$real" '
+      (.workspace // "") as $w | select($w != "")
+      | select([$a, $b] | any(. == $w or startswith($w + "/")))
+      | [.key, (.title // ""), (.spec // ""), (.pr // "")] | @tsv' "$f" 2>/dev/null) || continue
+    [ -n "$row" ] && break
+  done
+  [ -n "$row" ] || return 0
+  IFS="$(printf '\t')" read -r key title spec pr <<EOF
+$row
+EOF
+  [ -n "$spec" ] || spec="$DIR/specs/$key.md"
+  if [ -f "$spec" ]; then
+    msg="hi-crew: this session is the ticket worker for $key${title:+ ($title)}, and the compaction kept only a summary of your spec: the ticket, the rules on asking, merging and markers, the team process. Re-read it before your next step: $spec"
+  else
+    msg="hi-crew: this session is the ticket worker for $key${title:+ ($title)}, and the compaction kept only a summary of your spec: the ticket, the rules on asking, merging and markers, the team process. No copy of it was saved; re-read it from the first prompt of this session's transcript before your next step."
+  fi
+  [ -z "$pr" ] || msg="$msg Your PR: $pr."
+  jq -n -c --arg m "$msg" '{hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: $m}}' 2>/dev/null
+  return 0
 }
 
 # One shell word: 'it''s' -> 'it'\''s'.
@@ -1118,9 +1166,9 @@ as_start() { # <candidate json> <root> <run> <handle> <dry>
   path=${ws#*::}
   branch=$(git -C "$path" branch --show-current 2>/dev/null) || branch=''
   bash "$HERE/crew.sh" record "$key" "$(printf '%s' "$out" | jq -c --arg t "$title" --arg r "$repo" --arg p "$path" \
-      --arg b "$branch" --arg root "$root" --arg a "$agent" --arg m "$model" --arg u "$url" '
+      --arg b "$branch" --arg root "$root" --arg a "$agent" --arg m "$model" --arg u "$url" --arg s "$DIR/specs/$key.md" '
       {title: $t, repo: $r, workspace: $p, branch: $b, dispatch: .result.dispatchId, task: .result.taskId,
-       run: .result.runId, agent: $a, model: $m, root: $root, url: $u, autostart: true}')" \
+       run: .result.runId, agent: $a, model: $m, root: $root, url: $u, spec: $s, autostart: true}')" \
     || as_log failed "$key" "started, but its facts were not recorded"
   event "$key" "$run" "${url:-$path}" "started by autostart in $path"
   as_log started "$key" "$path"
@@ -1194,6 +1242,7 @@ case "$sub" in
   asks) cmd_asks ;;
   reports) cmd_reports ;;
   spec) cmd_spec "$@" ;;
+  reentry) cmd_reentry; exit 0 ;;
   watch) cmd_watch ;;
   watch-install) cmd_watch_install "$@" ;;
   autostart) cmd_autostart "$@" ;;

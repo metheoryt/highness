@@ -20,6 +20,8 @@ Orca orchestration; it relays your questions to a person and their answers back 
 - Change files with the Edit/Write tools, never with a python/sed/perl heredoc in Bash. A heredoc
   whose body is shell source trips Claude Code's dangerous-command dialog, even under bypass
   permissions.
+- Run a long test suite in the background and wait for its completion notification; never
+  sleep-poll it (the harness blocks a foreground sleep).
 - Commit subjects start with `{{KEY}}: `.
 - Open the pull request early, as a draft. When the work is done and the checks pass, mark it ready
   for review. Keep it a draft only while a question to a person is open, and say so in that ask.
