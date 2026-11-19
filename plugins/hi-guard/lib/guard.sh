@@ -15,10 +15,11 @@
 #      string of env. That code, eval's arguments, flock's command after the lock file and the
 #      arguments of a command word that is itself an expansion (`$X sudo id`, `$BASH -c '…'`)
 #      are scanned as commands in turn: 16 scans, then the rest the strict way, never skipped.
-#  1b. `rbw get <entry> --full` or `--raw` (built in, no config): both print the password, so a
-#      filter after them still puts it in the transcript; `--field <name>` is the safe form.
-#      Read where rule 2 reads: one command's text and words, not a data heredoc body, not a
-#      search command's words.
+#  1b. `rbw get` as a command (built in, no config), unless it reads one field other than the
+#      password: `rbw get <entry> --field <name>`. Plain, --full, --raw, --clipboard or
+#      --field password all print (or hand over) the password, and a filter after them still
+#      puts it in the transcript. Read where rule 2 reads: one command's text and words, not a
+#      data heredoc body, not a search command's words.
 #   2. Any guard.deny_patterns entry (ERE, anywhere in the command), except in the words of a
 #      search command (grep, egrep, fgrep, zgrep, rg without --pre): there a match is a search
 #      pattern or a file name, not an access.
@@ -74,7 +75,9 @@
 # also to a top-level cat, tee, python, python3, node, jq, awk or sed whose output feeds
 # nothing further on its line (no `|`, no `(` after it). Every other body (cat … | bash,
 # eval "$(cat <<EOF)", bash /dev/stdin, ssh host <<'EOF', …) stays checked the strict way:
-# line by line, quote-blind. A body written to a file and run later is not followed.
+# line by line, quote-blind. A body written to a file and run later is not followed: a kept
+# trade (#11), since without the data consumers a heredoc of prose naming sudo is denied every
+# week, and writing a script then running it is a deliberate two-step, not an honest slip.
 # The scan may only decide "allow" on what it models exactly: a command holding anything it
 # does not model (see the scan's header: an unclosed quote, a $'…' escape, a ${…} with quotes
 # or expansions other than a plain $NAME inside, quotes in $((…)), a $-delimiter, …), or over
@@ -95,8 +98,9 @@ SUDO_RE="${CMD_START}[[:space:]]*sudo([[:space:]]|\$)"
 SSH_SUDO_RE="${CMD_START}[[:space:]]*ssh[[:space:]][^;&|]*[[:space:]\"']sudo([[:space:]\"']|\$)"
 # Per segment: sudo as a word in an interpreter's code (bash -c "a && sudo b", ssh box 'sudo x').
 WORD_SUDO_RE="(^|[[:space:];&|(\`\"'])sudo([[:space:];&|)\`\"']|\$)"
-# Rule 1b, within one command (no ; & | or newline between): rbw … get … --full|--raw.
-RBW_RE="(^|[^[:alnum:]_.-])rbw[[:space:]]+([^;&|"$'\n'"]*[[:space:]])?get[[:space:]]([^;&|"$'\n'"]*[[:space:]])?--(full|raw)([[:space:]=]|\$)"
+# Rule 1b: `rbw get` in command position (after assignments and wrappers like env, timeout 5),
+# its last group the rest of that one command (up to ; & | ) ` or a newline).
+RBW_RE="${CMD_START}[[:space:]]*(([^;&|[:space:]]+=[^;&|[:space:]]*|env|exec|time|nohup|nice|command|timeout|setsid|xargs|-[^;&|[:space:]]*|[0-9][^;&|[:space:]]*)[[:space:]]+)*([^;&|[:space:]]*/)?rbw[[:space:]]+(-[^;&|[:space:]]*[[:space:]]+)*get([[:space:]][^;&|)\`"$'\n'"]*)?"
 # Above this size the command is checked only the strict, quote-blind way.
 SCAN_MAX=262144
 # A duration (timeout 5, 1.5m) in a wrapper prefix. In a variable: bash 3.2 and 5 disagree on
@@ -645,6 +649,41 @@ _runs_sudo() {
   [ -n "$CODE" ] && [ "$ARGS" = 0 ] && [[ $CODE =~ $WORD_SUDO_RE ]]
 }
 
+# _rbw_leaks <text>: 0 iff some `rbw get` in <text> (RBW_RE) prints the password: it has no
+# --field/-f naming a field other than password (rbw matches field names case-blind), or it
+# has --full or --raw (the whole entry). Quotes, parentheses and backquotes count as spaces.
+_rbw_leaks() {
+  local s t w f ok want
+  local -a ws
+  s=$(printf '%s' "$1" | tr '\n' ';')   # bash's ^ anchors at the string's start only
+  while [[ $s =~ $RBW_RE ]]; do
+    s=${s#*"${BASH_REMATCH[0]}"}
+    t=${BASH_REMATCH[$((${#BASH_REMATCH[@]} - 1))]}
+    t=${t//[\"\'\`()]/ }
+    ws=(); read -r -a ws <<<"$t" || true
+    ok=0 want=0
+    for w in ${ws[@]+"${ws[@]}"}; do
+      f=''
+      if [ "$want" = 1 ]; then f=$w; want=0
+      else
+        case "$w" in
+          --full|--raw) return 0 ;;
+          --field|-f) want=1 ;;
+          --field=*) f=${w#*=} ;;
+          -f?*) f=${w#-f} ;;
+        esac
+      fi
+      case "$f" in
+        '') ;;
+        [Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]) return 0 ;;
+        *) ok=1 ;;
+      esac
+    done
+    [ "$ok" = 1 ] || return 0
+  done
+  return 1
+}
+
 # _cfg <config.sh args>: config.sh run in the hook's cwd, so the repo file is the cwd's repo's.
 _cfg() {
   ( { [ -n "$CWD" ] && cd "$CWD" 2>/dev/null; } || cd / || exit 0
@@ -781,11 +820,11 @@ EOF
     return 0
   fi
 
-  # rule 1b: rbw get --full|--raw, read where rule 2 reads (no data heredoc, no search words)
+  # rule 1b: rbw get, read where rule 2 reads (no data heredoc, no search words)
   case "$cmd" in
     *rbw*)
-      if [[ $TEXT$KEPT =~ $RBW_RE ]]; then
-        _out deny "hi-guard: rbw get --full and --raw print the entry's password (--full as its unlabelled first line), so it lands in the transcript whatever filter follows. Read one field with: rbw get <entry> --field <name>. If you need the password itself, ask the user how to pass it without printing it."
+      if _rbw_leaks "$TEXT$KEPT"; then
+        RULE=rbw; _out deny "hi-guard: rbw get prints the entry's password unless it reads one other field, so it would land in the transcript whatever filter follows. Read one field with: rbw get <entry> --field <name> (not password). If you need the password itself, ask the user how to pass it without printing it."
         return 0
       fi ;;
   esac

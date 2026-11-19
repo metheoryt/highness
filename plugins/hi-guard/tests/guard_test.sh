@@ -85,7 +85,16 @@ run 'sudo true'
 assert_contains "the sudo reason starts hi-guard:" "$(reason)" "hi-guard: sudo"
 assert_contains "the sudo reason says the user runs it" "$(reason)" "run it themselves"
 
-# 1b. rbw get --full|--raw prints the password: built in, with no config too
+# 1b. rbw get prints the password unless it reads one other field: built in, with no config too
+denies "rbw get, plain"                     'rbw get x'
+denies "rbw get, the password into a var"   'p=$(rbw get x) && test -n "$p"'
+denies "rbw get --clipboard"                'rbw get x --clipboard'
+denies "rbw get --field password"           'rbw get x --field password'
+denies "rbw get -f PASSWORD"                'rbw get x -f PASSWORD'
+denies "rbw get --field=password"           'rbw get --field=password x'
+denies "rbw get --field user --full"        'rbw get x --field user --full'
+denies "rbw get behind env and timeout"     'env A=1 timeout 5 rbw get x | head -1'
+denies "rbw get in a backquote"             'u=`rbw get x`'
 denies "rbw get --full"                     'rbw get x --full'
 denies "rbw get --full piped to a filter"   "rbw get x --full | sed -n '/^user/p'"
 denies "rbw get --raw"                      'rbw get --raw x | jq -r .data.username'
@@ -97,8 +106,10 @@ denies "rbw get --full fed to bash"         "$(printf "bash <<'EOF'\nrbw get x -
 run 'rbw get x --full'
 assert_contains "the rbw reason names the safe form" "$(reason)" "--field <name>"
 allows "rbw get --field"                    'rbw get x --field user'
-allows "rbw get, the password into a var"   'p=$(rbw get x) && test -n "$p"'
+allows "rbw get -f, quoted"                 'rbw get "x y" -f "user"'
+allows "rbw get --field= and -fNAME"        'a=$(rbw get --field=user x); b=$(rbw get -fuser x)'
 allows "rbw list"                           'rbw list --fields name,user'
+allows "rbw get named as a message word"    'git commit -q -m "never rbw get x without --field"'
 allows "--full on another command"          'rbw get x --field user; git log --full-history -1'
 allows "rbw named in a data heredoc"        "$(printf "cat >> notes.md <<'EOF'\nnever rbw get x --full\nEOF")"
 allows "rbw searched for"                   "grep -rn 'rbw get .* --full' docs"
