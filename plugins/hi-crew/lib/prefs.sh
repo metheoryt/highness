@@ -99,7 +99,7 @@ cmd_propose() {
     [ .[] | select(.took != null) | {target: target, line: (
         "- " + q + ": "
         + (if .took == "option" then "chose " + (.picked // "?" | tostring | one)
-             + ((opt.leans_on // "") | if . != "" then " (leans on " + one + ")" else "" end)
+             + ((opt.leans_on // "") | if . != "" and (norm | startswith("no rule") | not) then " (leans on " + one + ")" else "" end)
            elif .took == "own" then "answered with their own option: " + (.reply // .picked // "" | tostring | one)
            else "rejected the framing: " + (.reply // "" | tostring | one) end)
         + " — " + .key) } ]
@@ -144,6 +144,8 @@ parse_dw() { # sets FILE LINES UNDER from <file> <lines> [--under <heading>]
   done
   [ -n "$FILE" ] && [ -n "$LINES" ] || die 'usage: diff|write <file> <lines> [--under <heading>]'
   [ -f "$LINES" ] || die "no lines file: $LINES"
+  # diff refuses what write refuses, so a person never approves a change that cannot be applied.
+  cmd_targets | grep -qxF "$FILE" || die "$FILE is not one of the preference files (prefs.sh targets)"
 }
 
 cmd_diff() {
@@ -158,7 +160,6 @@ cmd_diff() {
 
 cmd_write() {
   parse_dw "$@"
-  cmd_targets | grep -qxF "$FILE" || die "write: $FILE is not one of the preference files (prefs.sh targets)"
   local tmp; tmp=$(mktemp "${TMPDIR:-/tmp}/hi-prefs.XXXXXX") || die 'no temp file'
   merged "$FILE" "$LINES" "$UNDER" >"$tmp"
   if [ -f "$FILE" ] && cmp -s "$FILE" "$tmp"; then rm -f "$tmp"; echo 'nothing to add'; return 0; fi
@@ -175,6 +176,8 @@ cmd_write() {
 basenames() { cmd_targets | awk -F/ '{ print $NF }' | jq -Rsc 'split("\n") | map(select(. != ""))'; }
 
 # Every choice that took an offered option, with its basis values, one JSON object per line.
+# A generic option name ("A", "Yes", "Option 2", "Recommended") says nothing across tickets, so it
+# gives no `picked` basis.
 chosen() {
   bash "$CREW" choices | jq -c --argjson b "$(basenames)" '
     def norm: ascii_downcase | gsub("[^a-z0-9]+"; " ") | ltrimstr(" ") | rtrimstr(" ");
@@ -184,7 +187,9 @@ chosen() {
     | ($o.leans_on // "" | tostring) as $l
     | {key, at, picked: ($c.picked | tostring), leans_on: $l,
        question: (($c.question // "") | if . == "" then (($c.ask_body // "") | split("\n") | map(select(test("\\S"))) | first // "") else . end),
-       by: ([{basis: "picked", value: ($c.picked | tostring | norm)}]
+       by: ((($c.picked | tostring | norm) as $p
+            | if ($p | length) < 4 or ($p | test("^(option|variant|choice)? ?[a-z0-9]$|^(yes|no|ok|okay|recommended|the recommended one|default)$"))
+              then [] else [{basis: "picked", value: $p}] end)
             + (if $l != "" and ($l | norm | startswith("no rule") | not) and any($b[]; . as $f | $l | contains($f))
                then [{basis: "leans_on", value: ($l | norm)}] else [] end))}'
 }

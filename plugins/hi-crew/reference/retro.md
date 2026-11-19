@@ -88,7 +88,10 @@ keeping as a line in their own preferences, so the next worker reads it before a
    accepts or rejects it in review; nothing becomes a team rule without that.
 
 These lines and drafts never go into the retro comment or the filed findings: the person's
-replies are theirs, and the draft carries none of them verbatim.
+replies are theirs, and the draft carries none of them verbatim. The draft's question and picked
+columns are the worker's own ask text: before showing it, scrub them as step 2 says (host names,
+home paths, company and people's names, anything from a private repo), since the team's repo may
+be public.
 
 ## 4. Comment, then close
 

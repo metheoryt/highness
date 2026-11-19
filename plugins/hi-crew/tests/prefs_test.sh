@@ -75,6 +75,8 @@ EOF
 out=$(bash "$P" propose p-1)
 has 'propose: grouped under the file the option leans on' "$out" "## $S/values.md"
 has 'propose: the question falls back to the ask body' "$out" '- Where does the retry live?: chose A new script (leans on values.md › Small diffs) — p-1'
+out=$(cd "$T" && printf '%s\n' '{"key":"p-8","question":"Q?","options":[{"name":"B","leans_on":"no rule: size"}],"took":"option","picked":"B"}' >>"$HIGHNESS_STATE/crew/choices.jsonl" && bash "$P" propose p-8)
+hasnt 'propose: a no-rule option names no leans on' "$out" 'leans on'
 check 'propose: a null-took line gives nothing' "$(printf '%s\n' "$out" | grep -c '^- ')" 1
 out=$(bash "$P" propose p-2)
 has 'propose: tone.md option goes to tone.md' "$out" "## $S/facets/tone.md"
@@ -112,6 +114,7 @@ check 'a missing heading is added at the end' "$(tail -5 "$F")" '- x
 ## New heading
 
 - a fresh line'
+if bash "$P" diff "$T/elsewhere.md" "$T/lines" >/dev/null 2>&1; then no 'diff refuses a file outside the targets'; else ok 'diff refuses a file outside the targets'; fi
 if bash "$P" write "$T/elsewhere.md" "$T/lines" 2>/dev/null; then no 'write refuses a file outside the targets'; else ok 'write refuses a file outside the targets'; fi
 [ -e "$T/elsewhere.md" ] && no 'refused write created no file' || ok 'refused write created no file'
 rm -f "$DEF"
@@ -130,6 +133,10 @@ rep=$(bash "$P" repeats)
 has 'repeats: same preference line on two tickets' "$rep" "$(printf 'leans_on\tvalues md small diffs\t2\tp-1,p-2')"
 has 'repeats: same picked option on two tickets' "$rep" "$(printf 'picked\ta new script\t2\tp-1,p-2')"
 hasnt 'repeats: a one-ticket choice is not a repeat' "$rep" 'short'
+printf '%s\n' '{"key":"g-1","took":"option","picked":"Option 1"}' '{"key":"g-2","took":"option","picked":"option 1"}' \
+  '{"key":"g-1","took":"option","picked":"Yes"}' '{"key":"g-2","took":"option","picked":"yes"}' >>"$HIGHNESS_STATE/crew/choices.jsonl"
+rep=$(bash "$P" repeats)
+hasnt 'repeats: a generic option name is not a repeat' "$rep" 'g-1'
 check 'repeats --min 3: none' "$(bash "$P" repeats --min 3)" ''
 echo '{"crew": {"team_rules": "docs/team-rules.md"}}' >"$R/.claude/highness.json"
 dr=$(bash "$P" draft-rule leans_on 'values md small diffs' --root "$R")

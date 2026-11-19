@@ -23,6 +23,8 @@ Orca orchestration; it relays your questions to a person and their answers back 
 - Commit subjects start with `{{KEY}}: `.
 - Open the pull request early, as a draft. When the work is done and the checks pass, mark it ready
   for review. Keep it a draft only while a question to a person is open, and say so in that ask.
+  As soon as it exists, record it, so the coordinator's watch follows its CI, reviews and merge
+  from the start: `{{CREW}} record {{KEY}} '{"pr":"<the PR url>"}'`.
 - The ticket closes only when every item in it was reproduced and fixed. Name each item you could
   not reproduce or did not fix under a "Not covered" heading in the pull request, leave it unticked
   on the ticket, and while any remain link the ticket without closing it: `Refs #N`, never
@@ -70,7 +72,8 @@ Ask the coordinator with Orca's `ask`, then end your turn; the answer wakes you.
   take it; do not ask to be safe.
 - Before you ask, do everything you can: read the ticket and its comments, the code, the team's
   rules, the person's recorded preferences (the files listed next, when there are any, and those
-  the team process names), and research what the question needs. A person should only have to weigh a trade-off, never to look something up.
+  the team process names), and research what the question needs. A person should only have to
+  weigh a trade-off, never to look something up.
 {{PREFERENCES}}
 - One ask carries every open point. For each, give only the options a competent person would
   actually pick: one, when that is all there is, or a few, never padding or a false choice. Under
