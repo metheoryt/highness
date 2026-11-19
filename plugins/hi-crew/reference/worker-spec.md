@@ -69,8 +69,9 @@ Ask the coordinator with Orca's `ask`, then end your turn; the answer wakes you.
 - Everything else: decide, and say what you decided in the PR. When one answer is clearly right,
   take it; do not ask to be safe.
 - Before you ask, do everything you can: read the ticket and its comments, the code, the team's
-  rules and the person's recorded preferences the team process names, and research what the
-  question needs. A person should only have to weigh a trade-off, never to look something up.
+  rules, the person's recorded preferences (the files listed next, when there are any, and those
+  the team process names), and research what the question needs. A person should only have to weigh a trade-off, never to look something up.
+{{PREFERENCES}}
 - One ask carries every open point. For each, give only the options a competent person would
   actually pick: one, when that is all there is, or a few, never padding or a false choice. Under
   each option:

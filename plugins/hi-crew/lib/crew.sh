@@ -59,8 +59,10 @@
 #                                     {{KEY}}`, `move`, `comment`: lib/tracker.sh), {{KEY}} the key.
 #                                     crew.merge sets the merge line: "never" (default) leaves
 #                                     merging to a person; "on_green" has the worker merge its own
-#                                     PR once ready and green, unless its brief says otherwise
-#   crew.sh watch                     look at the PR of every open ticket and, when something a
+#                                     PR once ready and green, unless its brief says otherwise.
+#                                     The person's preference files (prefs.sh paths) are cited in
+#                                     the Asking part by path, never inlined; none, no line
+#   crew.sh watch                    look at the PR of every open ticket and, when something a
 #                                     person should see changed since the last look (merged or
 #                                     closed, CI failed, new comments from people), append it to the
 #                                     watch events and wake the ticket's coordinator with a status
@@ -401,7 +403,7 @@ cmd_reports() {
 }
 
 cmd_spec() {
-  local key='' title='' brief_file='' brief='' process marker merge root=''
+  local key='' title='' brief_file='' brief='' process marker merge root='' prefs
   while [ $# -gt 0 ]; do
     case "$1" in
       --root) root=${2:-}; shift 2 ;;
@@ -428,8 +430,13 @@ cmd_spec() {
     on_green) merge="Merge your own pull request once it is ready for review and its checks pass, the way the team's process below says. If your brief says merging is the person's call, it is: then never merge." ;;
     *) die "crew.merge '$merge' is not never or on_green" ;;
   esac
+  # The person's preference files, cited by path (never inlined: such stores can be large).
+  prefs=$(bash "$HERE/prefs.sh" paths 2>/dev/null | awk '
+    NR == 1 { print "- The person'"'"'s own preferences are in these files; read the headings that bear on" }
+    NR == 1 { print "  the question, and cite one by file and heading in `leans on:`:" }
+    { print "  - `" $0 "`" }')
   # Placeholders are replaced in a fixed order by awk with literal strings (no regex, no &).
-  KEY=$key TITLE=$title BRIEF=$brief PROCESS=$process MARKER=$marker MERGE=$merge ROOT=$root TRACKER=$(tracker_cmd "$root") awk '
+  PREFS=$prefs KEY=$key TITLE=$title BRIEF=$brief PROCESS=$process MARKER=$marker MERGE=$merge ROOT=$root TRACKER=$(tracker_cmd "$root") awk '
     function rep(s, ph, val,   out, i) {
       out = ""
       while ((i = index(s, ph)) > 0) { out = out substr(s, 1, i - 1) val; s = substr(s, i + length(ph)) }
@@ -441,6 +448,7 @@ cmd_spec() {
       line = rep(line, "{{MARKER}}", ENVIRON["MARKER"])
       line = rep(line, "{{MERGE}}", ENVIRON["MERGE"])
       if (line == "{{BRIEF}}") { print ENVIRON["BRIEF"]; next }
+      if (line == "{{PREFERENCES}}") { if (ENVIRON["PREFS"] != "") print ENVIRON["PREFS"]; next }
       if (line == "{{PROCESS}}") {
         print rep(rep(rep(ENVIRON["PROCESS"], "{{ROOT}}", ENVIRON["ROOT"]), "{{TRACKER}}", ENVIRON["TRACKER"]), "{{KEY}}", ENVIRON["KEY"])
         next }

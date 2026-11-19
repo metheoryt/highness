@@ -119,6 +119,19 @@ Findings go to GitHub issues unless the team sets `crew.retro_sink`, a command w
 (`tool`, `brief` or `decision`), `{{TITLE}}`, `{{BODY_FILE}}`, `{{TICKET}}` and `{{ROOT}}`
 filled in shell-quoted, which prints the created key or URL, or `dup <key>`.
 
+### Your preferences
+
+highness reads your own store of working preferences; it does not keep one for you. Set
+`preferences` in your own config (never a repo's) to a file, a directory (its `*.md` files) or a
+list of them, e.g. `"preferences": ["~/notes/how-i-work.md", "~/notes/prefs/"]`. Unset, it is one
+file, `~/.config/highness/preferences.md`. A worker's spec names these files (it never copies
+their text), so its asks cite them in `leans on:`. At the close, the retro turns the ticket's
+recorded choices into proposed lines for the file they fit, shown as a diff and written only on
+your yes (`hi-crew/lib/prefs.sh`); your own sync carries them from there. A choice made the same
+way on several tickets becomes a drafted team rule, opened as a pull request to the team's rules
+file (`crew.team_rules` in the team's settings, a path in its repo) only on your yes, for the
+team to accept or reject in review.
+
 ## Configuration
 
 Optional JSON, read by every plugin: `~/.config/highness/config.json` (or `$HIGHNESS_CONFIG`) for one
