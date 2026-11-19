@@ -14,6 +14,10 @@
 #      string of env. That code, eval's arguments, flock's command after the lock file and the
 #      arguments of a command word that is itself an expansion (`$X sudo id`, `$BASH -c '…'`)
 #      are scanned as commands in turn: 16 scans, then the rest the strict way, never skipped.
+#  1b. `rbw get <entry> --full` or `--raw` (built in, no config): both print the password, so a
+#      filter after them still puts it in the transcript; `--field <name>` is the safe form.
+#      Read where rule 2 reads: one command's text and words, not a data heredoc body, not a
+#      search command's words.
 #   2. Any guard.deny_patterns entry (ERE, anywhere in the command), except in the words of a
 #      search command (grep, egrep, fgrep, zgrep, rg without --pre): there a match is a search
 #      pattern or a file name, not an access.
@@ -80,6 +84,8 @@ SUDO_RE="${CMD_START}[[:space:]]*sudo([[:space:]]|\$)"
 SSH_SUDO_RE="${CMD_START}[[:space:]]*ssh[[:space:]][^;&|]*[[:space:]\"']sudo([[:space:]\"']|\$)"
 # Per segment: sudo as a word in an interpreter's code (bash -c "a && sudo b", ssh box 'sudo x').
 WORD_SUDO_RE="(^|[[:space:];&|(\`\"'])sudo([[:space:];&|)\`\"']|\$)"
+# Rule 1b, within one command (no ; & | or newline between): rbw … get … --full|--raw.
+RBW_RE="(^|[^[:alnum:]_.-])rbw[[:space:]]+([^;&|"$'\n'"]*[[:space:]])?get[[:space:]]([^;&|"$'\n'"]*[[:space:]])?--(full|raw)([[:space:]=]|\$)"
 # Above this size the command is checked only the strict, quote-blind way.
 SCAN_MAX=262144
 # A duration (timeout 5, 1.5m) in a wrapper prefix. In a variable: bash 3.2 and 5 disagree on
@@ -753,6 +759,15 @@ EOF
     _out deny "hi-guard: sudo is not run from an agent session. Do not work around this: show the user the exact command and why it is needed, and ask them to run it themselves."
     return 0
   fi
+
+  # rule 1b: rbw get --full|--raw, read where rule 2 reads (no data heredoc, no search words)
+  case "$cmd" in
+    *rbw*)
+      if [[ $TEXT$KEPT =~ $RBW_RE ]]; then
+        _out deny "hi-guard: rbw get --full and --raw print the entry's password (--full as its unlabelled first line), so it lands in the transcript whatever filter follows. Read one field with: rbw get <entry> --field <name>. If you need the password itself, ask the user how to pass it without printing it."
+        return 0
+      fi ;;
+  esac
   [ -n "$files" ] || return 0
 
   # rule 2

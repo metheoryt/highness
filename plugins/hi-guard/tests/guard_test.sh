@@ -85,6 +85,27 @@ run 'sudo true'
 assert_contains "the sudo reason starts hi-guard:" "$(reason)" "hi-guard: sudo"
 assert_contains "the sudo reason says the user runs it" "$(reason)" "run it themselves"
 
+# 1b. rbw get --full|--raw prints the password: built in, with no config too
+denies "rbw get --full"                     'rbw get x --full'
+denies "rbw get --full piped to a filter"   "rbw get x --full | sed -n '/^user/p'"
+denies "rbw get --raw"                      'rbw get --raw x | jq -r .data.username'
+denies "rbw by path, quoted flag"           '/usr/bin/rbw get "x" "--full"'
+denies "rbw get --full in \$( )"            'u=$(rbw get x --full | tail -n +2)'
+denies "rbw get --full in bash -c"          "bash -c 'rbw get x --full'"
+denies "rbw get --full after &&"            'rbw unlock && rbw get x --full'
+denies "rbw get --full fed to bash"         "$(printf "bash <<'EOF'\nrbw get x --full\nEOF")"
+run 'rbw get x --full'
+assert_contains "the rbw reason names the safe form" "$(reason)" "--field <name>"
+allows "rbw get --field"                    'rbw get x --field user'
+allows "rbw get, the password into a var"   'p=$(rbw get x) && test -n "$p"'
+allows "rbw list"                           'rbw list --fields name,user'
+allows "--full on another command"          'rbw get x --field user; git log --full-history -1'
+allows "rbw named in a data heredoc"        "$(printf "cat >> notes.md <<'EOF'\nnever rbw get x --full\nEOF")"
+allows "rbw searched for"                   "grep -rn 'rbw get .* --full' docs"
+HIGHNESS_CONFIG="$SANDBOX/none.json"
+denies "no config at all: rbw get --full"   'rbw get x --full'
+HIGHNESS_CONFIG=$CFG
+
 # 2. deny patterns (the user file, HIGHNESS_CONFIG)
 denies "a prod context"             'kubectl --context prod-cluster get pods'
 allows "a testing context"          'kubectl --context testing-cluster get pods'
