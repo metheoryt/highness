@@ -56,8 +56,10 @@ this skill" printed above, two levels up.
    it; the person answers it there (`$O terminal list`, or the worker's workspace in Orca).
 3. **Last reports**: `bash "$C" reports` — the latest `worker_done` per dispatch. A report no
    session handled lands here; record what it names (`pr`, `head`).
-4. **What the watch saw**: `bash "$C" events` — PRs merged or closed, CI failures, people's
-   new comments, workers left on a dialog, a tool call open too long (a hung command?), since anyone last looked (TSV: time, key, run, pr, what). When it is empty and
+4. **What the watch saw**: `bash "$C" events` — PRs merged or closed, CI failures, review bots'
+   findings, people's new comments and approvals, workers left on a dialog, a tool call open too long (a hung command?), since anyone last looked (TSV: time, key, run, pr, what, woken).
+   `woken` is `worker` when the watch sent the worker a round itself: nothing waits on the person
+   there unless the worker asks. When it is empty and
    `$O automations list --json` has no "hi-crew watch", offer `bash "$C" watch-install` once.
 5. **Workers**: `bash "$C" states` first — each worker's state from its own hooks (TSV: key,
    run, state, since, kind, open tool, minutes that tool has run, minutes the turn has run;

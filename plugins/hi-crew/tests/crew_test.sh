@@ -264,7 +264,15 @@ if [ "$2" = worker-show ]; then
   exit 0
 fi
 if [ "$2" = run-current ]; then printf '{"ok":true,"result":{"runId":"run_w1"}}\n'; exit 0; fi
+if [ "$2" = worker-list ]; then
+  if [ -n "${FAKE_WORKERS:-}" ]; then printf '%s\n' "$FAKE_WORKERS"; else echo '{"ok":true,"result":{"workers":[]}}'; fi
+  exit 0
+fi
 printf '%s\n' "$*" >>"$SENT"
+case "$*" in
+  *'--to dispatch:'*) if [ -n "${FAKE_SEND_FAIL:-}" ]; then echo '{"ok":false,"error":{"code":"dispatch_inactive"}}'; exit 1; fi
+                      echo '{"ok":true}' ;;
+esac
 EOF
 chmod +x "$W/bin/orca"
 export ORCA_CLI_COMMAND="$W/bin/orca" SENT="$W/sent"; : >"$SENT"
@@ -300,6 +308,48 @@ mkdir "$W/state/crew/watch/lock"
 echo '{"state":"closed"}' >"$WR/state-7.json"; bash "$C" watch
 check 'a running watch is not doubled' "$(bash "$C" events | wc -l | tr -d ' ')" 2
 rmdir "$W/state/crew/watch/lock"
+check 'a worker event with no Dispatch wakes the coordinator' "$(grep 'CI failed on bbbbbbbb' "$W/state/crew/watch/events" | cut -f5,6)" "$(printf 'CI failed on bbbbbbbb\tcoordinator')"
+# --- who is woken: the worker by a round to its Dispatch, the coordinator when a person is needed
+mkdir -p "$W/ws5"; WS5=$(cd "$W/ws5" && pwd -P)
+bash "$C" watch; bash "$C" events --ack; : >"$SENT"  # settle the closed PR above
+export FAKE_WORKERS="$(jq -nc --arg ws "ws-id::$WS5" '{ok:true,result:{workers:[
+  {dispatchId:"ctx_other",liveness:"live",workspace:"ws-id::/elsewhere"},
+  {dispatchId:"ctx_old",liveness:"exited",workspace:$ws},
+  {dispatchId:"ctx_new",liveness:"live",workspace:$ws}]}}')"
+bash "$C" record W-5 "{\"pr\":\"https://forge/pr/5\",\"run\":\"run_w1\",\"root\":\"$WR\",\"workspace\":\"$WS5\",\"dispatch\":\"ctx_old\"}"
+st5() { printf '%s\n' "$1" >"$WR/state-5.json"; bash "$C" watch; }
+st5 '{"state":"open","ci":"pending","head":"c1","people":0}'
+st5 '{"state":"open","ci":"pending","head":"c1","people":0,"findings":4,"approvals":["lead"]}'
+check 'findings and approvals appearing are no event' "$(bash "$C" events)$(cat "$SENT")" ''
+st5 '{"state":"open","ci":"failure","head":"c1c1c1c1c1","people":0,"findings":4,"approvals":["lead"]}'
+check 'CI failure wakes the worker' "$(bash "$C" events | cut -f2,5,6)" "$(printf 'W-5\tCI failed on c1c1c1c1\tworker')"
+case "$(cat "$SENT")" in *'send --to dispatch:ctx_new --from term_coord --type status --subject W-5: CI failed on c1c1c1c1'*) ok 'a round to the live Dispatch in its workspace' ;; *) no "worker round: $(cat "$SENT")" ;; esac
+check 'the coordinator is not woken for it' "$(grep -c 'run:run_w1' "$SENT")" 0
+check 'the Dispatch found is recorded' "$(bash "$C" get W-5 | jq -r .dispatch)" ctx_new
+st5 '{"state":"open","ci":"failure","head":"c1c1c1c1c1","people":0,"findings":4,"approvals":["lead"]}'
+check 'the same failure is told once' "$(bash "$C" events | wc -l | tr -d ' ')" 1
+st5 '{"state":"open","ci":"failure","head":"c2c2c2c2c2","people":0,"findings":4,"approvals":["lead"]}'
+check 'a failure on a new head is told again' "$(bash "$C" events | tail -1 | cut -f5)" 'CI failed on c2c2c2c2'
+st5 '{"state":"open","ci":"success","head":"c3","people":0,"findings":6,"approvals":["lead"]}'
+check 'review bot findings wake the worker' "$(bash "$C" events | tail -1 | cut -f5,6)" "$(printf '2 new finding(s) from review bots\tworker')"
+bash "$C" events --ack; : >"$SENT"
+st5 '{"state":"open","ci":"success","head":"c3","people":0,"findings":6,"approvals":["lead","rev"]}'
+check 'an approval wakes the coordinator' "$(bash "$C" events | cut -f5,6)" "$(printf 'approved by rev\tcoordinator')"
+case "$(cat "$SENT")" in *'send --to run:run_w1 --from term_coord --type status --subject W-5: approved by rev'*) ok 'the approval goes to the Run' ;; *) no "approval send: $(cat "$SENT")" ;; esac
+# The author's own label change, a cross-reference, a resolve: none is in the state, so it stays.
+st5 '{"state":"open","ci":"success","head":"c3","people":0,"findings":6,"approvals":["lead","rev"]}'
+check 'an approval is told once' "$(bash "$C" events | wc -l | tr -d ' ')" 1
+cp "$WR/.claude/highness.json" "$W/cfg.bak"
+jq '.crew.merge = "on_green"' "$W/cfg.bak" >"$WR/.claude/highness.json"
+st5 '{"state":"open","ci":"success","head":"c3","people":0,"findings":6,"approvals":["lead","new"]}'
+check 'on_green: an approval wakes the worker, who merges' "$(bash "$C" events | tail -1 | cut -f5,6)" "$(printf 'approved by new\tworker')"
+mv "$W/cfg.bak" "$WR/.claude/highness.json"
+bash "$C" events --ack; : >"$SENT"
+FAKE_SEND_FAIL=1 st5 '{"state":"open","ci":"failure","head":"c4c4c4c4c4","people":0,"findings":6,"approvals":["lead","new"]}'
+check 'a refused round wakes the coordinator instead' "$(bash "$C" events | cut -f5,6)" "$(printf 'CI failed on c4c4c4c4\tcoordinator')"
+check 'refused round: the coordinator got it' "$(grep -c 'send --to run:run_w1 .*W-5: CI failed on c4c4c4c4' "$SENT")" 1
+unset FAKE_WORKERS
+bash "$C" close W-5 2>/dev/null; bash "$C" events --ack; : >"$SENT"
 # --- no `pr` in the facts: the watch finds the PR by the workspace's branch, and records it
 mkdir -p "$W/bin3" "$W/ws3"; git -C "$W/ws3" init -q; git -C "$W/ws3" checkout -q -b feat-3
 WS3=$(cd "$W/ws3" && pwd -P)
@@ -407,7 +457,36 @@ JSON
 EOF
 chmod +x "$W/bin/gh"
 GS=$(PATH="$W/bin:$PATH" bash -c 'eval "$(sed -n "/^gh_state()/,/^}/p" "$1")"; gh_state x "(agent)"' _ "$C")
-check 'gh_state' "$GS" '{"state":"open","draft":false,"head":"abc","ci":"failure","people_at":"2026-01-02T00:00:00Z","people":2}'
+check 'gh_state' "$GS" '{"state":"open","draft":false,"head":"abc","ci":"failure","people_at":"2026-01-02T00:00:00Z","people":2,"findings":0,"approvals":[]}'
+# Bots on normal accounts (crew.bots), the forge Actions user, review bots' findings, approvals.
+cat >"$W/bin/gh" <<'EOF'
+#!/bin/sh
+if [ "$1" = api ]; then
+  case "$*" in *'repos/o/r/pulls/3/comments'*) ;; *) exit 1 ;; esac
+  # --paginate prints one array per page
+  echo '[{"user":{"login":"reviewer-x[bot]","type":"Bot"},"body":"nit: rename","updated_at":"2026-01-10T00:00:00Z"}]'
+  echo '[{"user":{"login":"rev","type":"User"},"body":"rename?","updated_at":"2026-01-03T12:00:00Z"},
+         {"user":{"login":"me","type":"User"},"body":"(agent) renamed","updated_at":"2026-01-11T00:00:00Z"}]'
+  exit 0
+fi
+cat <<'JSON'
+{"state":"OPEN","isDraft":true,"headRefOid":"abc","statusCheckRollup":[],
+ "comments":[{"author":{"login":"me"},"body":"(agents disagree here","updatedAt":"2026-01-02T00:00:00Z"},
+             {"author":{"login":"forgejo-actions"},"body":"summary, rewritten on push","updatedAt":"2026-01-06T00:00:00Z"},
+             {"author":{"login":"gatekeeper"},"body":"ok to merge","updatedAt":"2026-01-07T00:00:00Z"}],
+ "reviews":[{"author":{"login":"rev"},"body":"why?","state":"COMMENTED","submittedAt":"2026-01-01T00:00:00Z"},
+            {"author":{"login":"rev"},"body":"LGTM","state":"APPROVED","submittedAt":"2026-01-08T00:00:00Z"},
+            {"author":{"login":"gatekeeper"},"body":"fix the tests","state":"CHANGES_REQUESTED","submittedAt":"2026-01-09T00:00:00Z"},
+            {"author":{"login":"reviewer-x"},"body":"Reviewed 3 files, no comments","state":"COMMENTED","submittedAt":"2026-01-09T00:00:00Z"}],
+ "latestReviews":[{"author":{"login":"rev"},"state":"APPROVED"},{"author":{"login":"lead"},"state":"APPROVED"},
+                  {"author":{"login":"gatekeeper"},"state":"CHANGES_REQUESTED"},{"author":{"login":"merge-bot[bot]"},"state":"APPROVED"}]}
+JSON
+EOF
+GS=$(PATH="$W/bin:$PATH" bash -c 'eval "$(sed -n "/^gh_state()/,/^}/p" "$1")"; gh_state https://github.com/o/r/pull/3 "(agent)" "[\"forgejo-actions\",\"gatekeeper\",\"reviewer-x\"]"' _ "$C")
+check 'gh_state: bots, findings, approvals' "$GS" '{"state":"open","draft":true,"head":"abc","ci":"","people_at":"2026-01-03T12:00:00Z","people":3,"findings":2,"approvals":["lead","rev"]}'
+GS=$(PATH="$W/bin:$PATH" bash -c 'eval "$(sed -n "/^gh_state()/,/^}/p" "$1")"; gh_state https://github.com/o/r/pull/4 "(agent)" "[]"' _ "$C")
+check 'gh_state: no inline comments, no state' "$GS" ''
+check 'crew.bots adds to the Actions users' "$(cd "$WR" && HIGHNESS_CONFIG="$W/bots.json" bash -c 'printf "{\"crew\":{\"bots\":[\"gatekeeper\"]}}" >"$HIGHNESS_CONFIG"; eval "$(sed -n "/^BOTS_DEFAULT=/p;/^bots_json()/,/^}/p" "$1")"; CONFIG="$2"; bots_json .' _ "$C" "$(cd "$HERE/../lib" && pwd)/config.sh")" '["forgejo-actions","gatekeeper","gitea-actions","github-actions"]'
 
 QR=$(bash -c 'source /dev/stdin <<<"$(sed -n "/^q()/p" "$1")"; q "it'"'"'s a b"' _ "$C")
 check 'q quotes one shell word' "$(eval "printf %s $QR")" "it's a b"
