@@ -49,6 +49,13 @@ has 'no transcript is said, not fatal' "$out" $'## transcript\nnot found'
 has 'no denial log is said' "$out" 'no denial log at'
 has 'no choices is said' "$out" $'## choices\nnone'
 if bash "$R" gather nope-1 2>/dev/null; then no 'gather refuses unknown ticket'; else ok 'gather refuses unknown ticket'; fi
+has 'no spec is said' "$out" $'## spec\nnot recorded'
+# The spec: the copy crew.sh spec keeps for the key, then the facts' `spec` path (highness#85).
+mkdir -p "$HIGHNESS_STATE/crew/specs" && echo 'spec text' >"$HIGHNESS_STATE/crew/specs/proj-7.md"
+has 'spec: the kept copy, unrecorded' "$(bash "$R" gather proj-7)" $'## spec\n'"$HIGHNESS_STATE/crew/specs/proj-7.md"
+echo 'spec text' >"$T/spec.md"
+bash "$C" record proj-7 "{\"spec\":\"$T/spec.md\"}"
+has 'spec: the recorded path' "$(bash "$R" gather proj-7)" $'## spec\n'"$T/spec.md"
 
 # A transcript with a failed tool call, an ask, an interrupt and a 40-minute gap; a denial log.
 TR="$T/tr.jsonl"
