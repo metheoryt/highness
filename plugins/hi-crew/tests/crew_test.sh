@@ -377,6 +377,15 @@ bash "$C" events --ack; : >"$SENT"
 FAKE_SEND_FAIL=1 st5 '{"state":"open","ci":"failure","head":"c4c4c4c4c4","people":0,"findings":6,"approvals":["lead","new"]}'
 check 'a refused round wakes the coordinator instead' "$(bash "$C" events | cut -f5,6)" "$(printf 'CI failed on c4c4c4c4\tcoordinator')"
 check 'refused round: the coordinator got it' "$(grep -c 'send --to run:run_w1 .*W-5: CI failed on c4c4c4c4' "$SENT")" 1
+check 'the note carries its version' "$(jq -r .v "$W/state/crew/watch/W-5.json")" 2
+# A note written before v2 counted an approval's text as a comment: the switch is silent, and the
+# next real comment still wakes.
+bash "$C" events --ack
+echo '{"state":"open","ci":"failure","head":"c4c4c4c4c4","people":3,"people_at":"2026-01-05T00:00:00Z","findings":6,"approvals":["lead","new"]}' >"$W/state/crew/watch/W-5.json"
+st5 '{"state":"open","ci":"failure","head":"c4c4c4c4c4","people":2,"people_at":"2026-01-04T00:00:00Z","findings":6,"approvals":["lead","new"]}'
+check 'an old note: the new count is no event' "$(bash "$C" events)" ''
+st5 '{"state":"open","ci":"failure","head":"c4c4c4c4c4","people":3,"people_at":"2026-01-06T00:00:00Z","findings":6,"approvals":["lead","new"]}'
+check 'an old note: the next comment wakes' "$(bash "$C" events | cut -f5)" '1 new comment(s) from people'
 unset FAKE_WORKERS
 bash "$C" close W-5 2>/dev/null; bash "$C" events --ack; : >"$SENT"
 # --- no `pr` in the facts: the watch finds the PR by the workspace's branch, and records it

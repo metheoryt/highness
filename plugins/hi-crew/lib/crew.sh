@@ -641,7 +641,7 @@ worker_dispatch() { # <facts json>
   run=$(printf '%s' "$1" | jq -r '.run // empty')
   d=$(printf '%s' "$1" | jq -r '.dispatch // empty')
   if [ -n "$ws" ] && [ -n "$run" ]; then
-    found=$("$(orca_cmd)" orchestration worker-list --run "$run" --json 2>/dev/null | jq -r --arg ws "$ws" '
+    found=$("$(orca_cmd)" orchestration worker-list --run "$run" --limit 100 --json 2>/dev/null | jq -r --arg ws "$ws" '
       [.result.workers[]? | select((.workspace // "") | sub("^[^:]*::"; "") == $ws)]
       | (map(select(.liveness == "live")) + .) | .[0].dispatchId // empty' 2>/dev/null) || found=''
     [ -n "$found" ] && d=$found
@@ -763,11 +763,14 @@ cmd_watch() {
       # An approval is the worker's when it merges its own PR (crew.merge on_green), else a person's.
       ap=coordinator
       [ "$(cd "$(facts_root "$t")" && bash "$CONFIG" get '.crew.merge' 2>/dev/null)" = on_green ] && ap=worker
-      changes "$(cat "$snap")" "$now" "$ap" | while IFS="$(printf '\t')" read -r to what; do
+      # A note from before v2 counted people another way (approval texts in, inline comments out):
+      # its people count is taken from now, so the switch neither fires nor swallows a comment.
+      changes "$(jq -c --argjson b "$now" 'if .v == 2 then . else . + ($b | {people, people_at} | with_entries(select(.value != null))) end' "$snap")" \
+          "$now" "$ap" | while IFS="$(printf '\t')" read -r to what; do
         if [ "$to" = worker ]; then event "$key" "$run" "$pr" "$what" "$t"; else event "$key" "$run" "$pr" "$what"; fi
       done
     fi
-    printf '%s\n' "$now" >"$snap"
+    printf '%s' "$now" | jq -c '. + {v: 2}' >"$snap"
   done
   # The budget hold (lib/hold.sh): pause the autostarted workers of an account over the person's
   # reserve, resume them when it is back. Before the slot count, which returns early exactly when
