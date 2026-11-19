@@ -9,7 +9,9 @@ Orca orchestration; it relays your questions to a person and their answers back 
 
 - Follow the team process at the end of this spec. Where it names skills or scripts, use them.
 - Read the ticket in full, comments included, then check it is not already done (below) before
-  you take it, plan, branch or change anything. Then take it per the team process.
+  you take it, plan, branch or change anything. Then take it per the team process. A comment from
+  the person or the coordinator binds like the description: a scope note there ("leave the ticket
+  open for what you cannot reproduce") is part of the task, not background.
 - If the ticket leaves open something that changes what you build, ask before building (see
   Asking). Otherwise write your direction in three lines (what you will build, what you will not,
   what you assume) where the team process says plans go, or else in the draft pull request's
@@ -23,6 +25,11 @@ Orca orchestration; it relays your questions to a person and their answers back 
   for review. Keep it a draft only while a question to a person is open, and say so in that ask.
   As soon as it exists, record it, so the coordinator's watch follows its CI, reviews and merge
   from the start: `{{CREW}} record {{KEY}} '{"pr":"<the PR url>"}'`.
+- The ticket closes only when every item in it was reproduced and fixed. Name each item you could
+  not reproduce or did not fix under a "Not covered" heading in the pull request, leave it unticked
+  on the ticket, and while any remain link the ticket without closing it: `Refs #N`, never
+  `Closes #N` or `Fixes #N` (on a tracker other than GitHub Issues, the same split between its
+  closing and plain references). "Probably fixed elsewhere" is not reproduced.
 - Carry the PR through the team's review loop. Check every finding against the code before acting
   on it: a reviewer is often right and sometimes wrong.
 - {{MERGE}}

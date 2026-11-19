@@ -104,4 +104,17 @@ check 'curl was called' "$([ -f "$T/curl.args" ] && echo yes)" yes
 check 'the token is not in its arguments' "$(grep -c 'sk-test-secret' "$T/curl.args")" 0
 has 'the token goes in on stdin' "$(cat "$T/curl.stdin")" 'Authorization: Bearer sk-test-secret'
 
+# --- the Keychain: a config dir's own entry, suffixed by its path's hash (AI-190)
+rm -f "$T/acct/.credentials.json" "$T/curl.stdin"
+sfx=$(printf '%s' "$T/acct" | shasum -a 256 | cut -c1-8)
+# A fake `security` that knows two entries: the bare one (another account) and this dir's own.
+printf '#!/bin/sh\ncase "$*" in\n  *"Claude Code-credentials-%s"*) echo "{\\"claudeAiOauth\\": {\\"accessToken\\": \\"sk-own\\"}}" ;;\n  *"Claude Code-credentials -w"*) echo "{\\"claudeAiOauth\\": {\\"accessToken\\": \\"sk-bare\\"}}" ;;\n  *) exit 44 ;;\nesac\n' "$sfx" >"$T/bin/security"
+chmod +x "$T/bin/security"
+PATH="$T/bin:$PATH" HI_BUDGET_KEYCHAIN=1 HI_BUDGET_RESPONSE='' bash "$B" check "$T/acct" >/dev/null 2>&1
+has 'a profile dir reads its own suffixed entry' "$(cat "$T/curl.stdin" 2>/dev/null)" 'Bearer sk-own'
+check 'and never the bare one (another account)' "$(grep -c 'sk-bare' "$T/curl.stdin" 2>/dev/null)" 0
+rm -f "$T/curl.stdin"; mkdir -p "$T/home/.claude"
+PATH="$T/bin:$PATH" HOME="$T/home" HI_BUDGET_KEYCHAIN=1 HI_BUDGET_RESPONSE='' bash "$B" check "$T/home/.claude" >/dev/null 2>&1
+has '~/.claude reads the bare entry first' "$(cat "$T/curl.stdin" 2>/dev/null)" 'Bearer sk-bare'
+
 exit $fail

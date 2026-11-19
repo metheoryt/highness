@@ -150,6 +150,9 @@ case "$out" in *'Before you ask, do everything you can'*) ok 'ask: research befo
 case "$out" in *'`loses:`'*'`leans on:`'*'`no rule: '*'what would change your mind'*) ok 'ask: options carry loses and leans on' ;; *) no 'ask: options carry loses and leans on' ;; esac
 case "$out" in *'take it; do not ask to be safe'*) ok 'ask: obvious calls are taken' ;; *) no 'ask: obvious calls are taken' ;; esac
 case "$out" in *'write your direction in three lines'*'start without waiting'*) ok 'direction note before building' ;; *) no 'direction note before building' ;; esac
+# A scope note in a ticket comment binds; a ticket closes only when every item was reproduced (highness#71).
+case "$out" in *'comments included'*'A comment from'*'binds like the description'*) ok 'ticket comments bind like the description' ;; *) no 'ticket comments bind like the description' ;; esac
+case "$out" in *'"Not covered" heading'*'`Refs #N`, never'*'`Closes #N`'*) ok 'unreproduced items: Not covered and Refs, not Closes' ;; *) no 'unreproduced items: Not covered and Refs, not Closes' ;; esac
 case "$out" in *'If you do work that belongs to another open ticket, comment on that ticket'*) ok 'out-of-band work recorded on its ticket' ;; *) no 'out-of-band work recorded on its ticket' ;; esac
 # The coordinator recognizes an already-done report by the subject prefix the spec gives.
 for s in start agenda; do
