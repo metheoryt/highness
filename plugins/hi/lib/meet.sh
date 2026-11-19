@@ -108,7 +108,12 @@ fromjson? // empty
        .message.content[] | select(type == "object" and .type == "tool_result")
        | (.content | result) as $c
        | if ($c | test("doesn.t want to proceed with this tool use")) then
-           {t: "rej", id: (.tool_use_id // ""), fb: (($c | capture("the user said:\\s*(?<x>[\\s\\S]*)$") | .x) // "")}
+           # The words after "the user said:" are the person'"'"'s, up to Claude Code'"'"'s own trailing
+           # note; a question tool'"'"'s "clarify" form puts only Claude Code'"'"'s text there.
+           {t: "rej", id: (.tool_use_id // ""),
+            fb: ((($c | capture("the user said:\\s*(?<x>[\\s\\S]*)$") | .x) // "")
+                 | split("\n\nNote: ") | first // ""
+                 | if test("^The user wants to clarify") then "" else . end)}
          elif (($l.permissionDecision // {}) | type) == "object" and $l.permissionDecision.decision == "reject" then
            {t: "den", id: (.tool_use_id // ""), src: ($l.permissionDecision.source // "" | tostring),
             why: ($l.permissionDecision.reasonType // $l.permissionDecision.reasonCode // "" | tostring),
@@ -141,9 +146,9 @@ def correction: test("^(no|nope|nah|wrong|stop|wait|undo|revert|again|actually|i
 def project: (.cwd | split("/") | map(select(. != "")) | last // "") | scrub;
 [ .[] | select(.ep == "cli" or .ep == "") ]
 | (map(select(.t == "tu")) | map({key: .id, value: .name}) | from_entries) as $tools
-# A resumed or forked session copies earlier turns under their own uuid: keep each turn once.
-| (map(select(.t == "u" and .u != "")) | group_by(.u) | map(sort_by(.at) | first))
-  + map(select(.t != "u" or .u == ""))
+# A resumed or forked session copies earlier lines under their own uuid: keep each line once.
+| (map(select(.u != "")) | group_by([.u, .t, (.id // ""), (.text // "")]) | map(sort_by(.at) | first))
+  + map(select(.u == ""))
 | group_by(.s)
 | map(sort_by(.n))
 | map(select(any(.[]; .t == "u" and (.raw | test("<command-name>/?hi:meet</command-name>") or worker)) | not))
@@ -182,7 +187,8 @@ def project: (.cwd | split("/") | map(select(. != "")) | last // "") | scrub;
       elif $e.kind == "interrupt" or $e.kind == "rejection" then .out += [$e] | .prev = $e.kind
       else .out += [$e] end) | .out)
 | .[]
-| . + {project: $proj, date: .at[0:10], quote: ((.quote // "") | scrub | cut(400))}
+| .kind as $k
+| . + {project: $proj, date: .at[0:10], quote: ((.quote // "") | scrub | if $k == "assistant" then cut(400) else . end)}
 | if .corr then (del(.corr) , (. + {kind: "correction", detail: .corr} | del(.corr))) else . end
 '
 
@@ -335,7 +341,9 @@ cmd_check() {
     ($ev | map(select(.kind == "said" or .kind == "rejection" or .kind == "correction"))) as $words
     | if length == 0 then "the draft has no numbered line" else
       .[] | . as $l | "\($l.section) \($l.num)" as $at
+      | ([ $l.ev[] | select(.s) | .s as $p | $ev[] | select(.s | startswith($p)) | .project ] | unique | length) as $projects
       | if ($l.ev | length) == 0 then "\($at): no evidence line (- <session> <YYYY-MM-DD> \"<quote>\")"
+        elif $l.section == "team" and $projects < 2 then "\($at): a team rule candidate needs evidence from two projects or more, has \($projects)"
         else $l.ev[]
           | if .bad then "\($at): evidence not in the form - <session> <YYYY-MM-DD> \"<quote>\": \(.bad)"
             else . as $e
@@ -393,10 +401,11 @@ cmd_rule() {
     | if $l == null then "meet: no team rule candidate \($n) in the draft\n" | halt_error(2) else . end
     | ($l.ev | map(select(.s)) | map(.s) | unique) as $ids
     | ($ev | map(select(.s as $s | any($ids[]; . as $i | $s | startswith($i))))) as $in
-    | "## Proposed team rule", "",
+    | def n($x; $w): "\($x) \($w)" + (if $x == 1 then "" else "s" end);
+      "## Proposed team rule", "",
       "- " + ($l.text | scrub), "",
       "## Why", "",
-      "One person kept asking for this in their own Claude Code sessions: \($ids | length) sessions across \($in | map(.project) | unique | length) projects, \($in | map(.date) | min // "?") to \($in | map(.date) | max // "?") (counted by /hi:meet on their machine). Their words stay with them; written here, it becomes the team'"'"'s rule only if the team agrees in review."'
+      "One person kept asking for this in their own Claude Code sessions: \(n($ids | length; "session")) across \(n($in | map(.project) | unique | length; "project")), \($in | map(.date) | min // "?") to \($in | map(.date) | max // "?") (counted by /hi:meet on their machine). Their words stay with them; written here, it becomes the team'"'"'s rule only if the team agrees in review."'
 }
 
 cmd_clean() { rm -rf "$DIR"; }
