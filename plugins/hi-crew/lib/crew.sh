@@ -33,7 +33,8 @@
 #                                     switch): start a new one in its recorded workspace and Run,
 #                                     on the spec copy under a "resuming" note, and record its
 #                                     dispatch and task, and the noted spec as `resumed_spec`
-#                                     (<state dir>/specs/<KEY>.resumed.md). Refuses when the workspace is gone, the
+#                                     (<state dir>/specs/<KEY>.resumed.md, for that dispatch:
+#                                     `resumed_for`). Refuses when the workspace is gone, the
 #                                     PR is merged or closed, or the worker is still live (cmd_resume)
 #   crew.sh choices [<KEY>]           the recorded choices, one JSON object per line
 #   crew.sh choices --gaps            answers to hi-crew asks with no choice line (sent without
@@ -86,7 +87,8 @@
 #   crew.sh reentry                   SessionStart(compact) hook, payload on stdin: in the session
 #                                     of an open ticket's worker (its cwd in the ticket's
 #                                     `workspace`), one context line naming the ticket and its spec
-#                                     (the facts' `resumed_spec` after a resume, else `spec`)
+#                                     (the facts' `resumed_spec` while its worker is the recorded
+#                                     dispatch, else `spec`)
 #                                     to re-read; anywhere else nothing. Never fails a start
 #   crew.sh branch --key K --title T [--type X] [--slug S] [--root R]
 #                                     the worker's branch name from the team's crew.branch template,
@@ -568,9 +570,10 @@ cmd_spec() {
 
 # SessionStart(compact): a compaction keeps what happened, not the spec's rules (asking, merging,
 # markers, the team process), and nothing else points the worker back at them. In an open
-# ticket's workspace this prints one context line naming the spec to re-read (after a resume, the
-# copy with the resume note: `resumed_spec`); the spec itself is
-# never inlined (it is long). Every error is silence: a session start must never fail on it.
+# ticket's workspace this prints one context line naming the spec to re-read: after a resume the
+# copy with the resume note (`resumed_spec`), unless a later start recorded another dispatch. The
+# spec itself is never inlined (it is long). Every error is silence: a session start must never
+# fail on it.
 cmd_reentry() {
   local in cwd real f row key title spec pr msg
   in=$(head -c 16384 2>/dev/null); cat >/dev/null 2>&1
@@ -583,7 +586,8 @@ cmd_reentry() {
     row=$(jq -r --arg a "$cwd" --arg b "$real" '
       (.workspace // "") as $w | select($w != "")
       | select([$a, $b] | any(. == $w or startswith($w + "/")))
-      | [.key, (.title // ""), (.resumed_spec // .spec // ""), (.pr // "")] | @tsv' "$f" 2>/dev/null) || continue
+      | (if (.resumed_spec // "") != "" and .resumed_for == .dispatch then .resumed_spec else (.spec // "") end) as $s
+      | [.key, (.title // ""), $s, (.pr // "")] | @tsv' "$f" 2>/dev/null) || continue
     [ -n "$row" ] && break
   done
   [ -n "$row" ] || return 0
@@ -1531,7 +1535,7 @@ cmd_resume() {
   (cmd_record "$key" "$(printf '%s' "$out" | jq -c --argjson f "$facts" --arg d "$d" --arg pr "$pr" --arg n "$noted" --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
     {dispatch: .result.dispatchId, task: .result.taskId, resumed_at: $now,
      resumed: (($f.resumed // []) + (if $d != "" then [$d] else [] end))}
-    + (if $n != "" then {resumed_spec: $n} else {} end)
+    + (if $n != "" then {resumed_spec: $n, resumed_for: .result.dispatchId} else {} end)
     + (if $pr != "" and ($f.pr // "") == "" then {pr: $pr} else {} end)')") \
     || die "resume: the worker started, but its facts were not recorded; record its dispatch and task by hand: $out"
   printf '%s\n' "$out"

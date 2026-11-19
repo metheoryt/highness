@@ -112,6 +112,11 @@ check 'resume: spec stays the original copy' "$(bash "$C" get AB-1 | jq -r .spec
 ctx=$(printf '{"hook_event_name":"SessionStart","source":"compact","cwd":"%s"}' "$T/ws" | bash "$C" reentry \
   | jq -r '.hookSpecificOutput.additionalContext' 2>/dev/null)
 has 'reentry after resume: names the noted spec' "$ctx" "Re-read it before your next step: $S/specs/AB-1.resumed.md Your PR"
+# A fresh start later records its own dispatch onto the open facts: its worker got no note.
+bash "$C" record AB-1 '{"dispatch":"ctx_fresh","task":"task_fresh"}'
+ctx=$(printf '{"cwd":"%s"}' "$T/ws" | bash "$C" reentry | jq -r '.hookSpecificOutput.additionalContext' 2>/dev/null)
+has 'reentry after a fresh start: back to the original spec' "$ctx" "Re-read it before your next step: $S/specs/AB-1.md Your PR"
+bash "$C" record AB-1 '{"dispatch":"ctx_new","task":"task_new"}'
 
 # --- a second resume carries the earlier ones
 bash "$C" resume AB-1 >/dev/null 2>&1
