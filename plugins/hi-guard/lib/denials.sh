@@ -26,13 +26,17 @@
 #
 # Logging never changes a decision or breaks a session: a write that fails is dropped, and the
 # PermissionDenied hook prints nothing (its output could ask Claude Code to retry).
+#
+# HI_GUARD_PROBE=1 in the environment: nothing is logged. hi-crew sets it when it puts an action
+# the person already approved to guard.sh as a probe; no agent met that decision, so a line would
+# read in a retro as a denial the worker hit. A probe's deny is kept on the action itself.
 
 DENIAL_MAX=2000
 
 # denial_write <json object>: append it as one line. Never fails, prints nothing.
 denial_write() {
   local d="${HIGHNESS_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/highness}"
-  [ -n "$1" ] || return 0
+  [ -n "$1" ] && [ "${HI_GUARD_PROBE:-}" != 1 ] || return 0
   ( umask 077; mkdir -p "$d" && printf '%s\n' "$1" >>"$d/denials.jsonl" ) 2>/dev/null || true
 }
 

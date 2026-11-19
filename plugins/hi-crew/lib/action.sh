@@ -95,13 +95,14 @@ act_guard_path() {
 
 # A run inside crew.sh is a subprocess: no PreToolUse hook sees its commands. So the script is
 # put to hi-guard as the Bash command it would have been. A deny refuses the action; an ask does
-# not, since the person said yes to this exact text.
+# not, since the person said yes to this exact text. HI_GUARD_PROBE=1 keeps the probe out of
+# hi-guard's denial log: no agent met this decision, and a deny is recorded on the action.
 act_guard() { # <script> <workspace>; prints the reason and exit 1 on a deny
   local g out
   g=${HI_GUARD:-$(act_guard_path)} || return 0
   [ -n "$g" ] && [ -f "$g" ] || return 0
   out=$(jq -n --arg c "$(cat "$1")" --arg cwd "$2" '{tool_name: "Bash", tool_input: {command: $c}, cwd: $cwd}' \
-    | (cd "$2" && bash "$g" pretool) 2>/dev/null) || return 0
+    | (cd "$2" && HI_GUARD_PROBE=1 bash "$g" pretool) 2>/dev/null) || return 0
   printf '%s' "$out" | jq -e '.hookSpecificOutput.permissionDecision == "deny"' >/dev/null 2>&1 || return 0
   printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecisionReason // "hi-guard denied it"'
   return 1
