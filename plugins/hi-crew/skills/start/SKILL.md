@@ -77,7 +77,8 @@ Below, `$O` stands for that executable.
 
 1. **Already running?** `bash "$C" get <KEY>`. Open facts mean a worker exists: show them and stop,
    unless the user asks for a second attempt (then start with `--retry-of <dispatch>`). One start
-   per ticket and attempt.
+   per ticket and attempt. A worker lost without reporting (a usage limit, an account switch) is
+   not a second attempt: `bash "$C" resume <KEY>` continues it in its own workspace.
 2. **Read the ticket** with the team's tracker tool (the process text names it) or what the session
    has: its title, and a brief of three to six lines (what, why, constraints, links). Do not paste
    the whole ticket: the worker reads it itself.
