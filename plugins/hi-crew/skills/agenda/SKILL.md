@@ -129,6 +129,7 @@ and say in one line that Orca now wakes this session, not the other one, for tha
   With nothing to carry, the `resume` line alone reopens it.
 - **A section item**: its `next` says what to do; do it with the team's own tools (the item's
   `url`, the skill the team's process names). Starting a ticket on a worker is `/hi-crew:start`.
-- **Merged or closed**: `bash "$C" close <KEY>`; offer to release the workspace.
+- **Merged or closed**: run the retro (`reference/retro.md`), then `bash "$C" close <KEY>`; offer
+  to release the workspace.
 
 End your turn when the topics are done; Orca wakes this session when a worker reports.

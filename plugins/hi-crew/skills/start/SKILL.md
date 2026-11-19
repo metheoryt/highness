@@ -132,7 +132,8 @@ Several tickets: run steps 1–7 for each, then end the turn once.
   the same worker, `$O orchestration send --to dispatch:<last dispatch> --subject … --body …`. It
   arrives as a follow-up Task in the same workspace and chat; record the new dispatch id.
 
-When the ticket is settled (PR merged or closed), `bash "$C" close <KEY>` and offer to release the
+When the ticket is settled (PR merged or closed), run the short retro in this session first
+(`reference/retro.md`, `lib/retro.sh`), then `bash "$C" close <KEY>` and offer to release the
 workspace.
 
 ## Work done outside a worker
