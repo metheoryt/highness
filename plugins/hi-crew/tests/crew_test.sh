@@ -438,6 +438,11 @@ check 'setup-status: orca skill ok' "$(r "$out" orca-skill)" ok
 check 'setup-status: no automation → watch missing' "$(r "$out" watch)" missing
 check 'setup-status: crew.agent unset' "$(r "$out" crew.agent)" unset
 check 'setup-status: crew.model unset' "$(r "$out" crew.model)" unset
+check 'setup-status: no preference file → preferences missing' "$(r "$out" preferences)" missing
+mkdir -p "$T/store"; echo '# Mine' >"$T/store/values.md"
+echo '{"preferences": "'"$T"'/store"}' >"$HIGHNESS_CONFIG"
+check 'setup-status: an existing store → preferences ok' "$(r "$(ss)" preferences)" ok
+rm -f "$HIGHNESS_CONFIG"
 out=$(FAKE_ORCH_OFF=1 FAKE_NO_SKILL=1 ss)
 check 'setup-status: orchestration off' "$(r "$out" orchestration)" off
 case "$out" in *'orchestration is not enabled'*) ok "setup-status: off carries Orca's message" ;; *) no "setup-status: off carries Orca's message" ;; esac

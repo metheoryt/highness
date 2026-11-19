@@ -1,6 +1,6 @@
 ---
 name: setup
-description: Check and fix what a machine and a person need before the first /hi-crew:start — jq, Orca and its orchestration, the highness launcher, which highness plugins each Claude profile Orca uses loads (missing, loaded twice, stale project pins), the hi-crew watch, the board columns hi moves workspaces between, the person's highness config (crew.agent, crew.model, a repo overlay) — and then the repo in the cwd (an Orca project, plus every /hi:repo-setup row). One status table, then one proposed fix per gap, each run only on a yes. Never writes a file a repo tracks. Use on a fresh box, when the user asks to set up or check hi / hi-crew / highness, "why does hi-crew not work here", or before a first /hi-crew:start.
+description: Check and fix what a machine and a person need before the first /hi-crew:start — jq, Orca and its orchestration, the highness launcher, which highness plugins each Claude profile Orca uses loads (missing, loaded twice, stale project pins), the hi-crew watch, the board columns hi moves workspaces between, the person's highness config (crew.agent, crew.model, a repo overlay, their preferences file, offering /hi:meet when there is none) — and then the repo in the cwd (an Orca project, plus every /hi:repo-setup row). One status table, then one proposed fix per gap, each run only on a yes. Never writes a file a repo tracks. Use on a fresh box, when the user asks to set up or check hi / hi-crew / highness, "why does hi-crew not work here", or before a first /hi-crew:start.
 ---
 
 # /hi:setup
@@ -117,6 +117,11 @@ as the whole new JSON before it happens, and keep every key it already has.
 - `crew.agent unset` / `crew.model unset`: workers then run `claude` with that agent's own default
   model, which differs per person. Ask: set it (an Orca agent id; a provider model id), or leave
   it to the default on purpose: `null` there, which reads as `default` from then on.
+- `preferences missing`: none of the person's preference files exists yet (hi-crew's `prefs.sh
+  paths`), so workers have nothing of theirs to read before they ask. Offer `/hi:meet` once, in one
+  line: it seeds the file from their own past sessions, it is long and spends tokens, and it runs
+  only when they start it. Never run it from here, and do not offer it again in this session after
+  a no. `preferences ok`: a file or a store `preferences` points at exists; nothing to offer.
 - `tracker` (only when the repo or the person configures `tracker`): hi-crew's tracker adapter
   asked the tracker who the person is. `no-token`: the person's file has no
   `trackers["<host>"]` entry for the tracker's host, or its `token_env` / `token_command` gives

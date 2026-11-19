@@ -121,6 +121,8 @@
 #                                       watch          ok | stale | disabled | missing | unknown
 #                                       crew.agent     set | default | unset   (default: set to null on purpose)
 #                                       crew.model     set | default | unset
+#                                       preferences    ok | missing        a preference file exists
+#                                                                          (prefs.sh paths)
 #
 # PR state comes from the config key crew.pr_state, read at the ticket's `root` (the coordinator
 # root, recorded at start): a command that prints one JSON object for a PR,
@@ -835,6 +837,10 @@ cmd_setup_status() {
       printf 'crew.model\tunset\tworkers get the agent'"'"'s own default, which differs per person\n'
     fi
   done
+  # The person's preference files (prefs.sh): none yet is when /hi:setup offers /hi:meet.
+  v=$(bash "$HERE/prefs.sh" paths 2>/dev/null | awk 'NF { n++; if (n == 1) f = $0 } END { if (n) printf "%s%s", f, (n > 1 ? " (+" n - 1 " more)" : "") }')
+  if [ -n "$v" ]; then printf 'preferences\tok\t%s\n' "$v"
+  else printf 'preferences\tmissing\tnone of the files prefs.sh targets exists: %s\n' "$(bash "$HERE/prefs.sh" targets 2>/dev/null | tail -1)"; fi
   # The tracker answers with the person's credential, when the repo (or the person) configures one.
   if bash "$CONFIG" get '.tracker.kind' >/dev/null 2>&1; then
     if out=$(bash "$HERE/tracker.sh" status 2>&1); then
