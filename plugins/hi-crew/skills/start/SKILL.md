@@ -90,10 +90,14 @@ Below, `$O` stands for that executable.
    register it from the umbrella or the repo whose team file applies. Never `run-use` another session's Run to start a
    ticket: Orca would stop waking that session for its workers.
 5. **Spec:** write the brief to a file in the scratchpad, then
-   `bash "$C" spec --key <KEY> --title '<title>' --brief-file <file> > <spec-file>` (it reads the
-   team's settings at the coordinator root, and keeps a copy at `$(bash "$C" dir)/specs/<KEY>.md`).
-   Read it once before starting: a `Team process (none configured…)` there means no team file
-   applies at that root.
+   `bash "$C" spec --key <KEY> --title '<title>' --brief-file <file> --root "$(bash "$C" root)" > <spec-file>`
+   (it reads the team's settings at the coordinator root, and keeps a copy at
+   `$(bash "$C" dir)/specs/<KEY>.md`). Always pass `--root`: the cwd of a shell is not the
+   coordinator root (a scratch directory has no team file). When no team file and no
+   `crew.process` apply at that root, `spec` fails (exit 2) rather than build a spec without the
+   team's rules: fix the root (step 4 pins it), or, when that root has no team on purpose, pass
+   `--no-profile` and say so to the user. Read the spec once before starting: a
+   `Team process (none configured…)` there means the worker gets no team process.
 6. **Start.** First the team's branch name:
    `bash "$C" branch --key <KEY> --title '<title>' [--type <feat|fix|…, from the ticket>] [--slug '<short slug>']`.
    - It prints nothing (exit 1): no `crew.branch`, so Orca names the branch:

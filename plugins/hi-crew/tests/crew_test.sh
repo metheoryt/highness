@@ -259,7 +259,18 @@ rm -rf "$HIGHNESS_STATE/threads"
 # --- spec (the fake orca: spec asks this session's Run for a pinned root, and must not reach a real one)
 export ORCA_CLI_COMMAND="$T/bin/fakeorca"
 printf 'Line one of the brief.\nLine & two with {{KEY}} literal.\n' >"$T/brief"
-out=$(cd "$T" && bash "$C" spec --key ABC-9 --title 'Do the thing' --brief-file "$T/brief")
+# highness#108: no team file and no crew.process at the root is a wrong directory, refused loudly
+# (exit 2, nothing on stdout, the reason on stderr); --no-profile builds it on purpose.
+out=$(cd "$T" && bash "$C" spec --key ABC-9 --title 'Do the thing' --brief-file "$T/brief" 2>"$T/spec.err"); rc=$?
+check 'spec: no profile at the root is refused' "$rc" 2
+check 'spec: a refused spec prints nothing' "$out" ''
+case "$(cat "$T/spec.err")" in *'no team profile at'*'--root'*'--no-profile'*) ok 'spec: the refusal names --root and --no-profile' ;; *) no "spec: the refusal names --root and --no-profile: [$(cat "$T/spec.err")]" ;; esac
+mkdir -p "$T/noteam" "$T/team/.claude" && git -C "$T/team" init -q && printf '{"crew":{"marker":"[t]"}}' >"$T/team/.claude/highness.json"
+if (cd "$T" && bash "$C" spec --key ABC-9 --title 'T' --root "$T/noteam" >/dev/null 2>&1); then no 'spec: --root without a profile is refused'; else ok 'spec: --root without a profile is refused'; fi
+out=$(cd "$T" && bash "$C" spec --key ABC-9 --title 'T' --root "$T/team" 2>/dev/null); rc=$?
+case "$rc $out" in '0 '*'(none configured'*) ok 'spec: a team file with no crew.process gets the generic line' ;; *) no "spec: a team file with no crew.process gets the generic line: rc $rc" ;; esac
+if grep -q 'spec --key <KEY> .*--root "\$(bash "\$C" root)"' "$HERE/../skills/start/SKILL.md"; then ok 'start skill: spec always gets --root'; else no 'start skill: spec always gets --root'; fi
+out=$(cd "$T" && bash "$C" spec --key ABC-9 --title 'Do the thing' --brief-file "$T/brief" --no-profile)
 case "$out" in *'Ticket ABC-9: Do the thing'*) ok 'spec title' ;; *) no 'spec title' ;; esac
 case "$out" in *'Line & two with {{KEY}} literal.'*) ok 'brief copied verbatim' ;; *) no 'brief copied verbatim' ;; esac
 case "$out" in *'Commit subjects follow the repo'"'"'s own rules (`AGENTS.md`, `CONTRIBUTING.md`) and the team'*'only when neither sets a format, start them with `ABC-9: `.'*) ok 'commit rule: the repo and team first, the key as fallback' ;; *) no 'commit rule: the repo and team first, the key as fallback' ;; esac
@@ -273,7 +284,7 @@ case "$out" in *'background and wait for its completion notification; never'*'sl
 # A copy of the spec is kept under the state dir, the same text as printed (highness#85).
 check 'spec: a copy is kept for the key' "$(cat "$HIGHNESS_STATE/crew/specs/ABC-9.md" 2>/dev/null)" "$out"
 check 'spec: no temp file left' "$(ls "$HIGHNESS_STATE/crew/specs" | tr '\n' ' ')" 'ABC-9.md '
-out2=$(cd "$T" && HIGHNESS_STATE="$T/ro" bash -c 'mkdir -p "$HIGHNESS_STATE" && chmod 500 "$HIGHNESS_STATE" && bash "$0" spec --key ABC-9 --title "Do the thing" --brief-file "$1"' "$C" "$T/brief"); rc=$?
+out2=$(cd "$T" && HIGHNESS_STATE="$T/ro" bash -c 'mkdir -p "$HIGHNESS_STATE" && chmod 500 "$HIGHNESS_STATE" && bash "$0" spec --key ABC-9 --title "Do the thing" --brief-file "$1" --no-profile' "$C" "$T/brief"); rc=$?
 chmod 700 "$T/ro" 2>/dev/null
 check 'spec: an unwritable state dir still prints the spec' "$rc $(printf '%s' "$out2" | head -1)" '0 Ticket ABC-9: Do the thing'
 
@@ -348,12 +359,12 @@ check 'no placeholder left' "$left" 0
 if bash "$C" spec --key ABC-9 2>/dev/null; then no 'spec needs a title'; else ok 'spec needs a title'; fi
 # crew.merge: on_green swaps the merge line for one, and only one; anything else is refused.
 printf '{"crew":{"merge":"on_green"}}' >"$HIGHNESS_CONFIG"
-out=$(cd "$T" && bash "$C" spec --key ABC-9 --title 'T')
+out=$(cd "$T" && bash "$C" spec --key ABC-9 --title 'T' --no-profile)
 case "$out" in *'- Merge your own pull request once it is ready for review and its checks pass'*) ok 'on_green: merge line' ;; *) no 'on_green: merge line' ;; esac
 case "$out" in *'Never merge'*) no 'on_green: no never-merge line' ;; *) ok 'on_green: no never-merge line' ;; esac
 case "$out" in *'Never resolve review threads, never force-push'*) ok 'on_green: threads and force-push rules kept' ;; *) no 'on_green: threads and force-push rules kept' ;; esac
 printf '{"crew":{"merge":"always"}}' >"$HIGHNESS_CONFIG"
-if (cd "$T" && bash "$C" spec --key ABC-9 --title 'T' >/dev/null 2>&1); then no 'unknown crew.merge refused'; else ok 'unknown crew.merge refused'; fi
+if (cd "$T" && bash "$C" spec --key ABC-9 --title 'T' --no-profile >/dev/null 2>&1); then no 'unknown crew.merge refused'; else ok 'unknown crew.merge refused'; fi
 printf '{}' >"$HIGHNESS_CONFIG"
 
 # --- an umbrella: a spec built from a child clone carries the umbrella's process, merge and root
@@ -367,7 +378,8 @@ case "$out" in *"Umbrella process at $UP/tools."*) ok 'umbrella: a child clone s
 case "$out" in *'- Merge your own pull request once it is ready'*) ok "umbrella: a child clone spec has its merge line" ;; *) no "umbrella: a child clone spec has its merge line" ;; esac
 case "$out" in *'`[u]`, so people'*) ok 'umbrella: a child clone spec has its marker' ;; *) no 'umbrella: a child clone spec has its marker' ;; esac
 case "$out" in *'(none configured'*) no 'umbrella: no "none configured" from a child clone' ;; *) ok 'umbrella: no "none configured" from a child clone' ;; esac
-out=$(cd "$U/stray" && bash "$C" spec --key ABC-9 --title 'T')
+if (cd "$U/stray" && bash "$C" spec --key ABC-9 --title 'T' >/dev/null 2>&1); then no 'umbrella: an unlisted clone has no profile, refused'; else ok 'umbrella: an unlisted clone has no profile, refused'; fi
+out=$(cd "$U/stray" && bash "$C" spec --key ABC-9 --title 'T' --no-profile)
 case "$out" in *'(none configured'*) ok 'umbrella: an unlisted clone gets no process' ;; *) no 'umbrella: an unlisted clone gets no process' ;; esac
 out=$(cd "$T" && bash "$C" spec --key ABC-9 --title 'T' --root "$U")
 case "$out" in *"Umbrella process at $U/tools."*) ok 'spec --root reads the settings there' ;; *) no 'spec --root reads the settings there' ;; esac
