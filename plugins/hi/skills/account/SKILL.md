@@ -30,11 +30,20 @@ stayed on the old account), so run step 2 after any switch.
 
 1. **Which account.** `bash "$L/account.sh" target` gives the selected account's config dir,
    email and organization. If the person wants another account and has not selected it yet, the
-   switch is theirs to confirm (it changes which plan pays). On their yes:
+   switch is theirs to confirm (it changes which plan pays). Before you propose one,
+   `bash "$L/account.sh" health` shows whether each of Orca's accounts can run: one row each,
+   `*` on the selected one, then id, email, state and detail. `ok` (with the plan's figures),
+   `limited` (a window spent, with its reset, or the usage limit reached), `dead` (why: payment
+   past due, account disabled, not logged in), `unknown` (no figures, no verdict). Show the
+   person each account's state; never propose a `dead` one. An account whose usage endpoint gives
+   no figures costs one tiny `claude -p` to find out (`claude auth status` cannot tell: it says
+   logged in for a past-due account). On their yes:
    `bash "$L/account.sh" select <id|email>`. It selects only when the setting is Never restart;
    otherwise it exits 4, selects nothing, and says why. Then give the person the choice: set Never
    restart in Orca's Settings → Accounts and you run `select` again, or they switch in the status
-   bar and untick every worker in the dialog. Never write Orca's settings yourself.
+   bar and untick every worker in the dialog. Never write Orca's settings yourself. It also
+   checks the account first: `dead` or `limited` exits 5 with the reason and selects nothing.
+   Say why to the person; `select --force` only on their word, after they heard the reason.
 2. **What would move.** `bash "$L/account.sh" move --dry-run` (add `--only <handle|session>` for
    some of them): `would-move` rows (handle, session, the relaunch line) and `self` for this
    session. Show the person the sessions as a short list: the workspace (from `account.sh
