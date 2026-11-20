@@ -505,6 +505,32 @@ st5 '{"state":"open","ci":"failure","head":"c4c4c4c4c4","people":2,"people_at":"
 check 'an old note: the new count is no event' "$(bash "$C" events)" ''
 st5 '{"state":"open","ci":"failure","head":"c4c4c4c4c4","people":3,"people_at":"2026-01-06T00:00:00Z","findings":6,"approvals":["lead","new"]}'
 check 'an old note: the next comment wakes' "$(bash "$C" events | cut -f5)" '1 new comment(s) from people'
+# crew.finding_patterns set or changed: the findings it recounts on the PR are no round; the next
+# new one is.
+bash "$C" events --ack; : >"$SENT"
+cp "$WR/.claude/highness.json" "$W/cfg.bak"
+jq '.crew.finding_patterns = ["Outside the diff"]' "$W/cfg.bak" >"$WR/.claude/highness.json"
+st5 '{"state":"open","ci":"failure","head":"c4c4c4c4c4","people":3,"people_at":"2026-01-06T00:00:00Z","findings":9,"approvals":["lead","new"]}'
+check 'new finding patterns: the recount is no event' "$(bash "$C" events)$(cat "$SENT")" ''
+check 'the note keeps the patterns' "$(jq -c .fp "$W/state/crew/watch/W-5.json")" '["Outside the diff"]'
+st5 '{"state":"open","ci":"failure","head":"c4c4c4c4c4","people":3,"people_at":"2026-01-06T00:00:00Z","findings":10,"approvals":["lead","new"]}'
+check 'then a new finding wakes the worker' "$(bash "$C" events | cut -f5,6)" "$(printf '1 new finding(s) from review bots\tworker')"
+mv "$W/cfg.bak" "$WR/.claude/highness.json"
+bash "$C" events --ack; : >"$SENT"
+st5 '{"state":"open","ci":"failure","head":"c4c4c4c4c4","people":3,"people_at":"2026-01-06T00:00:00Z","findings":8,"approvals":["lead","new"]}'
+check 'patterns removed: no event' "$(bash "$C" events)$(cat "$SENT")" ''
+# A team's own crew.pr_state gets the bots and the finding patterns as JSON, and the marker.
+cp "$WR/.claude/highness.json" "$W/cfg.bak"
+jq '.crew.bots = ["gatekeeper"] | .crew.finding_patterns = ["Outside the diff"]
+    | .crew.pr_state = "jq -nc --argjson b {{BOTS}} --argjson p {{FINDING_PATTERNS}} --arg m {{MARKER}} '"'"'{state: \"open\", b: $b, p: $p, m: $m}'"'"'"' \
+  "$W/cfg.bak" >"$WR/.claude/highness.json"
+bash "$C" record W-6 "{\"pr\":\"https://forge/pr/6\",\"run\":\"run_w1\",\"root\":\"$WR\"}"
+bash "$C" watch
+check 'a team pr_state gets {{BOTS}}, {{FINDING_PATTERNS}} and {{MARKER}}' \
+  "$(jq -c '{b, p, m}' "$W/state/crew/watch/W-6.json")" \
+  '{"b":["forgejo-actions","gatekeeper","gitea-actions","github-actions"],"p":["Outside the diff"],"m":"[bot]"}'
+mv "$W/cfg.bak" "$WR/.claude/highness.json"
+bash "$C" close W-6 2>/dev/null
 unset FAKE_WORKERS
 bash "$C" close W-5 2>/dev/null; bash "$C" events --ack; : >"$SENT"
 # --- no `pr` in the facts: the watch finds the PR by the workspace's branch, and records it
@@ -675,6 +701,33 @@ GS=$(PATH="$W/bin:$PATH" bash -c 'eval "$(sed -n "/^gh_state()/,/^}/p" "$1")"; g
 check 'gh_state: GraphQL bot logins are not people' "$GS" '{"state":"open","draft":false,"head":"abc","ci":"","people_at":"2026-02-02T00:00:00Z","people":2,"findings":1,"approvals":[]}'
 GS=$(FAIL_TYPED=1 PATH="$W/bin:$PATH" bash -c 'eval "$(sed -n "/^gh_state()/,/^}/p" "$1")"; gh_state https://github.com/o/r/pull/5 "(agent)" "[]"' _ "$C")
 check 'gh_state: authors untyped, no state' "$GS" ''
+# A review bot that puts findings only in its review body: a body matching crew.finding_patterns is
+# one finding, from a Bot account or a crew.bots login; its summary-only review, a person's review
+# with the same words and a bot's plain comment are not. An invalid pattern matches nothing.
+cat >"$W/bin/gh" <<'EOF'
+#!/bin/sh
+if [ "$1" = api ]; then
+  case "$*" in
+    *'repos/o/r/pulls/6/comments'*|*'repos/o/r/issues/6/comments'*) echo '[]' ;;
+    *'repos/o/r/pulls/6/reviews'*) echo '[{"user":{"login":"review-bot[bot]","type":"Bot"}}]' ;;
+    *) exit 1 ;;
+  esac
+  exit 0
+fi
+cat <<'JSON'
+{"state":"OPEN","isDraft":false,"headRefOid":"abc","statusCheckRollup":[],
+ "comments":[{"author":{"login":"review-bot"},"body":"Outside the diff (1): plain comment","updatedAt":"2026-03-01T00:00:00Z"}],
+ "reviews":[{"author":{"login":"review-bot"},"body":"Summary\n\n**Outside the diff (2)**\n- a.sh:3 check the exit code","state":"COMMENTED","submittedAt":"2026-03-02T00:00:00Z"},
+            {"author":{"login":"review-bot"},"body":"Review info\n\nRun configuration: default","state":"COMMENTED","submittedAt":"2026-03-03T00:00:00Z"},
+            {"author":{"login":"gatekeeper"},"body":"Outside the diff (1)\n- b.sh:9 quote this","state":"COMMENTED","submittedAt":"2026-03-04T00:00:00Z"},
+            {"author":{"login":"lead"},"body":"Outside the diff (1): b.sh too","state":"COMMENTED","submittedAt":"2026-03-05T00:00:00Z"}],
+ "latestReviews":[]}
+JSON
+EOF
+GS=$(PATH="$W/bin:$PATH" bash -c 'eval "$(sed -n "/^gh_state()/,/^}/p" "$1")"; gh_state https://github.com/o/r/pull/6 "(agent)" "[\"gatekeeper\"]" "[\"(\",\"Outside the diff\"]"' _ "$C")
+check 'gh_state: findings in a review body' "$(printf '%s' "$GS" | jq -c '{people, findings}')" '{"people":1,"findings":2}'
+GS=$(PATH="$W/bin:$PATH" bash -c 'eval "$(sed -n "/^gh_state()/,/^}/p" "$1")"; gh_state https://github.com/o/r/pull/6 "(agent)" "[\"gatekeeper\"]"' _ "$C")
+check 'gh_state: no patterns, a review body is no finding' "$(printf '%s' "$GS" | jq -c '{people, findings}')" '{"people":1,"findings":0}'
 check 'crew.bots adds to the Actions users' "$(cd "$WR" && HIGHNESS_CONFIG="$W/bots.json" bash -c 'printf "{\"crew\":{\"bots\":[\"gatekeeper\"]}}" >"$HIGHNESS_CONFIG"; eval "$(sed -n "/^BOTS_DEFAULT=/p;/^bots_json()/,/^}/p" "$1")"; CONFIG="$2"; bots_json .' _ "$C" "$(cd "$HERE/../lib" && pwd)/config.sh")" '["forgejo-actions","gatekeeper","gitea-actions","github-actions"]'
 
 QR=$(bash -c 'source /dev/stdin <<<"$(sed -n "/^q()/p" "$1")"; q "it'"'"'s a b"' _ "$C")
