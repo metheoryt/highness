@@ -194,15 +194,20 @@
 #   {"state": "open|merged|closed", "draft": bool, "head": sha, "ci": "success|failure|pending|",
 #    "people": <count of comments by people>, "people_at": <latest time one was written or edited>,
 #    "findings": <count of review bots' findings>, "approvals": [<logins of people who approve>]}
-# with {{PR}}, {{ROOT}}, {{MARKER}} and {{BOTS}} replaced by the shell-quoted PR url, root,
-# crew.marker and the JSON array of logins that are not people. findings and approvals are
-# optional: a state without them never fires their events.
+# with {{PR}}, {{ROOT}}, {{MARKER}}, {{BOTS}} and {{FINDING_PATTERNS}} replaced by the
+# shell-quoted PR url, root, crew.marker, the JSON array of logins that are not people and the
+# JSON array of crew.finding_patterns. findings and approvals are optional: a state without them
+# never fires their events.
 # Not people: a [bot] login, a forge Bot account, the forge Actions users (github-actions,
 # forgejo-actions, gitea-actions) and every login in crew.bots (a list; a team's AI reviewer or
 # gatekeeper on a normal account goes there). A comment is a person's when its author is a person
 # and it is not the workers' own: it does not start with the marker, or with the marker extended
 # inside its brackets ("(agent, ...) ..."); an approval's text counts as the approval, not as a
-# comment. A finding is a not-a-person's inline review comment, or its review requesting changes.
+# comment. A finding is a not-a-person's inline review comment, its review requesting changes, or
+# its review whose body matches one of crew.finding_patterns (a list of regexes, empty by default):
+# a review bot that puts some findings only in the review body ("outside the diff" sections) is
+# named by the marker those sections carry, which its summary-only reviews lack. An invalid
+# pattern matches nothing. A change to the list fires no findings on the next pass.
 # Unset, a github.com PR is read with gh. The command runs from an automation, outside any
 # terminal, so it must find its own credentials; the precheck runs it in a login interactive shell.
 #
@@ -745,7 +750,7 @@ q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 # Bot accounts among the authors of comments and reviews are read through REST too (user.type),
 # by login without the [bot] suffix. When a REST call fails the whole state fails, so a missing
 # list never reads as findings gone and then back, or a bot's comment as a person's.
-gh_state() { # <pr url> <marker> <bots json array>
+gh_state() { # <pr url> <marker> <bots json array> [<finding patterns json array>]
   local view api n inline typed page
   view=$(gh pr view "$1" --json state,isDraft,headRefOid,statusCheckRollup,comments,reviews,latestReviews 2>/dev/null) || return 1
   api=$(printf '%s\n' "$1" | sed -n 's#^https://github\.com/\([^/]*\)/\([^/]*\)/pull/\([0-9][0-9]*\).*#repos/\1/\2 \3#p')
@@ -761,7 +766,8 @@ gh_state() { # <pr url> <marker> <bots json array>
     done
     typed=$(printf '%s' "$typed" | jq -sc '[add // [] | .[] | .user | select(.type == "Bot") | .login // "" | sub("\\[bot\\]$"; "")] | unique') || return 1
   fi
-  printf '%s' "$view" | jq -c --arg m "$2" --argjson bots "${3:-[]}" --argjson inline "$inline" --argjson typed "$typed" '
+  printf '%s' "$view" | jq -c --arg m "$2" --argjson bots "${3:-[]}" --argjson pats "${4:-[]}" \
+      --argjson inline "$inline" --argjson typed "$typed" '
     # Not a person: a [bot] login, a forge Bot account (by type, or by login when the source
     # has no type), or a login on the bots list.
     def bot($l; $t): ($l | test("\\[bot\\]$")) or $t == "Bot" or any($bots[], $typed[]; . == $l);
@@ -775,9 +781,12 @@ gh_state() { # <pr url> <marker> <bots json array>
      | map(. + {bot: bot(.who; .type // "")})) as $all
     # A person: what they wrote, apart from an approval (its own event) and the workers own words.
     | [$all[] | select((.bot | not) and (own | not) and (.body // "") != "" and .state != "APPROVED")] as $people
-    # A review bot finding: its inline comment, or its review that requests changes. Its plain
-    # comments (a CI summary rewritten on every push) and a review with neither find nothing.
-    | [$all[] | select(.bot and (.inline or .state == "CHANGES_REQUESTED"))] as $found
+    # A review bot finding: its inline comment, its review that requests changes, or its review
+    # whose body matches a finding pattern (an invalid one matches nothing). Its plain comments (a
+    # CI summary rewritten on every push) and a review with none of these find nothing.
+    | def body_finding: (.body // "") as $b | any($pats[]; . as $p | try ($b | test($p)) catch false);
+      [$all[] | select(.bot and (.inline or .state == "CHANGES_REQUESTED"
+                                 or (.state != null and body_finding)))] as $found
     | { state: (.state | ascii_downcase), draft: .isDraft, head: .headRefOid,
         ci: ([.statusCheckRollup[]? | (.conclusion // .state // "" | ascii_upcase)] as $c
              | if ($c | length) == 0 then ""
@@ -832,17 +841,24 @@ bots_json() { # <root>
     | jq -Rsc 'split("\n") | map(select(. != "")) | unique'
 }
 
+# crew.finding_patterns from every config source at <root>, as a sorted JSON array of regexes.
+patterns_json() { # <root>
+  (cd "$1" && bash "$CONFIG" list '.crew.finding_patterns') 2>/dev/null \
+    | jq -Rsc 'split("\n") | map(select(. != "")) | unique'
+}
+
 pr_state() { # <facts json>
-  local pr root cmd marker line bots
+  local pr root cmd marker line bots pats
   pr=$(printf '%s' "$1" | jq -r '.pr // empty')
   root=$(facts_root "$1")
   cmd=$(cd "$root" && bash "$CONFIG" get '.crew.pr_state') || cmd=''
   marker=$(cd "$root" && bash "$CONFIG" get '.crew.marker') || marker='(agent)'
   bots=$(bots_json "$root")
+  pats=$(patterns_json "$root")
   if [ -z "$cmd" ]; then
-    case "$pr" in https://github.com/*) gh_state "$pr" "$marker" "$bots"; return ;; *) return 1 ;; esac
+    case "$pr" in https://github.com/*) gh_state "$pr" "$marker" "$bots" "$pats"; return ;; *) return 1 ;; esac
   fi
-  line=$(PR=$(q "$pr") ROOT=$(q "$root") MARKER=$(q "$marker") BOTS=$(q "$bots") fill <<<"$cmd")
+  line=$(PR=$(q "$pr") ROOT=$(q "$root") MARKER=$(q "$marker") BOTS=$(q "$bots") FINDING_PATTERNS=$(q "$pats") fill <<<"$cmd")
   (cd "$root" && sh -c "$line") 2>/dev/null
 }
 
@@ -879,8 +895,8 @@ find_pr() { # <facts json>
     | jq -er 'max_by(.number) | .url // empty' 2>/dev/null
 }
 
-# stdin with {{PR}}, {{ROOT}}, {{MARKER}}, {{TRACKER}} and {{BOTS}} replaced by $PR, $ROOT,
-# $MARKER, $TRACKER and $BOTS (each may be unset).
+# stdin with {{PR}}, {{ROOT}}, {{MARKER}}, {{TRACKER}}, {{BOTS}} and {{FINDING_PATTERNS}} replaced
+# by $PR, $ROOT, $MARKER, $TRACKER, $BOTS and $FINDING_PATTERNS (each may be unset).
 fill() {
   awk '
     function rep(s, ph, val,   out, i) {
@@ -888,7 +904,7 @@ fill() {
       while ((i = index(s, ph)) > 0) { out = out substr(s, 1, i - 1) val; s = substr(s, i + length(ph)) }
       return out s
     }
-    { print rep(rep(rep(rep(rep($0, "{{PR}}", ENVIRON["PR"]), "{{ROOT}}", ENVIRON["ROOT"]), "{{MARKER}}", ENVIRON["MARKER"]), "{{TRACKER}}", ENVIRON["TRACKER"]), "{{BOTS}}", ENVIRON["BOTS"]) }'
+    { print rep(rep(rep(rep(rep(rep($0, "{{PR}}", ENVIRON["PR"]), "{{ROOT}}", ENVIRON["ROOT"]), "{{MARKER}}", ENVIRON["MARKER"]), "{{TRACKER}}", ENVIRON["TRACKER"]), "{{BOTS}}", ENVIRON["BOTS"]), "{{FINDING_PATTERNS}}", ENVIRON["FINDING_PATTERNS"]) }'
 }
 
 # The tracker adapter (lib/tracker.sh) as one shell command reading its config at <root>: what
@@ -938,7 +954,7 @@ cmd_sections() {
 
 cmd_watch() {
   need_jq
-  local w="$DIR/watch" lock="$DIR/watch/lock" t key pr run now snap what hit since tool kind hs ap to
+  local w="$DIR/watch" lock="$DIR/watch/lock" t key pr run now snap what hit since tool kind hs ap to fp
   mkdir -p "$w"
   if ! mkdir "$lock" 2>/dev/null; then
     [ -n "$(find "$lock" -maxdepth 0 -mmin +30 2>/dev/null)" ] || return 0  # another watch runs
@@ -976,6 +992,7 @@ cmd_watch() {
       t=$(printf '%s' "$t" | jq -c --arg pr "$pr" '.pr = $pr')
     fi
     now=$(pr_state "$t") && printf '%s' "$now" | jq -e 'type == "object"' >/dev/null 2>&1 || continue
+    fp=$(patterns_json "$(facts_root "$t")"); [ -n "$fp" ] || fp='[]'
     snap="$w/$key.json"
     if [ -f "$snap" ]; then
       # An approval is the worker's when it merges its own PR (crew.merge on_green), else a person's.
@@ -983,12 +1000,15 @@ cmd_watch() {
       [ "$(cd "$(facts_root "$t")" && bash "$CONFIG" get '.crew.merge' 2>/dev/null)" = on_green ] && ap=worker
       # A note from before v2 counted people another way (approval texts in, inline comments out):
       # its people count is taken from now, so the switch neither fires nor swallows a comment.
-      changes "$(jq -c --argjson b "$now" 'if .v == 2 then . else . + ($b | {people, people_at} | with_entries(select(.value != null))) end' "$snap")" \
+      # A changed crew.finding_patterns recounts the findings already there: taken from now too.
+      changes "$(jq -c --argjson b "$now" --argjson fp "$fp" '
+          (if .v == 2 then . else . + ($b | {people, people_at} | with_entries(select(.value != null))) end)
+          | if (.fp // []) == $fp then . else . + ($b | {findings} | with_entries(select(.value != null))) end' "$snap")" \
           "$now" "$ap" | while IFS="$(printf '\t')" read -r to what; do
         if [ "$to" = worker ]; then event "$key" "$run" "$pr" "$what" "$t"; else event "$key" "$run" "$pr" "$what"; fi
       done
     fi
-    printf '%s' "$now" | jq -c '. + {v: 2}' >"$snap"
+    printf '%s' "$now" | jq -c --argjson fp "$fp" '. + {v: 2, fp: $fp}' >"$snap"
   done
   # The budget hold (lib/hold.sh): pause the autostarted workers of an account over the person's
   # reserve, resume them when it is back. Before the slot count, which returns early exactly when
