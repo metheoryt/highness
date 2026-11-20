@@ -128,12 +128,43 @@ jq -n --arg t "$T/p" '{result: {claude: {activeAccountId: "sel", activeAccountId
   {id: "sel", email: "sel@x", home: "\($t)/sel"}, {id: "full", email: "full@x", home: "\($t)/full"},
   {id: "free", email: "free@x", home: "\($t)/free"}]}}}' >"$T/accounts.json"
 printf '#!/bin/sh\n[ "$1 $2" = "account list" ] && cat "%s/accounts.json"\n' "$T" >"$T/bin/orca-stub"; chmod +x "$T/bin/orca-stub"
-out=$(ORCA_CLI_COMMAND="$T/bin/orca-stub" HI_BUDGET_RESPONSE=fail bash "$B" room); rc=$?
+out=$(ORCA_CLI_COMMAND="$T/bin/orca-stub" HI_BUDGET_RESPONSE=fail bash "$B" room 2>/dev/null); rc=$?
 check 'room: exit 0 when an account has room' "$rc" 0
 check 'room: only the account under its line, the selected one left out' "$(printf '%s\n' "$out" | cut -f1-3)" "free@x	free	$T/p/free"
 has 'room: with its check line' "$out" '5h 10% (agents up to 50%'
 usage "$T/p/free" 80
-ORCA_CLI_COMMAND="$T/bin/orca-stub" HI_BUDGET_RESPONSE=fail bash "$B" room >/dev/null; rc=$?
+ORCA_CLI_COMMAND="$T/bin/orca-stub" HI_BUDGET_RESPONSE=fail bash "$B" room >/dev/null 2>&1; rc=$?
 check 'room: exit 1 when none has room' "$rc" 1
+
+# --- the health check (highness#115): 429 is probed like 401; a dead account holds over the cache
+# The endpoint answers $T/code until the probe has run ($T/refreshed); claude plays $T/mode.
+printf '#!/bin/sh\ncat >/dev/null\nif [ -f "%s/refreshed" ]; then cat "%s/live.json"; printf "\\n200"; else printf "{}\\n%%s" "$(cat "%s/code")"; fi\n' \
+  "$T" "$T" "$T" >"$T/bin/curl"
+printf '#!/bin/sh\ncase "$(cat "%s/mode")" in ok) touch "%s/refreshed"; echo ok ;; *) echo "Claude Code can'"'"'t use your Claude subscription, usually because a payment is past due"; exit 1 ;; esac\n' \
+  "$T" "$T" >"$T/bin/claude"
+chmod +x "$T/bin/curl" "$T/bin/claude"
+echo '{"claudeAiOauth": {"accessToken": "sk-test"}}' >"$T/acct/.credentials.json"
+hc() { rm -f "$T/refreshed"; echo "$1" >"$T/code"; echo "$2" >"$T/mode"
+  PATH="$T/bin:$PATH" HI_BUDGET_RESPONSE='' HI_BUDGET_REFRESH=1 bash "$B" check "$T/acct"; }
+live 20 18000 10 604800
+out=$(hc 429 ok); rc=$?
+check '429, refreshed by the probe: go' "$rc" 0
+has '…from live figures' "$out" '[live]; go'
+out=$(hc 401 ok)
+has '401 likewise' "$out" '[live]; go'
+jq -n --argjson now "$HI_NOW" '{five_hour: {used_percentage: 1, resets_at: ($now + 9000)},
+  seven_day: {used_percentage: 1, resets_at: ($now + 302400)}, updated_at: ($now - 60)}' >"$T/acct/highness-usage.json"
+echo '{"crew": {"budget": {"on_unknown": "go"}}}' >"$HIGHNESS_CONFIG"
+out=$(hc 429 pastdue); rc=$?
+check 'past due: hold, over a fresh cache and on_unknown go' "$rc" 1
+has '…and says dead, with the reason' "$out" 'account dead on '"$T/acct"' (payment past due: Claude Code can'
+echo '{}' >"$HIGHNESS_CONFIG"
+rm -f "$T/acct/highness-usage.json" "$T/acct/.credentials.json"
+# room leaves a dead account out and says why on stderr.
+usage "$T/p/free" 10; echo '{"claudeAiOauth": {"accessToken": "sk-test"}}' >"$T/p/free/.credentials.json"
+rm -f "$T/refreshed"; echo 429 >"$T/code"; echo pastdue >"$T/mode"
+out=$(PATH="$T/bin:$PATH" ORCA_CLI_COMMAND="$T/bin/orca-stub" HI_BUDGET_RESPONSE='' HI_BUDGET_REFRESH=1 bash "$B" room 2>"$T/room.err"); rc=$?
+check 'room: a past-due account with a fresh cache is not offered' "$rc/$out" '1/'
+has 'room: stderr names it dead' "$(cat "$T/room.err")" 'no room on free@x (free): account dead on'
 
 exit $fail
