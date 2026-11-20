@@ -23,7 +23,9 @@ has() { case "$2" in *"$3"*) ok "$1" ;; *) no "$1: [$3] not in [$2]" ;; esac; }
 
 command -v jq >/dev/null || { echo '  skip: no jq'; exit 0; }
 
-mkdir -p "$T/bin" "$T/root" "$T/acct" "$T/ws"
+mkdir -p "$T/bin" "$T/root/.claude" "$T/acct" "$T/ws"
+# The coordinator root is a team's: spec refuses a root with no profile (highness#108).
+git -C "$T/root" init -q && echo '{"crew": {"process": "Team process."}}' >"$T/root/.claude/highness.json"
 # Fake Orca: worker-start logs its arguments and answers a receipt (or fails when FAKE_FAIL is
 # set); the inbox holds one worker_done for dispatch ctx_done; send is a no-op.
 cat >"$T/bin/fakeorca" <<'EOF'
@@ -262,5 +264,11 @@ PATH="$T/bin:$PATH" GH_LOG="$T/ghlog" bash "$C" autostart >/dev/null
 check 'tracker candidates: only the ready ones' "$(started_keys)" 'widgets-8 '
 has 'tracker candidates: the adapter asked for the label' "$(cat "$T/ghlog")" 'issue list -R acme/widgets --label auto --state open'
 rm -f "$T/root/.claude/highness.json"
+
+# --- a root with no team profile starts nothing, and the log says why (highness#108)
+reset; cfg '{}'
+out=$(bash "$C" autostart 2>&1)
+check 'no profile: starts nothing' "$(starts)" 0
+has 'no profile: the log names the reason' "$out" 'could not build the spec: spec: no team profile at'
 
 exit $fail

@@ -72,10 +72,13 @@
 #                                     escalation, while its dispatch has sent no later worker_done.
 #   crew.sh reports                   the latest worker_done per dispatch in those Runs, TSV:
 #                                     run id, dispatch id, created_at, outcome, subject
-#   crew.sh spec --key K --title T [--brief-file F] [--root R]
+#   crew.sh spec --key K --title T [--brief-file F] [--root R] [--no-profile]
 #                                     the worker spec for a ticket, from reference/worker-spec.md and
 #                                     the config keys crew.process and crew.marker, read at R (default:
-#                                     `crew.sh root`). In crew.process, {{ROOT}} becomes R, the
+#                                     `crew.sh root`). No crew.process and no team file at R is
+#                                     refused (exit 2: R is most likely the wrong directory), unless
+#                                     --no-profile: then the process is a generic line. A team file
+#                                     with no crew.process gets that line too. In crew.process, {{ROOT}} becomes R, the
 #                                     coordinator root: a worker runs in another tree, so the team's files
 #                                     must be named by absolute path. {{TRACKER}} becomes the
 #                                     tracker adapter reading its config there (`{{TRACKER}} read
@@ -514,17 +517,18 @@ cmd_reports() {
 }
 
 cmd_spec() {
-  local key='' title='' brief_file='' brief='' process marker merge crew root='' prefs copy
+  local key='' title='' brief_file='' brief='' process marker merge crew root='' prefs copy no_profile=''
   while [ $# -gt 0 ]; do
     case "$1" in
       --root) root=${2:-}; shift 2 ;;
+      --no-profile) no_profile=1; shift ;;
       --key) key=${2:-}; shift 2 ;;
       --title) title=${2:-}; shift 2 ;;
       --brief-file) brief_file=${2:-}; shift 2 ;;
       *) die "spec: unknown argument '$1'" ;;
     esac
   done
-  [ -n "$key" ] && [ -n "$title" ] || die 'usage: spec --key K --title T [--brief-file F] [--root R]'
+  [ -n "$key" ] && [ -n "$title" ] || die 'usage: spec --key K --title T [--brief-file F] [--root R] [--no-profile]'
   keyfile "$key" >/dev/null || exit 2
   [ -f "$TEMPLATE" ] || die "missing $TEMPLATE"
   if [ -n "$brief_file" ]; then
@@ -533,7 +537,15 @@ cmd_spec() {
   fi
   [ -n "$root" ] || root=$(cmd_root)
   [ -d "$root" ] || die "spec: the root is not a directory: '$root'"
-  process=$(cd "$root" && bash "$CONFIG" get '.crew.process') || process='(none configured: use the tracker and forge tools you have, and say in the PR how you checked the work)'
+  # No process and no team file at the root: most likely a spec built from the wrong directory
+  # (a scratch dir, no --root), which would start a worker without the team's rules. Refused,
+  # unless the caller says on purpose that this root has no profile (highness#108).
+  if ! process=$(cd "$root" && bash "$CONFIG" get '.crew.process'); then
+    if [ -z "$no_profile" ] && ! (cd "$root" && bash "$CONFIG" root >/dev/null); then
+      die "spec: no team profile at '$root' (no .claude/highness.json applies there, no crew.process set): pass --root <the coordinator root>, or --no-profile to build a spec without the team's process"
+    fi
+    process='(none configured: use the tracker and forge tools you have, and say in the PR how you checked the work)'
+  fi
   marker=$(cd "$root" && bash "$CONFIG" get '.crew.marker') || marker='(agent)'
   merge=$(cd "$root" && bash "$CONFIG" get '.crew.merge') || merge=never
   case "$merge" in
@@ -1394,8 +1406,8 @@ as_start() { # <candidate json> <root> <run> <handle> <dry>
   bf=$(mktemp "${TMPDIR:-/tmp}/hi-crew-brief.XXXXXX") && sf="$bf.spec" || return 1
   printf 'Started by hi-crew autostart: the ticket carries the label `%s`, and no person has read it\nbefore this start. Read the ticket yourself%s; when it is not clear enough to act on, ask.\n' \
     "$label" "${url:+ ($url)}" >"$bf"
-  (cd "$root" && bash "$HERE/crew.sh" spec --key "$key" --title "$title" --brief-file "$bf" --root "$root") >"$sf" \
-    || { rm -f "$bf" "$sf"; as_log failed "$key" "could not build the spec"; return 1; }
+  err=$( (cd "$root" && bash "$HERE/crew.sh" spec --key "$key" --title "$title" --brief-file "$bf" --root "$root") 2>&1 >"$sf") \
+    || { rm -f "$bf" "$sf"; as_log failed "$key" "could not build the spec${err:+: $(printf '%s\n' "$err" | sed 's/^crew: //' | head -1)}"; return 1; }
   out=$(cd "$root" && "$(orca_cmd)" orchestration worker-start --spec-file "$sf" --task-title "$key: $title" \
     "${place[@]}" --agent "$agent" \
     ${model:+--model "$model"} --run "$run" --from "$handle" --timeout-ms 90000 --json 2>&1)
