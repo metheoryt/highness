@@ -51,47 +51,20 @@ label_of_column() {
   esac
 }
 
-# The one profile-state.db on this box. Two (a Windows Orca and a Linux one) is ambiguous:
-# refuse rather than pick the wrong host's ids.
-state_db() {
-  if [ -n "${HI_ORCA_STATE_DB:-}" ]; then printf '%s\n' "$HI_ORCA_STATE_DB"; return 0; fi
-  local d found=''
-  for d in "$HOME/.config/orca/profiles/local-default" \
-           "$HOME/Library/Application Support/orca/profiles/local-default" \
-           "$HOME/AppData/Roaming/orca/profiles/local-default" \
-           /mnt/c/Users/*/AppData/Roaming/orca/profiles/local-default; do
-    [ -f "$d/profile-state.db" ] || continue
-    [ -z "$found" ] || { say "two Orca profile databases ($found, $d/profile-state.db): set HI_ORCA_STATE_DB"; return 1; }
-    found="$d/profile-state.db"
-  done
-  [ -n "$found" ] || { say 'no Orca profile-state.db on this box'; return 1; }
-  printf '%s\n' "$found"
-}
+ORCA_STATE_NAME=board
+. "$(dirname "$0")/orca-state.sh"
 
 the_set() {
   if [ -n "${HI_ORCA_BOARD:-}" ]; then
     [ -f "$HI_ORCA_BOARD" ] || { say "HI_ORCA_BOARD: no such file: $HI_ORCA_BOARD"; return 1; }
     cat "$HI_ORCA_BOARD"; return 0
   fi
-  local db tmp rc=0
-  db=$(state_db) || return 1
-  tmp=$(mktemp -d "${TMPDIR:-/tmp}/hi-board.XXXXXX") || return 1
-  cp "$db" "$tmp/s.db" 2>/dev/null || rc=1
-  [ ! -f "$db-wal" ] || cp "$db-wal" "$tmp/s.db-wal" 2>/dev/null || rc=1
-  if [ "$rc" = 0 ]; then
-    python3 -I - "$tmp/s.db" <<'PY' || rc=1
-import json, sqlite3, sys
-con = sqlite3.connect(sys.argv[1])
-row = con.execute("select payload from profile_state_documents where domain = 'ui'").fetchone()
-for s in json.loads(row[0]).get("workspaceStatuses") or []:
-    i, l = str(s.get("id") or ""), str(s.get("label") or "")
-    if i and l and "\t" not in i + l and "\n" not in i + l:
-        print(i + "\t" + l)
-PY
-  fi
-  rm -rf "$tmp"
-  [ "$rc" = 0 ] || say "cannot read the status set from $db"
-  return "$rc"
+  local doc
+  doc=$(orca_state_doc ui) || { say 'cannot read the status set'; return 1; }
+  printf '%s\n' "$doc" | jq -r '(.workspaceStatuses // [])[]
+    | [(.id // "" | tostring), (.label // "" | tostring)]
+    | select(.[0] != "" and .[1] != "" and ((.[0] + .[1]) | test("[\t\n]") | not)) | @tsv' 2>/dev/null \
+    || { say 'cannot read the status set'; return 1; }
 }
 
 # id<TAB>label<TAB>column

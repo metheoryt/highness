@@ -170,6 +170,42 @@ session "$A" 304 s-later busy term_later ptr
 out=$(HI_MOVE_ROUND=1 bash "$ACC" move --only term_later --wait 10 2>/dev/null); wait
 assert_contains 'turned idle: moved in a later round' "$out" "moved	term_later"
 
+echo '== restart-mode and select'
+# settings_db <file> <json>: an Orca profile-state.db (WAL mode, as Orca keeps it) whose settings
+# document is <json>.
+settings_db() {
+  rm -f "$1" "$1-wal" "$1-shm"
+  python3 -I - "$1" "$2" <<'PY'
+import sqlite3, sys
+con = sqlite3.connect(sys.argv[1]); con.execute("pragma journal_mode=wal")
+con.execute("create table profile_state_documents (domain text primary key, payload text)")
+con.execute("insert into profile_state_documents values ('settings', ?)", (sys.argv[2],))
+con.commit()
+PY
+}
+DB="$SANDBOX/state.db"
+settings_db "$DB" '{"claudeAccountSwitchRunningSessions":"restart"}'
+assert_eq 'restart-mode: Always restart' restart "$(HI_ORCA_STATE_DB="$DB" bash "$ACC" restart-mode)"
+settings_db "$DB" '{"language":"en"}'
+assert_eq 'restart-mode: never set reads as Orca default ask' ask "$(HI_ORCA_STATE_DB="$DB" bash "$ACC" restart-mode)"
+assert_status 'restart-mode: no database is an error, not a guess' 1 \
+  "$(HI_ORCA_STATE_DB="$SANDBOX/none.db" bash "$ACC" restart-mode >/dev/null 2>&1; echo $?)"
+: >"$LOG"
+for m in ask restart; do
+  settings_db "$DB" "{\"claudeAccountSwitchRunningSessions\":\"$m\"}"
+  err=$(HI_ORCA_STATE_DB="$DB" bash "$ACC" select ida 2>&1 >/dev/null); rc=$?
+  assert_eq "select under $m: refused with exit 4" 4 "$rc"
+  assert_contains "select under $m: says how to switch safely" "$err" 'Never restart'
+done
+assert_eq 'select refused: nothing was selected' 0 "$(grep -c 'account select' "$LOG")"
+assert_status 'select: unreadable setting selects nothing' 1 \
+  "$(HI_ORCA_STATE_DB="$SANDBOX/none.db" bash "$ACC" select ida >/dev/null 2>&1; echo $?)"
+assert_eq 'select: still nothing selected' 0 "$(grep -c 'account select' "$LOG")"
+settings_db "$DB" '{"claudeAccountSwitchRunningSessions":"keep"}'
+out=$(HI_ORCA_STATE_DB="$DB" bash "$ACC" select ida 2>/dev/null); rc=$?
+assert_eq 'select under keep: ok' 0 "$rc"
+assert_contains 'select under keep: Orca was asked to select it' "$(cat "$LOG")" 'account select --agent claude --account ida'
+
 echo '== nothing to move'
 rm -f "$A"/sessions/*.json
 assert_status 'every session on the target: exit 0' 0 "$(bash "$ACC" move >/dev/null 2>&1; echo $?)"

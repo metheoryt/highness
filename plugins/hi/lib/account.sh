@@ -39,6 +39,21 @@
 #
 # Exit: 0 every session moved (or nothing to move) · 1 a failure · 2 usage · 3 some still busy.
 #
+#   account.sh restart-mode           Orca's setting "When you switch accounts while Claude is
+#                                     running in terminals": ask, restart or keep (Never restart)
+#   account.sh select <id|email>      `orca account select` for Claude, only when that setting is
+#                                     keep; else exit 4 and select nothing
+#
+# Why select is guarded (measured, Orca 1.4.265, highness#106): on a switch, Orca restarts the
+# Claude sessions it finds in a NEW pane with a new terminal handle. The chat survives, but a
+# hi-crew worker's Dispatch is bound to the old handle: orchestration reports the worker lost
+# and fails its Dispatch. Under "Always restart" every switch does that; under "Ask" a switch
+# made from the status bar opens a dialog where the workers can be unticked, but a switch made
+# anywhere else (the CLI included) counts as "Always restart" and restarts with no dialog. Only
+# "Never restart" leaves every session in place for `move`. Orca's restart also does not reach
+# every pane: two `orca agent launch` panes stayed on the old account (cause not established),
+# so `move` is still the way to finish a switch.
+#
 # Seams: HI_ORCA (orca.sh), HI_PROC (a /proc-shaped fixture dir: <pid>/environ, <pid>/cmdline,
 # <pid>/stat), HI_MOVE_EXIT_WAIT / HI_MOVE_START_WAIT (seconds to wait for the old process to
 # end and the new one to appear; default 20 and 90), HI_ACCOUNT_SELF (the pid that counts as
@@ -57,8 +72,38 @@ usage() {
   cat >&2 <<'U'
 usage: account.sh target | sessions | lost <from dir> <to dir>
        account.sh move [--only <handle|session>]… [--wait <seconds>] [--dry-run]
+       account.sh restart-mode | select <id|email>
 U
   exit 2
+}
+
+ORCA_STATE_NAME=account
+. "$HERE/orca-state.sh"
+
+# Orca's default, when the setting was never changed, is ask.
+cmd_restart_mode() {
+  local doc m
+  doc=$(orca_state_doc settings) || return 1
+  m=$(printf '%s\n' "$doc" | jq -r '.claudeAccountSwitchRunningSessions // "ask"' 2>/dev/null) \
+    || { say "cannot read Orca's settings"; return 1; }
+  case "$m" in
+    ask|restart|keep) printf '%s\n' "$m" ;;
+    *) say "unknown value of Orca's account-switch setting: $m"; return 1 ;;
+  esac
+}
+
+cmd_select() {
+  [ $# = 1 ] && [ -n "$1" ] || usage
+  local m
+  m=$(cmd_restart_mode) || die "cannot tell whether Orca would restart the sessions; nothing selected"
+  if [ "$m" != keep ]; then
+    say "Orca's \"When you switch accounts while Claude is running in terminals\" is $(
+      [ "$m" = restart ] && echo '"Always restart"' || echo '"Ask"'): a switch from here restarts every Claude session in a new pane, and each hi-crew worker loses its Dispatch. Nothing selected. Either set it to \"Never restart\" (Orca Settings → Accounts) and run this again, or switch in Orca's status bar and untick the workers in its dialog; then move the rest with account.sh move"
+    exit 4
+  fi
+  "$ORCA" account select --agent claude --account "$1" --json </dev/null >/dev/null \
+    || die "orca account select --account $1 failed"
+  cmd_target
 }
 
 need() {
@@ -369,5 +414,7 @@ case "$verb" in
   sessions) need; cmd_sessions ;;
   lost)     command -v jq >/dev/null 2>&1 || die 'jq is required'; cmd_lost "$@" ;;
   move)     need; cmd_move "$@" ;;
+  restart-mode) command -v jq >/dev/null 2>&1 || die 'jq is required'; cmd_restart_mode ;;
+  select)   need; cmd_select "$@" ;;
   *) usage ;;
 esac

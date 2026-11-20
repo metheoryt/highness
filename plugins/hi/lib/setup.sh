@@ -10,7 +10,8 @@
 #                          per line (what /hi:meet reads sessions from)
 #
 # Sections and rows:
-#   machine  jq, orca, launcher, plugin:<name> (each highness plugin in the worker profile: on,
+#   machine  jq, orca, account-switch (Orca's restart-on-switch setting: ok only at Never
+#            restart), launcher, plugin:<name> (each highness plugin in the worker profile: on,
 #            off or double, with its source: a skills-dir link or a marketplace),
 #            profile:<dir> (every other Claude config dir Orca uses: ok, or gaps against the
 #            worker profile's set), pins:<installed_plugins.json> (stale project pins) or pins ok,
@@ -189,6 +190,19 @@ EOF
   [ -n "$any" ] || _row machine pins ok 'no project pin of a highness plugin points at a dir that is gone'
 }
 
+# Orca's account-switch setting (account.sh restart-mode). Orca restarts a session it moves to
+# the new account in a new pane, so a hi-crew worker loses its Dispatch (highness#106).
+rows_account_switch() {
+  local m
+  m=$(bash "$HERE/account.sh" restart-mode 2>/dev/null) || {
+    _row machine account-switch unknown "cannot read Orca's setting \"When you switch accounts while Claude is running in terminals\""; return 0; }
+  case "$m" in
+    keep) _row machine account-switch ok 'Never restart: an account switch leaves every session in place; /hi:account moves them, keeping each worker'"'"'s Dispatch' ;;
+    restart) _row machine account-switch restarts 'Always restart: every account switch restarts the Claude sessions in new panes, and each hi-crew worker loses its Dispatch' ;;
+    ask) _row machine account-switch restarts 'Ask: a switch from the status bar asks (untick the workers), but one from the CLI, /hi:account or the agenda restarts every session and each hi-crew worker loses its Dispatch' ;;
+  esac
+}
+
 rows_machine() {
   local prof why list p hit n loaded='' crew='' O ver js line
   if command -v jq >/dev/null 2>&1; then _row machine jq ok "$(command -v jq)"
@@ -199,6 +213,7 @@ rows_machine() {
     O=$(bash "$HERE/orca.sh" resolve 2>/dev/null)
     ver=$("$O" status --json 2>/dev/null | jq -r '.result.runtime.appVersion // ""' 2>/dev/null)
     _row machine orca ok "${ver:-?} ($O)"
+    rows_account_switch
   elif [ -n "$js" ]; then
     _row machine orca "${js%%:*}" "${js#*: }"
   else
