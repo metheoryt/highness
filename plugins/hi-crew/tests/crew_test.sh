@@ -113,7 +113,8 @@ n0=$(lines)
 jq -n '{body: "The person'"'"'s decisions:\n(1) A.\n(2) their own: C.",
   points: [{question: "first", options: [{name: "A", loses: "x", leans_on: "no rule: y"}], took: "option", picked: "A", reply: "A"},
            {question: "second", took: "own", picked: "C", reply: "neither: C"}]}' >"$T/r-two"
-bash "$C" relay ABC-2 "$T/r-two" || no 'relay finds the ticket'"'"'s one open ask'
+check 'relay: after an undelivered try, the ask still counts as unanswered, and success is one line' \
+  "$(bash "$C" relay ABC-2 "$T/r-two" || no 'relay finds the ticket'"'"'s one open ask')" 'relayed ABC-2 A, C → ctx_b'
 check 'relay: the reply went to that ask, body verbatim' "$(head -1 "$FAKE_SENT")" "msg_q2|$(jq -r .body "$T/r-two" | head -1)"
 check 'relay: one choice line per point' "$(( $(lines) - n0 ))" 2
 check 'relay: a line carries the point, the ask and what was sent' \
@@ -128,7 +129,7 @@ jq -n '{body: "decisions", points: [
   {question: "r2", options: [{name: "A"}, {name: "B"}], recommended: "A", took: "option", picked: "B", reply: "B"},
   {question: "r3", recommended: "A", took: "own", picked: "C", reply: "C"},
   {question: "r4", recommended: "A", took: "reframed", reply: "wrong question"}]}' >"$T/r-rec"
-bash "$C" relay ABC-2 --id msg_q2 "$T/r-rec" || no 'relay with recommended options'
+bash "$C" relay ABC-2 --id msg_q2 --again "$T/r-rec" >/dev/null || no 'relay with recommended options'
 check 'relay: recommended recorded; as recommended, against, own and reframed read apart' \
   "$(bash "$C" choices ABC-2 | tail -4 | jq -r '[.question, .recommended, (.as_recommended | tostring)] | join("|")' | tr '\n' ' ')" \
   'r1|A|true r2|A|false r3|A|false r4|A|false '
@@ -137,9 +138,35 @@ check 'choice: a line written by hand derives as_recommended too' "$(bash "$C" c
 printf '%s\n' '{"key":"ABC-1","at":"2026-01-01T00:00:00Z","question":"old","took":"option","picked":"A"}' >>"$HIGHNESS_STATE/crew/choices.jsonl"
 check 'choices: an old line without recommended still reads, as_recommended null' \
   "$(bash "$C" choices ABC-1 | tail -1 | jq -r '[.question, .picked, (has("recommended") | tostring), (.as_recommended | tostring)] | join("|")')" 'old|A|false|null'
-bash "$C" relay ABC-6 --id msg_q1 "$T/r-min" || no 'relay with --id'
+bash "$C" relay ABC-6 --id msg_q1 "$T/r-min" >/dev/null || no 'relay with --id'
 check 'relay: no points still leaves one line' "$(bash "$C" choices ABC-6 | jq -r '[.ask, (.took // "null"), .sent] | join("|")')" 'msg_q1|null|yes'
 check 'gaps: a relayed answer is no gap' "$(bash "$C" choices --gaps)" ''
+
+# --- relay is idempotent per ask: one answer handed over twice is sent once; --again supersedes
+: >"$FAKE_SENT"; n0=$(lines); first=$(tail -1 "$HIGHNESS_STATE/crew/choices.jsonl" | jq -r .at)
+case "$(bash "$C" relay ABC-6 --id msg_q1 "$T/r-min" 2>&1; echo "exit $?")" in
+  "already relayed $first (ABC-6 msg_q1)"*'exit 0') ok 'relay: a repeat says when it was relayed, exit 0' ;;
+  *) no 'relay: a repeat says when it was relayed, exit 0' ;; esac
+check 'relay: a repeat sends nothing and records nothing' "$(wc -c <"$FAKE_SENT" | tr -d ' ') $(lines)" "0 $n0"
+printf '{"body":"changed my mind: B","points":[{"question":"q","took":"option","picked":"B","reply":"B"}]}' >"$T/r-again"
+check 'relay --again: sends, and says it supersedes' "$(bash "$C" relay ABC-6 --id msg_q1 --again "$T/r-again")" \
+  "relayed ABC-6 B (again, supersedes $first) → ctx_a"
+check 'relay --again: one message sent, one new line naming the answer it supersedes' \
+  "$(wc -l <"$FAKE_SENT" | tr -d ' ') $(( $(lines) - n0 )) $(tail -1 "$HIGHNESS_STATE/crew/choices.jsonl" | jq -r '[.ask, .picked, .supersedes] | join("|")')" \
+  "1 1 msg_q1|B|$first"
+# With no --id: an answered ask is no open one, so a repeat finds none; it is told as a repeat.
+bash "$C" record ABC-16 '{"run":"run_abc123","dispatch":"ctx_a"}'
+bash "$C" relay ABC-16 --id msg_q1 "$T/r-min" >/dev/null || no 'relay ABC-16'
+: >"$FAKE_SENT"; n0=$(lines)
+case "$(bash "$C" relay ABC-16 "$T/r-min" 2>&1; echo "exit $?")" in
+  'already relayed '*' (msg_q1); ABC-16 has no open question'*'exit 0') ok 'relay with no --id: a repeat is told, exit 0' ;;
+  *) no 'relay with no --id: a repeat is told, exit 0' ;; esac
+check 'relay with no --id: a repeat sends and records nothing' "$(wc -c <"$FAKE_SENT" | tr -d ' ') $(lines)" "0 $n0"
+bash "$C" record ABC-17 '{"run":"run_abc123","dispatch":"ctx_a"}'
+case "$(bash "$C" relay ABC-17 "$T/r-min" 2>&1; echo "exit $?")" in
+  *'has no open question; pass --id'*'exit 2') ok 'relay with no --id and nothing relayed: still refused' ;;
+  *) no 'relay with no --id and nothing relayed: still refused' ;; esac
+bash "$C" close ABC-16; bash "$C" close ABC-17
 
 # --- actions: a step that needs a person's yes, prepared by the worker, run once by relay --action
 W="$T/ws"; git init -q "$W"; git -C "$W" -c user.name=t -c user.email=t@t commit -q --allow-empty -m one
@@ -153,7 +180,7 @@ check 'action-show: the script verbatim after ---' "$(bash "$C" action-show ABC-
 if [ -w "$HIGHNESS_STATE/crew/actions/ABC-2/$aid.sh" ]; then no 'action: the stored copy is read-only'; else ok 'action: the stored copy is read-only'; fi
 if bash "$C" action-show ABC-2 '../x' 2>/dev/null; then no 'action-show refuses a bad id'; else ok 'action-show refuses a bad id'; fi
 : >"$FAKE_SENT"
-bash "$C" relay ABC-2 --id msg_q2 --action "$aid" "$T/r-min" || no 'relay --action'
+bash "$C" relay ABC-2 --id msg_q2 --again --action "$aid" "$T/r-min" >/dev/null || no 'relay --action'
 check 'relay --action: ran once, in the workspace' "$(cat "$T/ran")" ran
 case "$(head -1 "$FAKE_SENT")" in "msg_q2|hi-crew ran action $aid once"*) ok 'relay --action: the worker hears the outcome first' ;; *) no 'relay --action: the worker hears the outcome first' ;; esac
 case "$(cat "$FAKE_SENT")" in *'step done'*'do not run it yourself'*yes) ok 'relay --action: output, then the person'"'"'s words' ;; *) no 'relay --action: output, then the person'"'"'s words' ;; esac
@@ -161,11 +188,14 @@ check 'relay --action: applied and delivered' "$(bash "$C" action-show ABC-2 "$a
 check 'relay --action: the choice names the action' "$(tail -1 "$HIGHNESS_STATE/crew/choices.jsonl" | jq -r .action)" "$aid"
 : >"$FAKE_SENT"
 case "$(bash "$C" relay ABC-2 --id msg_q2 --action "$aid" "$T/r-min" 2>&1; echo "exit $?")" in
+  'already relayed '*'exit 0') ok 'relay --action: a repeated relay is told as relayed already' ;;
+  *) no 'relay --action: a repeated relay is told as relayed already' ;; esac
+case "$(bash "$C" relay ABC-2 --id msg_q2 --again --action "$aid" "$T/r-min" 2>&1; echo "exit $?")" in
   *'run already'*'exit 2') ok 'relay --action: a second run is refused' ;; *) no 'relay --action: a second run is refused' ;; esac
 check 'relay --action: nothing ran or was sent the second time' "$(wc -l <"$T/ran" | tr -d ' ') $(wc -c <"$FAKE_SENT" | tr -d ' ')" '1 0'
 refused() { # <name> <action id> <want in the outcome>
   : >"$FAKE_SENT"; rm -f "$T/ran"
-  bash "$C" relay ABC-2 --id msg_q2 --action "$2" "$T/r-min" 2>/dev/null || { no "$1: relay failed"; return; }
+  bash "$C" relay ABC-2 --id msg_q2 --again --action "$2" "$T/r-min" >/dev/null 2>&1 || { no "$1: relay failed"; return; }
   case "$(cat "$FAKE_SENT")" in *'did NOT run'*"$3"*) ok "$1" ;; *) no "$1: got [$(cat "$FAKE_SENT")]" ;; esac
   [ ! -e "$T/ran" ] || no "$1: the script ran"
   check "$1: recorded" "$(jq -r .status "$HIGHNESS_STATE/crew/actions/ABC-2/$2.json")" refused
@@ -182,7 +212,7 @@ printf '#!/bin/sh\ngrep -q ASKME && printf "A\\tcheck: ask\\n"\nexit 0\n' >"$T/a
 jq -n --arg c "$T/askcheck" '{guard: {checks: [$c]}}' >"$HIGHNESS_CONFIG"
 [ -f "$HERE/../../hi-guard/lib/guard.sh" ] || no 'the real hi-guard is beside hi-crew (else the probe tests nothing)'
 printf 'echo ASKME >>"%s"\n' "$T/ran" >"$T/ask.sh"; a=$(bash "$C" action ABC-2 "$T/ask.sh"); rm -f "$T/ran"
-HI_GUARD="$HERE/../../hi-guard/lib/guard.sh" bash "$C" relay ABC-2 --id msg_q2 --action "$a" "$T/r-min" || no 'relay --action under the real guard'
+HI_GUARD="$HERE/../../hi-guard/lib/guard.sh" bash "$C" relay ABC-2 --id msg_q2 --again --action "$a" "$T/r-min" >/dev/null || no 'relay --action under the real guard'
 check 'relay --action: an ask from the probe does not stop the approved action' "$(cat "$T/ran" 2>/dev/null)" ASKME
 check 'relay --action: the probe leaves no line in the denial log' "$(cat "$HIGHNESS_STATE/denials.jsonl" 2>/dev/null)" ''
 jq -n '{crew: {pr_state: "echo '"'"'{\"head\":\"0000beef\"}'"'"'"}}' >"$HIGHNESS_CONFIG"
@@ -190,10 +220,10 @@ bash "$C" record ABC-2 '{"pr":"https://forge/pr/2"}'; a=$(bash "$C" action ABC-2
 refused 'action refused: the PR head is not the pinned head' "$a" 'PR head is 0000beef'
 rm -f "$HIGHNESS_CONFIG"
 printf 'echo ran >>"%s"\nexit 3\n' "$T/ran" >"$T/fail.sh"; a=$(bash "$C" action ABC-2 "$T/fail.sh"); : >"$FAKE_SENT"
-bash "$C" relay ABC-2 --id msg_q2 --action "$a" "$T/r-min" || no 'relay --action of a failing step'
+bash "$C" relay ABC-2 --id msg_q2 --again --action "$a" "$T/r-min" >/dev/null || no 'relay --action of a failing step'
 case "$(cat "$FAKE_SENT")" in *'FAILED (exit 3)'*) ok 'relay --action: a failure is told, not retried' ;; *) no 'relay --action: a failure is told' ;; esac
 a=$(bash "$C" action ABC-2 "$T/step.sh"); rm -f "$T/ran"
-FAKE_REPLY_FAIL=1 bash "$C" relay ABC-2 --id msg_q2 --action "$a" "$T/r-min" 2>/dev/null && no 'relay --action: a failed send exits non-zero'
+FAKE_REPLY_FAIL=1 bash "$C" relay ABC-2 --id msg_q2 --again --action "$a" "$T/r-min" 2>/dev/null && no 'relay --action: a failed send exits non-zero'
 check 'relay --action, send failed: the action ran, the outcome is kept, not delivered' \
   "$(cat "$T/ran") $(tail -1 "$HIGHNESS_STATE/crew/unsent/ABC-2.jsonl" | jq -r '.action + " " + (.body | split("\n")[0] | .[0:14])') $(jq -r .delivered "$HIGHNESS_STATE/crew/actions/ABC-2/$a.json")" \
   "ran $a hi-crew ran ac false"
