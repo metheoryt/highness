@@ -72,7 +72,17 @@ The reserve is `crew.budget.five_hour_reserve` and `crew.budget.seven_day_reserv
 config, 50 by default: a fresh 5-hour window lets agents reach 50%, one with an hour left 90%.
 The figures come live from the plan's usage endpoint (no tokens spent, every machine on the account
 counted); a figure that cannot be read holds the start (`crew.budget.on_unknown: "go"` to change
-that). `bash lib/budget.sh check` prints the verdict. Other launchers of background agents can call
+that).
+
+**Account health.** `lib/account-health.sh` (in hi and hi-crew) tells whether an account can run
+at all: `ok`, `limited` (a window spent), `dead` (payment past due, disabled, logged out) or
+`unknown`. It reads the usage endpoint first. With no figures — a 401, and also a 429, which the
+endpoint answers both for an account whose token needs a refresh and for one whose payment is
+past due — it runs one tiny `claude -p`, which refreshes the token, and reads again once. A probe
+that fails says why, and that line decides. `claude auth status` cannot tell: it says logged in
+for a past-due account. The budget holds a dead account whatever its cache says, `budget.sh
+room` never offers one, and `account.sh select` refuses a dead or limited account (`--force`
+overrides). `bash lib/budget.sh check` prints the verdict. Other launchers of background agents can call
 it the same way: exit 0 is go, 1 is hold.
 
 The account is the one Orca launches agents on (`crew.sh account` prints it): Orca's active Claude

@@ -41,8 +41,13 @@
 #
 #   account.sh restart-mode           Orca's setting "When you switch accounts while Claude is
 #                                     running in terminals": ask, restart or keep (Never restart)
-#   account.sh select <id|email>      `orca account select` for Claude, only when that setting is
-#                                     keep; else exit 4 and select nothing
+#   account.sh select [--force] <id|email>
+#                                     `orca account select` for Claude, only when that setting is
+#                                     keep (else exit 4) and the account can run (else exit 5:
+#                                     dead or limited, lib/account-health.sh; --force overrides);
+#                                     on 4 or 5 nothing is selected
+#   account.sh health                 each of Orca's Claude accounts: mark (* selected)<TAB>id<TAB>
+#                                     email<TAB>state (ok|limited|dead|unknown)<TAB>detail
 #
 # Why select is guarded (measured, Orca 1.4.265, highness#106): on a switch, Orca restarts the
 # Claude sessions it finds in a NEW pane with a new terminal handle. The chat survives, but a
@@ -72,13 +77,14 @@ usage() {
   cat >&2 <<'U'
 usage: account.sh target | sessions | lost <from dir> <to dir>
        account.sh move [--only <handle|session>]… [--wait <seconds>] [--dry-run]
-       account.sh restart-mode | select <id|email>
+       account.sh restart-mode | select [--force] <id|email> | health
 U
   exit 2
 }
 
 ORCA_STATE_NAME=account
 . "$HERE/orca-state.sh"
+. "$HERE/account-health.sh"
 
 # Orca's default, when the setting was never changed, is ask.
 cmd_restart_mode() {
@@ -93,13 +99,30 @@ cmd_restart_mode() {
 }
 
 cmd_select() {
+  local force=0 m home
+  [ "${1:-}" = --force ] && { force=1; shift; }
   [ $# = 1 ] && [ -n "$1" ] || usage
-  local m
   m=$(cmd_restart_mode) || die "cannot tell whether Orca would restart the sessions; nothing selected"
   if [ "$m" != keep ]; then
     say "Orca's \"When you switch accounts while Claude is running in terminals\" is $(
       [ "$m" = restart ] && echo '"Always restart"' || echo '"Ask"'): a switch from here restarts every Claude session in a new pane, and each hi-crew worker loses its Dispatch. Nothing selected. Either set it to \"Never restart\" (Orca Settings → Accounts) and run this again, or switch in Orca's status bar and untick the workers in its dialog; then move the rest with account.sh move"
     exit 4
+  fi
+  # Can it run? Every session that moves onto a dead or spent account fails its next turn.
+  home=$(home_of "$1")
+  if [ -z "$home" ]; then
+    say "no account $1 in \`orca account list\`: its health is not checked"
+  else
+    account_health "$home"
+    case "$AH_STATE" in
+      dead|limited)
+        if [ "$force" = 0 ]; then
+          say "$1 is $AH_STATE: $AH_DETAIL. Nothing selected; --force selects it anyway"
+          exit 5
+        fi
+        say "$1 is $AH_STATE ($AH_DETAIL); selected anyway (--force)" ;;
+      unknown) say "cannot tell whether $1 can run ($AH_DETAIL); selecting it" ;;
+    esac
   fi
   "$ORCA" account select --agent claude --account "$1" --json </dev/null >/dev/null \
     || die "orca account select --account $1 failed"
@@ -190,6 +213,32 @@ org_of() {
   accounts_json | jq -r --arg d "$d" '
     ([.accounts[]? | select(.home == $d)] | first | .organizationUuid)
     // (if .systemDefaultHome == $d then .systemDefaultOrganizationUuid else null end) // ""'
+}
+
+# home_of <id|email|system>: the config dir of that account, or nothing.
+home_of() {
+  accounts_json | jq -r --arg k "$1" '
+    ([.accounts[]? | select(.id == $k or .email == $k)] | first | .home)
+    // (if $k == "system" or (.systemDefaultEmail // "") == $k then .systemDefaultHome else null end) // empty' 2>/dev/null
+}
+
+# health: can each of Orca's Claude accounts run (lib/account-health.sh)? One row each:
+# mark (* the selected one, else -)<TAB>id<TAB>email<TAB>state<TAB>detail. An account whose
+# usage endpoint gives no figures costs one tiny `claude -p`.
+cmd_health() {
+  local j rows id email home act
+  j=$(accounts_json) || die 'cannot read `orca account list --json`'
+  act=$(printf '%s' "$j" | jq -r '.activeAccountIdsByRuntime.host // .activeAccountId // "system"')
+  rows=$(printf '%s' "$j" | jq -r '(.accounts[]? | select((.home | type) == "string") | [.id, (.email // .id), .home]),
+    (select((.systemDefaultHome | type) == "string") | ["system", (.systemDefaultEmail // "system"), .systemDefaultHome])
+    | @tsv')
+  while IFS="$TAB" read -r id email home; do
+    [ -n "$id" ] && [ -d "$home" ] || continue
+    account_health "$home"
+    printf '%s\t%s\t%s\t%s\t%s\n' "$([ "$id" = "$act" ] && echo '*' || echo -)" "$id" "$email" "$AH_STATE" "$AH_DETAIL"
+  done <<EOF
+$rows
+EOF
 }
 
 email_of() {
@@ -416,5 +465,6 @@ case "$verb" in
   move)     need; cmd_move "$@" ;;
   restart-mode) command -v jq >/dev/null 2>&1 || die 'jq is required'; cmd_restart_mode ;;
   select)   need; cmd_select "$@" ;;
+  health)   need; cmd_health ;;
   *) usage ;;
 esac

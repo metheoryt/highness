@@ -202,9 +202,41 @@ assert_status 'select: unreadable setting selects nothing' 1 \
   "$(HI_ORCA_STATE_DB="$SANDBOX/none.db" bash "$ACC" select ida >/dev/null 2>&1; echo $?)"
 assert_eq 'select: still nothing selected' 0 "$(grep -c 'account select' "$LOG")"
 settings_db "$DB" '{"claudeAccountSwitchRunningSessions":"keep"}'
-out=$(HI_ORCA_STATE_DB="$DB" bash "$ACC" select ida 2>/dev/null); rc=$?
-assert_eq 'select under keep: ok' 0 "$rc"
-assert_contains 'select under keep: Orca was asked to select it' "$(cat "$LOG")" 'account select --agent claude --account ida'
+# The health check (highness#115): the usage endpoint gives no figures here, so the stub claude's
+# probe decides. $SANDBOX/probe: ok, or the measured past-due line.
+export HI_BUDGET_RESPONSE=fail
+cat >"$SHIM/claude" <<'S'
+#!/bin/sh
+echo "$*" >>"$SANDBOX/claude.log"
+case "$(cat "$SANDBOX/probe")" in
+  ok) echo ok ;;
+  *) echo "Claude Code can't use your Claude subscription, usually because a payment is past due · Pay or renew at https://claude.ai/settings/billing"; exit 1 ;;
+esac
+S
+chmod +x "$SHIM/claude"
+echo pastdue >"$SANDBOX/probe"; : >"$LOG"
+err=$(HI_ORCA_STATE_DB="$DB" bash "$ACC" select ida 2>&1 >/dev/null); rc=$?
+assert_eq 'select a past-due account: refused with exit 5' 5 "$rc"
+assert_contains 'select a past-due account: says why' "$err" 'ida is dead: payment past due'
+assert_eq 'select a past-due account: nothing selected' 0 "$(grep -c 'account select' "$LOG")"
+assert_contains 'the probe ran under that account' "$(cat "$SANDBOX/claude.log")" '-p --model haiku'
+out=$(HI_ORCA_STATE_DB="$DB" bash "$ACC" select --force ida 2>"$SANDBOX/err"); rc=$?
+assert_eq 'select --force: selects it anyway' 0 "$rc"
+assert_contains 'select --force: says so' "$(cat "$SANDBOX/err")" 'selected anyway (--force)'
+assert_contains 'select --force: Orca was asked' "$(cat "$LOG")" 'account select --agent claude --account ida'
+echo ok >"$SANDBOX/probe"; : >"$LOG"
+out=$(HI_ORCA_STATE_DB="$DB" bash "$ACC" select b@x 2>"$SANDBOX/err"); rc=$?
+assert_eq 'select under keep, an account that runs (no figures: unknown): ok' 0 "$rc"
+assert_contains 'select under keep: Orca was asked to select it' "$(cat "$LOG")" 'account select --agent claude --account b@x'
+assert_contains 'select: no figures is a warning, not a refusal' "$(cat "$SANDBOX/err")" 'cannot tell whether b@x can run'
+
+echo '== health'
+echo pastdue >"$SANDBOX/probe"
+out=$(bash "$ACC" health)
+assert_contains 'health: one row per account, the selected one marked' "$out" "*	idb	b@x	dead	payment past due"
+assert_contains 'health: the others' "$out" "-	ida	a@x	dead"
+assert_contains 'health: the system default too' "$out" "-	system	sys@x	dead"
+unset HI_BUDGET_RESPONSE
 
 echo '== nothing to move'
 rm -f "$A"/sessions/*.json
