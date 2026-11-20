@@ -47,7 +47,9 @@ this skill" printed above, two levels up.
    no coordinator, no root); nothing otherwise. A hold starts no worker and makes no event, so this
    line is the only place it shows. `bash "$C" account` names the config dir whose budget it reads.
    When the hold is the budget, `bash "${CLAUDE_PLUGIN_ROOT}/lib/budget.sh" room` lists Orca's
-   other Claude accounts that are under their line now (email, id, config dir, the check). Offer
+   other Claude accounts that are under their line now (email, id, config dir, the check); each
+   other account gets a `no room on …` line on stderr with its state, a dead one (payment past
+   due, disabled, logged out) named as such and never offered. Offer
    a switch to one of them; never switch on your own: which plan pays is the person's call. On
    their yes: hi's `/hi:account` selects it and moves the live sessions onto it, each in its own
    pane, so workers keep their Dispatch. Never run `$O account select` here yourself: unless

@@ -13,10 +13,13 @@
 # With the default reserve of 50, a fresh 5-hour window lets agents run up to 50%; with 1 hour
 # left, up to 90%. Same for the 7-day window.
 #
-# The figures come live from the plan's usage endpoint (no tokens spent), with the account's own
-# OAuth token; on a 401 one tiny `claude -p` refreshes the token and the call is retried once.
-# Failing that, the statusline's cache (<config dir>/highness-usage.json, `crew.sh usage-save`) is
-# used while fresh. No figure at all = hold: an agent that cannot see the budget does not spend it.
+# The figures come from lib/account-health.sh: live from the plan's usage endpoint (no tokens
+# spent), with the account's own OAuth token; with no figures (401, 429, any error) one tiny
+# `claude -p` refreshes the token and the call is retried once. A probe that fails says why: a
+# dead account (payment past due, disabled, logged out) or a reached usage limit holds, and says
+# so, whatever the cache or crew.budget.on_unknown says. Otherwise the statusline's cache
+# (<config dir>/highness-usage.json, `crew.sh usage-save`) is used while fresh. No figure at all =
+# hold: an agent that cannot see the budget does not spend it.
 #
 # Config (the person's own, `config.sh get --user`):
 #   crew.budget.five_hour_reserve   the person's share of a fresh 5-hour window, % (default 50)
@@ -25,13 +28,14 @@
 #   crew.budget.on_unknown          "hold" (default) or "go" when no figure can be read
 #
 # Fixtures: HI_NOW (epoch seconds), HI_BUDGET_RESPONSE (a file holding the endpoint's JSON, or
-# the word "fail"), HI_BUDGET_REFRESH=0 (no refresh probe). bash 3.2, BSD tools.
+# the word "fail"), HI_BUDGET_REFRESH=0 (no refresh probe); account-health.sh lists the rest.
+# bash 3.2, BSD tools.
 set -u
 export LC_ALL=C  # awk prints and reads "73.5", never a locale's "73,5"
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG="$HERE/config.sh"
-URL="${HI_BUDGET_URL:-https://api.anthropic.com/api/oauth/usage}"
+. "$HERE/account-health.sh"
 
 die() { printf 'budget: %s\n' "$*" >&2; exit 2; }
 command -v jq >/dev/null 2>&1 || die 'jq is required'
@@ -39,76 +43,6 @@ command -v jq >/dev/null 2>&1 || die 'jq is required'
 now() { printf '%s' "${HI_NOW:-$(date +%s)}"; }
 num() { case "$1" in ''|*[!0-9.]*) printf '%s' "$2" ;; *) printf '%s' "$1" ;; esac; }
 cfg() { bash "$CONFIG" get --user ".crew.budget.$1" 2>/dev/null; }
-
-# The Keychain services that may hold <config dir>'s token, most likely first. Claude Code run
-# with CLAUDE_CONFIG_DIR keeps it under "Claude Code-credentials-<first 8 hex of sha256(dir)>";
-# without it (the default ~/.claude), under the bare name. An Orca profile home has only the
-# suffixed entry: the bare name there is another account's token, or none.
-services() { # <config dir>
-  local d=${1%/} h
-  h=$(printf '%s' "$d" | shasum -a 256 2>/dev/null | cut -c1-8)
-  [ "$d" = "$HOME/.claude" ] && printf '%s\n' 'Claude Code-credentials'
-  [ -n "$h" ] && printf '%s\n' "Claude Code-credentials-$h"
-  return 0
-}
-
-# The account's OAuth access token, or nothing. macOS keeps it in the login Keychain
-# (HI_BUDGET_KEYCHAIN=1 takes that path anywhere, for tests).
-token() { # <config dir>
-  local f="$1/.credentials.json" s t
-  if [ -f "$f" ]; then
-    jq -r '.claudeAiOauth.accessToken // empty' "$f" 2>/dev/null
-    return 0
-  fi
-  [ -n "${HI_BUDGET_KEYCHAIN:-}" ] || [ "$(uname -s)" = Darwin ] || return 0
-  command -v security >/dev/null 2>&1 || return 0
-  while IFS= read -r s; do
-    [ -n "$s" ] || continue
-    t=$(security find-generic-password -s "$s" -w 2>/dev/null | jq -r '.claudeAiOauth.accessToken // empty' 2>/dev/null)
-    [ -n "$t" ] && { printf '%s' "$t"; return 0; }
-  done <<EOF
-$(services "$1")
-EOF
-  return 0
-}
-
-# The endpoint's JSON on stdout; exit 0, or 1 on any failure, 3 on a 401.
-call() { # <config dir>
-  local t out code
-  if [ -n "${HI_BUDGET_RESPONSE:-}" ]; then
-    [ "$HI_BUDGET_RESPONSE" != fail ] && cat "$HI_BUDGET_RESPONSE" 2>/dev/null; return $?
-  fi
-  command -v curl >/dev/null 2>&1 || return 1
-  t=$(token "$1"); [ -n "$t" ] || return 1
-  # The token goes in on stdin (curl -K -), never in argv where ps would show it.
-  out=$(printf 'header = "Authorization: Bearer %s"\nheader = "anthropic-beta: oauth-2025-04-20"\n' "$t" \
-    | curl -sS -m 15 -K - -w '\n%{http_code}' "$URL" 2>/dev/null) || return 1
-  code=$(printf '%s\n' "$out" | tail -n 1)
-  [ "$code" = 401 ] && return 3
-  [ "$code" = 200 ] || return 1
-  printf '%s\n' "$out" | sed '$d'
-}
-
-# One tiny headless turn: Claude Code refreshes an expired token as it starts.
-refresh() { # <config dir>
-  [ "${HI_BUDGET_REFRESH:-1}" != 0 ] || return 1
-  command -v claude >/dev/null 2>&1 || return 1
-  (cd "${TMPDIR:-/tmp}" && CLAUDE_CONFIG_DIR="$1" claude -p --model haiku --max-turns 1 --no-session-persistence \
-     --strict-mcp-config --setting-sources '' -- 'reply ok' >/dev/null 2>&1 </dev/null)
-}
-
-# window<TAB>used%<TAB>resets_at, for five_hour and seven_day, from the endpoint's JSON.
-# resets_at is an ISO time in UTC (fractional seconds, +00:00); null means no window running (-).
-# Any other shape fails the parse, which is a hold.
-parse_live() {
-  jq -r '
-    def epoch: if . == null then "-"
-      else (sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z") | fromdateiso8601 | tostring) end;
-    ["five_hour", "seven_day"][] as $w
-    | .[$w] as $v
-    | if ($v | type) != "object" or ($v.utilization | type) != "number" then error("no \($w)") else . end
-    | "\($w)\t\($v.utilization)\t\($v.resets_at | epoch)"' 2>/dev/null
-}
 
 # The statusline cache: {five_hour: {used_percentage, resets_at (epoch)}, ..., updated_at}.
 parse_cache() { # <config dir>
@@ -121,15 +55,13 @@ parse_cache() { # <config dir>
     | "\($w)\t\($v.used_percentage)\t\($v.resets_at | floor)"' "$1/highness-usage.json" 2>/dev/null
 }
 
-# Sets ROWS (the windows) and SRC (live or cache); exit 1 when no figure can be read.
+# Sets ROWS (the windows) and SRC (live or cache); exit 1 when no figure can be read. A probe's
+# verdict (dead, or limited with no figures) wins over the cache: it is newer than any cache.
 ROWS=''; SRC=''
 windows() { # <config dir>
-  local j rc
-  j=$(call "$1"); rc=$?
-  if [ "$rc" = 3 ] && refresh "$1"; then j=$(call "$1"); rc=$?; fi
-  if [ "$rc" = 0 ] && ROWS=$(printf '%s' "$j" | parse_live) && [ "$(printf '%s\n' "$ROWS" | awk 'NF' | wc -l | tr -d ' ')" = 2 ]; then
-    SRC=live; return 0
-  fi
+  account_health "$1"
+  if [ -n "$AH_ROWS" ]; then ROWS=$AH_ROWS; SRC=live; return 0; fi
+  case "$AH_STATE" in dead|limited) ROWS=''; SRC=''; return 1 ;; esac
   ROWS=$(parse_cache "$1")
   if [ -n "$ROWS" ]; then SRC=cache; return 0; fi
   SRC=''; return 1
@@ -151,12 +83,7 @@ lines() {
     }'
 }
 
-span() { # seconds → "2h47m" / "4d9h"
-  awk -v s="$1" 'BEGIN { s = int(s); if (s < 0) s = 0
-    if (s >= 86400) printf "%dd%dh", s / 86400, (s % 86400) / 3600
-    else if (s >= 3600) printf "%dh%02dm", s / 3600, (s % 3600) / 60
-    else printf "%dm", s / 60 }'
-}
+span() { ah_span "$@"; }
 
 dir_of() { printf '%s' "${1:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}}"; }
 
@@ -170,6 +97,10 @@ cmd_check() {
   local d out n hold=0 w u l r part
   d=$(dir_of "${1:-}")
   if ! windows "$d"; then
+    case "$AH_STATE" in
+      dead) printf 'account dead on %s (%s); hold\n' "$d" "$AH_DETAIL"; return 1 ;;
+      limited) printf 'account limited on %s (%s); hold\n' "$d" "$AH_DETAIL"; return 1 ;;
+    esac
     if [ "$(cfg on_unknown)" = go ]; then printf 'usage unknown on %s; go (crew.budget.on_unknown)\n' "$d"; return 0; fi
     printf 'usage unknown on %s; hold\n' "$d"; return 1
   fi
@@ -190,8 +121,9 @@ EOF
 }
 
 # room: Orca's other Claude accounts that are under their line now, one per line:
-# email<TAB>account id<TAB>config dir<TAB>the check's line. Exit 1 when none has room (or Orca
-# cannot list them). The selected account is left out: it is the one being measured. Offering a
+# email<TAB>account id<TAB>config dir<TAB>the check's line. Each account without room gets one
+# line on stderr with its check line, which names a dead or limited one as such. Exit 1 when
+# none has room (or Orca cannot list them). The selected account is left out: it is the one being measured. Offering a
 # switch is all this does; choosing which plan pays is the person's call (highness#106).
 orca_cmd() {
   if [ -n "${ORCA_CLI_COMMAND:-}" ]; then printf '%s\n' "$ORCA_CLI_COMMAND"; return; fi
@@ -206,7 +138,8 @@ cmd_room() {
     | .accounts[]? | select(.id != $a and (.home | type) == "string") | [.id, (.email // .id), .home] | @tsv')
   while IFS="$(printf '\t')" read -r id email home; do
     [ -n "$id" ] && [ -d "$home" ] || continue
-    out=$(cmd_check "$home") || continue
+    # An account without room (a dead one among them) is not offered; stderr says why.
+    out=$(cmd_check "$home") || { printf 'budget: no room on %s (%s): %s\n' "$email" "$id" "$out" >&2; continue; }
     printf '%s\t%s\t%s\t%s\n' "$email" "$id" "$home" "$out"; found=0
   done <<EOF
 $rows
