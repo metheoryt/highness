@@ -37,6 +37,13 @@ file a repo tracks is a printed proposal, as in `/hi:repo-setup`'s `local` mode.
 - `orca unavailable` / `degraded` / `outdated`: start Orca, or update it (hi needs 1.4.246 or
   newer). Without Orca, skip every Orca row below and say so: hi still makes plain git worktrees,
   hi-crew does not run.
+- `account-switch restarts`: on an account switch Orca restarts the Claude sessions in new panes,
+  with new terminal handles, so a running hi-crew worker loses its Dispatch (the chat survives).
+  The person's step in the Orca window: Settings → Accounts → "When you switch accounts while
+  Claude is running in terminals" → **Never restart**. Then `/hi:account` moves the sessions in
+  their own panes. Keeping "Ask" is their call, but say what it costs: a switch from the CLI,
+  `/hi:account` or the agenda is then refused, and in the status bar's dialog they untick every
+  worker. Never write Orca's database. `unknown`: the setting could not be read; say so only.
 - `launcher`: as in `/hi:repo-setup` (`missing` / `stale` are rewritten at the next session start
   with hi enabled; `foreign` is the person's own file).
 - `plugin:<name> off`: the plugin is not enabled in the profile Orca starts workers under (the

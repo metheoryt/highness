@@ -97,6 +97,15 @@ belong to the account. Each one the new account lacks is named in the report and
 itself. A move to another organization makes each session's first turn slower and dearer, because
 Claude cannot reuse thinking written under another organization.
 
+**Switch with Orca's restart off.** Orca can restart the sessions itself on a switch, but it does
+so in a new pane with a new terminal handle: the chat survives, and a worker's Dispatch is lost.
+With workers running, set Orca's Settings → Accounts → "When you switch accounts while Claude is
+running in terminals" to **Never restart**, then switch and run `/hi:account`. Under "Ask" a
+switch in the status bar shows a dialog where you can untick the workers, but a switch from the
+CLI restarts everything with no dialog, so `/hi:account` (`account.sh select`) and the agenda
+refuse to switch unless the setting is Never restart. `/hi:setup` shows the setting as the
+`account-switch` row.
+
 **Pausing a running worker.** Each watch pass also writes the verdict for the account as a flag
 (`<config dir>/highness-hold`, `lib/hold.sh pass`). While it is there, an autostarted worker's next
 tool call ends its turn: the session stays open and idle, its work in the tree as it was. When the

@@ -62,6 +62,22 @@ assert_eq "no repo section outside a repo" "0" "$(printf '%s\n' "$out" | grep -c
 assert_eq "jq: ok" ok "$(row "$out" machine jq)"
 assert_eq "orca: ok" ok "$(row "$out" machine orca)"
 assert_contains "orca: the version" "$(detail "$out" machine orca)" 1.4.254
+assert_eq "account-switch: no Orca database reads unknown" unknown "$(row "$out" machine account-switch)"
+
+# Orca's account-switch setting: only Never restart keeps workers' Dispatch (highness#106).
+DB="$SANDBOX/state.db"
+for pair in keep:ok restart:restarts ask:restarts; do
+  python3 -I - "$DB" "${pair%%:*}" <<'PY'
+import sqlite3, sys, json
+con = sqlite3.connect(sys.argv[1])
+con.execute("create table if not exists profile_state_documents (domain text primary key, payload text)")
+con.execute("insert or replace into profile_state_documents values ('settings', ?)",
+            (json.dumps({"claudeAccountSwitchRunningSessions": sys.argv[2]}),))
+con.commit()
+PY
+  o=$(cd "$SANDBOX" && HI_ORCA_STATE_DB="$DB" FAKE_PLUGINS="$(plugins hi@highness:user)" bash "$S" status)
+  assert_eq "account-switch: ${pair%%:*} reads ${pair#*:}" "${pair#*:}" "$(row "$o" machine account-switch)"
+done
 assert_eq "launcher: from repo-setup" missing "$(row "$out" machine launcher)"
 assert_eq "plugin:hi on" on "$(row "$out" machine plugin:hi)"
 assert_eq "plugin:hi-guard off" off "$(row "$out" machine plugin:hi-guard)"
