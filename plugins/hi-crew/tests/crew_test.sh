@@ -262,7 +262,7 @@ printf 'Line one of the brief.\nLine & two with {{KEY}} literal.\n' >"$T/brief"
 out=$(cd "$T" && bash "$C" spec --key ABC-9 --title 'Do the thing' --brief-file "$T/brief")
 case "$out" in *'Ticket ABC-9: Do the thing'*) ok 'spec title' ;; *) no 'spec title' ;; esac
 case "$out" in *'Line & two with {{KEY}} literal.'*) ok 'brief copied verbatim' ;; *) no 'brief copied verbatim' ;; esac
-case "$out" in *'start with `ABC-9: `'*) ok 'key in commit rule' ;; *) no 'key in commit rule' ;; esac
+case "$out" in *'Commit subjects follow the repo'"'"'s own rules (`AGENTS.md`, `CONTRIBUTING.md`) and the team'*'only when neither sets a format, start them with `ABC-9: `.'*) ok 'commit rule: the repo and team first, the key as fallback' ;; *) no 'commit rule: the repo and team first, the key as fallback' ;; esac
 case "$out" in *'`(agent)`, so people'*) ok 'default marker' ;; *) no 'default marker' ;; esac
 case "$out" in *'(none configured'*) ok 'default process' ;; *) no 'default process' ;; esac
 case "$out" in *'- Never merge. That is a person'*) ok 'default: never merge' ;; *) no 'default: never merge' ;; esac
@@ -331,6 +331,15 @@ printf '{"crew":{"process":"Use the team-task skill.\\nThen the team-pr skill at
 out=$(cd "$T" && bash "$C" spec --key ABC-9 --title 'T' --brief-file "$T/brief")
 case "$out" in *'Use the team-task skill.'*'Then the team-pr skill at '*) ok 'process from config' ;; *) no 'process from config' ;; esac
 case "$out" in *'`[bot]`, so people'*) ok 'marker from config' ;; *) no 'marker from config' ;; esac
+# A team that sets its own commit format: the spec's own text states one commit rule, and it
+# defers to the team's rather than fixing a format of its own (highness#104).
+printf '{"crew":{"process":"Commit subjects: `[KEY] <Imperative summary>`, no feat:/fix: prefixes."}}' >"$HIGHNESS_CONFIG"
+out=$(cd "$T" && bash "$C" spec --key ABC-9 --title 'T')
+own=$(printf '%s\n' "$out" | sed '/^## Team process/,$d')
+check 'commit rule: the spec states exactly one' "$(printf '%s\n' "$own" | grep -ci 'commit subject')" 1
+check 'commit rule: no unconditional key format' "$(printf '%s\n' "$own" | grep -c 'Commit subjects start with')" 0
+case "$out" in *'## Team process'*'[KEY] <Imperative summary>'*) ok 'commit rule: the team format is in the spec' ;; *) no 'commit rule: the team format is in the spec' ;; esac
+printf '{"crew":{"process":"Use the team-task skill.\\nThen the team-pr skill at {{ROOT}}/pr.py.","marker":"[bot]"}}' >"$HIGHNESS_CONFIG"
 mkdir -p "$T/repo" && git -C "$T/repo" init -q && R=$(cd "$T/repo" && git rev-parse --show-toplevel)
 out=$(cd "$T/repo" && bash "$C" spec --key ABC-9 --title 'T')
 case "$out" in *"team-pr skill at $R/pr.py."*) ok '{{ROOT}} in process is the coordinator git root' ;; *) no '{{ROOT}} in process is the coordinator git root' ;; esac
