@@ -249,6 +249,15 @@ bash "$C" close ABC-7
 unset ORCA_CLI_COMMAND
 
 # --- the team's digest sections
+# A fake gh for the built-in forge sections (lib/forge.sh, tested in forge_test.sh): no PRs unless
+# $FAKE_FORGE names a file with a search answer.
+mkdir -p "$T/forgebin"
+cat >"$T/forgebin/gh" <<'EOF'
+#!/bin/sh
+case "$*" in *author:@me*) [ -n "${FAKE_FORGE:-}" ] && exec cat "$FAKE_FORGE" ;; esac
+echo '{"data":{"viewer":{"login":"me"},"search":{"nodes":[]}}}'
+EOF
+chmod +x "$T/forgebin/gh"; OLDPATH=$PATH; export PATH="$T/forgebin:$PATH"
 S="$T/secrepo"; mkdir -p "$S/.claude"; git -C "$S" init -q
 check 'sections: nothing without agenda.sections' "$(cd "$S" && bash "$C" sections)" ''
 cat >"$S/.claude/highness.json" <<'JSON'
@@ -263,6 +272,16 @@ out=$(cd "$S" && bash "$C" sections)
 check 'sections: each object tagged with its section, placeholders filled' "$(printf '%s\n' "$out" | jq -r 'select(.section == "Tickets") | (.group // "-") + " " + .title' | tr '\n' '|')" "you T-1|- $(cd "$S" && git rev-parse --show-toplevel) (bot)|"
 check 'sections: a failing source shows as an error' "$(printf '%s\n' "$out" | jq -r 'select(.section == "Broken") | .error')" 'exit 3: nope'
 check 'sections: a quiet source gives nothing' "$(printf '%s\n' "$out" | jq -r 'select(.section == "Quiet")' )" ''
+# The forge sections come last, and skip the PRs a worker owns.
+jq -n '{data: {viewer: {login: "me"}, search: {nodes: [
+  {number: 1, title: "Mine", url: "https://github.com/o/r/pull/1", isDraft: true, headRefName: "x", baseRefName: "main",
+   updatedAt: "2026-01-01T00:00:00Z", repository: {nameWithOwner: "o/r"}},
+  {number: 2, title: "Worker", url: "https://github.com/o/r/pull/2", isDraft: true, headRefName: "y", baseRefName: "main",
+   updatedAt: "2026-01-01T00:00:00Z", repository: {nameWithOwner: "o/r"}}]}}}' >"$T/forge.json"
+bash "$C" record FRG-1 '{"pr":"https://github.com/o/r/pull/2"}'
+out=$(cd "$S" && FAKE_FORGE="$T/forge.json" bash "$C" sections)
+check 'sections: forge PRs last, a worker'"'"'s PR left out' "$(printf '%s\n' "$out" | tail -1 | jq -r '[.section, .title] | join("|")')|$(printf '%s\n' "$out" | grep -c 'pull/2')" 'my PRs|o/r#1 · Mine|0'
+bash "$C" close FRG-1
 # From a child clone the umbrella lists: the umbrella's sections, run with {{ROOT}} the umbrella.
 printf 'kid\n' >"$S/repos.txt"; mkdir -p "$S/kid" && git -C "$S/kid" init -q
 out=$(cd "$S/kid" && bash "$C" sections)
@@ -285,6 +304,7 @@ out=$(cd "$S" && bash "$C" sections)
 check 'sections: open threads of this project first' "$(printf '%s\n' "$out" | head -1 | jq -r '[.section, .group, .title, .resume] | join("|")')" "threads|you|Login fix (AB-1)|cd '$SP' && claude --resume s1"
 check 'sections: no done or foreign threads' "$(printf '%s\n' "$out" | jq -r 'select(.section == "threads") | .title' | wc -l | tr -d ' ')" '1'
 rm -rf "$HIGHNESS_STATE/threads"
+export PATH=$OLDPATH
 
 # --- spec (the fake orca: spec asks this session's Run for a pinned root, and must not reach a real one)
 export ORCA_CLI_COMMAND="$T/bin/fakeorca"

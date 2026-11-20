@@ -175,7 +175,9 @@
 #                                     a hung shell keeps a session "working", and only its age shows
 #   crew.sh sections                  the team's own digest sections (config agenda.sections), one
 #                                     JSON object per line: section, group (you | others | later | done),
-#                                     title, next, url, since; or section and error. See cmd_sections
+#                                     title, next, url, since; or section and error. See cmd_sections.
+#                                     Then the built-in forge sections (lib/forge.sh): the person's
+#                                     PRs no worker owns, and the reviews waiting on them
 #   crew.sh orca                      the Orca executable this host should use
 #   crew.sh setup-status              what hi-crew needs on this machine and from this person, one
 #                                     row per item, name<TAB>state<TAB>detail (/hi:setup renders them):
@@ -906,12 +908,12 @@ tracker_cmd() { printf 'bash %s --root %s' "$(q "$HERE/tracker.sh")" "$(q "$1")"
 # gives one line with "error" set instead, so a broken source shows rather than vanishes.
 cmd_sections() {
   need_jq
-  local root secs n i name cmd line out rc
+  local root secs n i name cmd line out rc team=''
   root=$(derive_root)
   # The person's open work threads from the hi-threads journal, when that plugin keeps one here.
   bash "$HERE/threads-read.sh" agenda 2>/dev/null | jq -c '{section: "threads"} + .' 2>/dev/null
   secs=$(cd "$root" && bash "$CONFIG" get '.agenda.sections') || secs=''
-  [ -n "$secs" ] && [ "$secs" != null ] || return 0
+  [ -n "$secs" ] && [ "$secs" != null ] || secs='[]'
   n=$(printf '%s' "$secs" | jq 'if type == "array" then length else 0 end' 2>/dev/null) || n=0
   i=0
   while [ "$i" -lt "${n:-0}" ]; do
@@ -926,8 +928,12 @@ cmd_sections() {
         '{section: $s, error: "exit \($rc): \($e)"}'
       continue
     fi
-    printf '%s\n' "$out" | jq -Rc --arg s "$name" 'fromjson? | select(type == "object") | {section: $s} + .'
+    out=$(printf '%s\n' "$out" | jq -Rc --arg s "$name" 'fromjson? | select(type == "object") | {section: $s} + .')
+    [ -n "$out" ] && printf '%s\n' "$out" && team="$team$out"$'\n'
   done
+  # The built-in forge sections (lib/forge.sh): what the team's sections and the workers' PRs
+  # already show is not listed again.
+  { printf '%s' "$team"; cmd_list | jq -c 'select(.pr) | {url: .pr}'; } | bash "$HERE/forge.sh" --root "$root" sections
 }
 
 cmd_watch() {
