@@ -146,7 +146,13 @@ Several tickets: run steps 1–7 for each, then end the turn once.
   `picked` holds when they take it), and null when the ask recommended none; `bash "$C" choices`
   then reads each answer as taken as recommended or against it.
   `took` is `own` when they wrote an option of their own and `reframed` when they rejected the
-  question's framing; those say the most about what the options missed. If relay says the reply
+  question's framing; those say the most about what the options missed. Relay prints
+  `relayed <KEY> <choice> → <dispatch>` when it sent. It is safe to repeat: the same answer can
+  reach you twice (a resumed session gets the user's message again), and relay for an ask already
+  answered sends nothing and prints `already relayed <when>`; tell the user it was sent then, and
+  do not send it another way. Only when the user deliberately changes an answer already sent,
+  relay again with `--again`: the worker gets the second answer, recorded as superseding the
+  first. If relay says the reply
   was sent but not recorded, record each line it prints with `bash "$C" choice <KEY> '<line>'`.
   If it says the reply was not sent (the worker is gone), it kept it: offer the round below
   (`bash "$C" stranded` shows the kept body).

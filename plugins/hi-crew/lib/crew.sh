@@ -15,10 +15,13 @@
 #                                     their loses:/leans on: lines, what the person took ("option",
 #                                     "own" or "reframed"), their reply verbatim. Kept across close,
 #                                     so a person's choices can be read back over many tickets
-#   crew.sh relay <KEY> [--id <message_id>] [--action <action_id>] <reply-file>
+#   crew.sh relay <KEY> [--id <message_id>] [--action <action_id>] [--again] <reply-file>
 #                                     THE way to answer a worker's question or decision gate: sends
 #                                     the reply (orchestration reply) and appends its choices in the
 #                                     same step. --id may be left out when <KEY> has one open ask.
+#                                     Safe to repeat: an ask already answered is not sent again
+#                                     ("already relayed <when>", exit 0); --again sends a second
+#                                     answer (the person changed their mind), recorded as superseding.
 #                                     --action: the person said yes to the worker's prepared action;
 #                                     it runs once here and the worker hears its outcome.
 #                                     The reply file and the record are described at cmd_relay
@@ -46,7 +49,8 @@
 # reframed | null), picked, reply (the person's words, verbatim), recommended (the option name
 # the asker recommended, null when the ask made no recommendation; absent on lines written
 # before it was recorded). relay adds ask (the message id), run, dispatch, asked_at, ask_body
-# (the ask verbatim: its options are usually prose in it) and sent (the body relayed). New
+# (the ask verbatim: its options are usually prose in it) and sent (the body relayed); a line
+# relay --again wrote adds supersedes (the `at` of the answer it replaces). New
 # fields may be added; these keep their names and meaning. `choices` adds as_recommended, not
 # stored: true when the person took the recommended option, false when they took another one,
 # their own or reframed the question, null when there was no recommendation (or none recorded)
@@ -291,7 +295,17 @@ cmd_choice() {
     '{key: $key, at: $now} + $add' >>"$DIR/choices.jsonl" || die "choice: could not write $DIR/choices.jsonl"
 }
 
-# relay <KEY> [--id <message_id>] <reply-file>: answer a worker's question or decision gate and
+# relayed_last <KEY> <jq filter> <value>: the filter's output ($v is <value>) for the last of
+# <KEY>'s delivered answers to an ask, empty when none matches. A line marked undelivered (Orca
+# refused the reply) is no answer the worker got; one recorded by hand with `choice` after relay
+# said "sent but not recorded" carries the ask id and counts.
+relayed_last() {
+  [ -f "$DIR/choices.jsonl" ] || return 0
+  jq -r --arg key "$1" --arg v "$3" "select(.key == \$key and (.ask // \"\") != \"\" and (.undelivered | not)) | $2" \
+    "$DIR/choices.jsonl" 2>/dev/null | tail -1
+}
+
+# relay <KEY> [--id <message_id>] [--action <action_id>] [--again] <reply-file>: answer a worker's question or decision gate and
 # record the person's choices in one step. The reply file is JSON:
 #   {"body": "<the text sent to the worker>",
 #    "points": [{"question":…, "options":[{"name":…,"loses":…,"leans_on":…}],
@@ -305,13 +319,20 @@ cmd_choice() {
 # once, here, before the reply goes out, and the reply starts with its outcome; the body follows
 # as the person's words. A reply Orca refuses (the worker is gone) is kept for `stranded`, and its
 # choice lines are still written, marked undelivered: the person decided all the same.
+# Idempotent per ask: a coordinator can be handed one answer twice (its session resumed again,
+# say). When an answer to this ask is already delivered, relay sends, runs and writes nothing,
+# prints "already relayed <when>" and exits 0. An undelivered line does not count, so a retry
+# after a refused send still goes out. --again sends all the same, for the person's deliberate
+# second answer; its lines carry supersedes, the `at` of the answer they replace.
+# On success it prints one line: relayed <KEY> <what was picked> → <dispatch>.
 cmd_relay() {
-  local key='' id='' file='' aid='' ask reply recs out body outcome
-  local usage='usage: relay <KEY> [--id <message_id>] [--action <action_id>] <reply-file>'
+  local key='' id='' file='' aid='' again='' ask reply recs out body outcome prev
+  local usage='usage: relay <KEY> [--id <message_id>] [--action <action_id>] [--again] <reply-file>'
   while [ $# -gt 0 ]; do
     case "$1" in
       --id) id=${2:-}; shift 2 ;;
       --action) aid=${2:-}; [ -n "$aid" ] || die "$usage"; shift 2 ;;
+      --again) again=1; shift ;;
       -*) die "relay: unknown argument '$1'" ;;
       *) if [ -z "$key" ]; then key=$1; elif [ -z "$file" ]; then file=$1; else die "$usage"; fi; shift ;;
     esac
@@ -328,6 +349,12 @@ cmd_relay() {
     d=$(cmd_get "$key" 2>/dev/null | jq -r '.dispatch // empty')
     [ -n "$d" ] || die "relay: no dispatch recorded for $key; pass --id <message_id>"
     ids=$(cmd_asks | awk -F'\t' -v d="$d" '($2 == "question" || $2 == "decision_gate") && $4 == d { print $1 }')
+    if [ -z "$ids" ] && [ -z "$again" ]; then
+      # An answered ask leaves the open ones: a repeat with no --id finds none. The last answer
+      # this Dispatch was delivered says it is a repeat, not a mistake.
+      prev=$(relayed_last "$key" 'select(.dispatch == $v) | "\(.at) (\(.ask))"' "$d")
+      [ -z "$prev" ] || { printf 'already relayed %s; %s has no open question\n' "$prev" "$key"; return 0; }
+    fi
     [ -n "$ids" ] || die "relay: $key has no open question; pass --id <message_id>"
     [ "$(printf '%s\n' "$ids" | wc -l | tr -d ' ')" -eq 1 ] \
       || die "relay: $key has several open questions ($(printf '%s' "$ids" | tr '\n' ' ')); pass --id"
@@ -336,6 +363,11 @@ cmd_relay() {
   ask=$(inbox | jq -ce --arg id "$id" 'map(select(.id == $id)) | first
         | select(.type == "question" or .type == "decision_gate")') \
     || die "relay: $id is not a question or decision gate in a hi-crew Run"
+  prev=$(relayed_last "$key" 'select(.ask == $v) | .at' "$id")
+  if [ -n "$prev" ] && [ -z "$again" ]; then
+    printf 'already relayed %s (%s %s); nothing sent. --again sends a second answer\n' "$prev" "$key" "$id"
+    return 0
+  fi
   mkdir -p "$DIR" && [ -w "$DIR" ] || die "relay: cannot write $DIR"
   body=$(printf '%s' "$reply" | jq -r .body)
   if [ -n "$aid" ]; then
@@ -350,11 +382,12 @@ The person's reply, for context (the step above is done; do not run it yourself)
 $body"
   fi
   recs=$(jq -nc --argjson r "$reply" --argjson a "$ask" --arg key "$key" --arg sent "$body" --arg aid "$aid" \
-      --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
+      --arg prev "$prev" --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
     ($a.payload // "{}" | fromjson? // {}) as $p
     | {key: $key, at: $now, ask: $a.id, run: $a.run_id, dispatch: $a.dispatch, asked_at: $a.created_at,
        ask_body: ($a.body // $p.question // ""), sent: $sent}
-      + (if $aid != "" then {action: $aid} else {} end) as $base
+      + (if $aid != "" then {action: $aid} else {} end)
+      + (if $prev != "" then {supersedes: $prev} else {} end) as $base
     | (if ($r.points // []) == [] then [{question: null, took: null}] else $r.points end)[]
     | {key: $key, at: $now, question: null, recommended: null}
       + (if (($p.options // []) | length) > 0 then {options: $p.options} else {} end)
@@ -370,7 +403,13 @@ $body"
     die "relay: the reply was not sent (kept: crew.sh stranded shows it, to send by a new round)${aid:+; action $aid DID run, its outcome is in the kept reply}: $out"
   fi
   [ -z "$aid" ] || act_set "$(act_meta "$key" "$aid")" '{"delivered": true}'
-  printf '%s\n' "$recs" >>"$DIR/choices.jsonl" && return 0
+  if printf '%s\n' "$recs" >>"$DIR/choices.jsonl"; then
+    printf 'relayed %s %s → %s\n' "$key" \
+      "$(printf '%s' "$reply" | jq -r '[(.points // [])[] | (.picked // .took // "?") | tostring]
+        | if length == 0 then "(no points)" else join(", ") end')$([ -z "$prev" ] || printf ' (again, supersedes %s)' "$prev")" \
+      "$(printf '%s' "$ask" | jq -r '.dispatch // "?"')"
+    return 0
+  fi
   printf 'crew: relay: the reply WAS sent, but %s/choices.jsonl could not be written; record each line with crew.sh choice %s <line>:\n%s\n' \
     "$DIR" "$key" "$recs" >&2
   exit 2
