@@ -302,6 +302,32 @@ auth (email + API token) unless `"auth": "bearer"` (a personal access token); Yo
 permanent token as bearer. A plain `http://` URL needs `"allow_http": true`. GitHub uses `gh`'s own
 login. `/hi:setup` checks that the token answers.
 
+### Forge sections
+
+The agenda lists your pull requests and the reviews waiting on you by itself, from GitHub through
+`gh`'s own login (`lib/forge.sh`, after the team's `agenda.sections`). No `gh` on the machine:
+nothing. A PR a worker owns, or one a team section already lists, shows once.
+
+- **my PRs**: your open PRs, each with its next step: CI failing (which checks), changes requested,
+  unanswered review comments (an unresolved thread counts while it is outdated too; a reply of
+  yours on the PR, or a review with a body, answers what came before it), merge conflicts, a draft
+  to mark ready (or, when its branch or title names a ticket a tracker section shows in role
+  `waiting`, a draft that waits on that ticket), a re-request once the changes are answered,
+  approved and green: merge it; or waiting on reviewers, CI, a review check, auto-merge.
+- **reviews asked of me** and **reviews asked of my team**: the PRs whose review was requested of
+  you by name or through a team. A draft review of yours not yet submitted is marked; one you
+  already reviewed links to what changed since your review.
+
+Settings, under `agenda.forge` (`"forge": false` turns the sections off):
+
+- `query`: search terms added to every search, say `org:acme`; default every repo you can see.
+- `approvals`: how many approvals a PR needs; default GitHub's own review decision.
+- `review_labels`: labels that summon reviewers; a ready PR with none is told to add the first.
+- `review_checks`: a regex of check names that are review gates, not CI (waited on, never "CI
+  failing").
+- `reviews`: extra review queues, `[{"name": "...", "query": "label:needs-review", "group":
+  "others"}]`, each a section of its own.
+
 ## Orca
 
 `hi` writes a small launcher, `~/.local/bin/highness`, at session start, so Orca (outside Claude

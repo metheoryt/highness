@@ -28,6 +28,10 @@ this skill" printed above, two levels up.
    someone else, `later` not started yet, `done`), `title`, `next`, `url`, `since`; or `section` and `error` when that
    source failed (say so in one line, do not guess its content). A ticket the workers already
    carry shows once, under the worker.
+   **The forge sections** come last in the same output, built in (README, Forge sections): `my
+   PRs` (the person's open PRs no worker owns, `next` the step in words), `reviews asked of me`,
+   `reviews asked of my team` and any queue the team configured. A worker's PR is never among
+   them; show these like any section.
    **Threads** come first among the sections, as section `threads`, when the hi-threads plugin
    keeps a journal on this machine: the work the person left in any session of this project, with
    `status`, `waits_on`, `open_items` (what is left), `session` and `cwd` (the session it was
