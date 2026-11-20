@@ -82,7 +82,7 @@ query($q: String!) {
         reviews(last: 50) { nodes { author { __typename login } state submittedAt body } }
         comments(last: 50) { nodes { author { __typename login } createdAt } }
         reviewThreads(first: 100) {
-          nodes { isResolved comments(last: 1) { nodes { author { __typename login } createdAt } } }
+          nodes { isResolved comments(last: 1) { totalCount nodes { author { __typename login } createdAt } } }
         }
         commits(last: 1) {
           nodes { commit { committedDate statusCheckRollup { contexts(first: 100) { nodes {
@@ -173,7 +173,10 @@ if raw=$(search "$MINE_QUERY" 'is:pr is:open author:@me'); then
        | map(select(. != null)) | max // "") as $said
     | (($p.commits.nodes[0].commit.committedDate // "") as $c | [$said, $c] | max) as $answered
     # Unresolved threads count whether outdated or not: a thread on rewritten lines still waits.
-    | [($p.reviewThreads.nodes // [])[] | select(.isResolved == false) | .comments.nodes[0] | select(. != null) | human] as $open
+    # A finding of a bot that nobody answered yet counts (on a PR worked by hand, nothing else
+    # shows it); a later reply of a bot in a thread does not reopen it.
+    | [($p.reviewThreads.nodes // [])[] | select(.isResolved == false) | .comments as $c
+       | $c.nodes[0] | select(. != null) | select(($c.totalCount // 1) == 1 or (bot | not))] as $open
     | ([$open[] | select(.author.login != $me and .createdAt > $said)] | length) as $threadsOwed
     | (($open | length) - $threadsOwed) as $threadsAnswered
     | ([($p.comments.nodes // [])[] | human | select(.author.login != $me and .createdAt > $said)]

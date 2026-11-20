@@ -75,6 +75,11 @@ next_of() { printf '%s\n' "$1" | jq -r --arg n "$2" 'select(.title | startswith(
   pr "{\"number\":9,\"comments\":{\"nodes\":[{\"author\":$(U me),\"createdAt\":\"2026-01-02T00:00:00Z\"},{\"author\":$(U rev),\"createdAt\":\"2026-01-03T00:00:00Z\"}]}}"
   # 10: the changes request answered (a later commit, nothing owed): re-request.
   pr "{\"number\":10,\"latestOpinionatedReviews\":{\"nodes\":[{\"author\":$(U rev),\"state\":\"CHANGES_REQUESTED\",\"submittedAt\":\"2025-12-30T00:00:00Z\"}]}}"
+  # 14: a bot's finding nobody answered counts; a bot's reply after mine in another thread does not.
+  pr "{\"number\":14,\"reviewDecision\":\"REVIEW_REQUIRED\",\"comments\":{\"nodes\":[{\"author\":$(U me),\"createdAt\":\"2026-01-02T00:00:00Z\"}]},
+      \"reviewThreads\":{\"nodes\":[
+        {\"isResolved\":false,\"comments\":{\"totalCount\":1,\"nodes\":[{\"author\":{\"login\":\"coderabbitai\",\"__typename\":\"Bot\"},\"createdAt\":\"2026-01-03T00:00:00Z\"}]}},
+        {\"isResolved\":false,\"comments\":{\"totalCount\":3,\"nodes\":[{\"author\":{\"login\":\"coderabbitai\",\"__typename\":\"Bot\"},\"createdAt\":\"2026-01-03T00:00:00Z\"}]}}]}}"
   # 11: already on the agenda (a worker's PR).
   pr '{"number":11,"url":"https://github.com/o/r/pull/11/"}'
 } | answer >"$T/fx/mine.json"
@@ -93,6 +98,7 @@ check 'mine: waiting on a reviewer; bots ask nothing' "$(next_of "$out" 7)" 'oth
 check 'mine: conflicts' "$(next_of "$out" 8)" 'you | merge conflicts with main: merge it in'
 check 'mine: a person'"'"'s comment after mine' "$(next_of "$out" 9)" 'you | 1 unanswered review comment'
 check 'mine: an answered changes request is re-requested' "$(next_of "$out" 10)" 'you | re-request a review from @rev: their changes are answered'
+check 'mine: an unanswered bot finding counts, a bot'"'"'s reply does not' "$(next_of "$out" 14)" 'you | 1 unanswered review comment'
 check 'mine: a PR the agenda shows is left out' "$(next_of "$out" 11)" ''
 check 'mine: section and fields' "$(printf '%s\n' "$out" | head -1 | jq -r '[.section, .url, .since] | join("|")')" 'my PRs|https://github.com/o/r/pull/1|2026-01-05T00:00:00Z'
 
