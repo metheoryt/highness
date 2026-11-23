@@ -679,14 +679,13 @@ for p in 'sudo id' 'true; sudo id' 'true && sudo id' 'false || sudo id' 'echo | 
          '(sudo id)' 'x=$(sudo id)' 'x=`sudo id`' 'FOO=1 BAR=2 sudo id'; do
   denies "121: top level: $p"  "$p"
 done
-for p in 'sudo id' 'true; sudo id' 'true && sudo id' 'false || sudo id' 'echo | sudo id' '(sudo id)' 'FOO=1 sudo id'; do
+for p in 'sudo id' 'true; sudo id' 'true && sudo id' 'false || sudo id' 'echo | sudo id' '(sudo id)' \
+         'FOO=1 sudo id' 'x=$(sudo id)' 'x=`sudo id`'; do
   denies "121: ssh: $p"        "ssh box '$p'"
   denies "121: bash -c: $p"    "bash -c '$p'"
   denies "121: eval: $p"       "eval '$p'"
 done
 denies "121: ssh, unquoted"                   'ssh box sudo id'
-denies "121: ssh, \$( ) in the remote command" "ssh box 'x=\$(sudo id)'"
-denies "121: ssh, backticks in it"            "ssh box 'x=\`sudo id\`'"
 for p in 'grep -v sudo log' 'echo sudo' 'git log --grep=sudo' 'grep sudo f | wc -l'; do
   allows "121: top level: $p"  "$p"
   allows "121: ssh: $p"        "ssh box '$p'"
@@ -723,7 +722,9 @@ allows "121: env -S echo sudo"                "env -S 'echo sudo'"
 for c in "<<'EOF' bash" "docker exec -i c sh <<'EOF'" "kubectl exec -i p -- bash <<'EOF'" \
          "xargs -I{} sh -c {} <<'EOF'" "parallel <<'EOF'" "at now <<'EOF'" "source /dev/stdin <<'EOF'" \
          "\$X <<'EOF'" "r <<'EOF' | sh" "r <<'EOF' >(sh)" "(bash) <<'EOF'" "{ bash; } <<'EOF'" \
-         "git -c alias.x='!sh' x <<'EOF'" 'while read -r c; do eval "$c"; done <<'"'EOF'"; do
+         "git -c alias.x='!sh' x <<'EOF'" 'while read -r c; do eval "$c"; done <<'"'EOF'" \
+         "make -f - <<'EOF'" "crontab - <<'EOF'" "chroot /x <<'EOF'" "unshare -r <<'EOF'" \
+         "nsenter -t 1 -a <<'EOF'" "docker run -i img <<'EOF'" "kubectl exec -i p <<'EOF'"; do
   denies "121: a body run by: $c" "$(printf '%s\nsudo id\nEOF' "$c")"
 done
 denies "121: a body inside \$( ) is code"     "$(printf "x=\$(r <<'EOF'\nsudo id\nEOF\n)")"

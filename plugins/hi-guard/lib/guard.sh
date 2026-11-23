@@ -79,7 +79,8 @@
 # `<<` belongs to an exempt command, to `git commit|tag|notes` or `gh pr|issue|release` (a
 # message), or to a `cat` that is the whole of a "$(…)" argument of one of those two;
 # also to a top-level command whose segment runs no code (codeseg in the scan: no shell, ssh,
-# eval, source, exec, xargs, parallel, at, script, flock, env, sudo word, no expansion as the
+# eval, source, exec, xargs, parallel, at, script, flock, env, sudo, make, crontab, chroot-like
+# or container word (an interpreter like perl is data, as python was), no expansion as the
 # command word, not git, not the end of a compound command, not `( … )`) and whose output
 # feeds nothing further on its line (no `|`, no `(` after it). Every other body (cat … | bash,
 # eval "$(cat <<EOF)", bash /dev/stdin, ssh host <<'EOF', done <<EOF, …) stays checked the
@@ -293,12 +294,14 @@ function datacmd() { return CW ~ /^(cat|tee|python|python3|node|jq|awk|sed)$/ }
 # codeseg(): the segment (tv, CW set) may run a heredoc body as code: no command word (the body
 # goes to a `( … )` or nothing yet), the end of a compound command, git (an alias can run a shell),
 # an expansion as the command word, or any word that is a shell, ssh, or a command that runs
-# its stdin or its arguments (`docker exec -i c sh`, `xargs`, `parallel`, `at`, `source`).
+# its stdin or its arguments (`docker exec -i c sh`, `xargs`, `parallel`, `at`, `source`), make
+# (recipes run in sh), crontab, a command that starts a shell when given none (`chroot /x`,
+# `unshare`, `nsenter`, `runuser`, `docker run -i img`), or a container tool.
 function codeseg(   k, b) {
   if (CW == "" || CW ~ /^(done|fi|esac|\}|git)$/ || index(CW, "$")) return 1
   for (k = 1; k <= tn; k++) {
     b = tv[k]; if (length(b) <= 256) sub(/.*\//, "", b)
-    if (b ~ /^(sh|bash|dash|zsh|ksh|mksh|fish|busybox|su|ssh|eval|source|\.|exec|xargs|parallel|at|batch|script|flock|env|sudo|doas)$/ || tv[k] ~ /^\$.*SHELL/) return 1
+    if (b ~ /^(sh|bash|dash|zsh|ksh|mksh|fish|busybox|su|ssh|eval|source|\.|exec|xargs|parallel|at|batch|script|flock|env|sudo|doas|make|gmake|bmake|crontab|chroot|unshare|nsenter|runuser|setpriv|machinectl|systemd-run|docker|podman|kubectl)$/ || tv[k] ~ /^\$.*SHELL/) return 1
   }
   return 0
 }
