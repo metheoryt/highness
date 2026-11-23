@@ -870,7 +870,7 @@ were started. Before you install, build, test or commit anything, wait until it 
 prints nothing once it is (run it again until then; do not sleep-poll in the foreground, use a
 background wait):
 
-    ps -A -o args= | grep -F '$1' | grep -Fv 'grep -F'
+    ps -A -o args= | grep -F $(q "$1") | grep -Fv 'grep -F'
 
 Its output is in the workspace's Setup terminal. If it failed, say so to the coordinator before
 you go on.
