@@ -102,6 +102,24 @@ check 'mine: an unanswered bot finding counts, a bot'"'"'s reply does not' "$(ne
 check 'mine: a PR the agenda shows is left out' "$(next_of "$out" 11)" ''
 check 'mine: section and fields' "$(printf '%s\n' "$out" | head -1 | jq -r '[.section, .url, .since] | join("|")')" 'my PRs|https://github.com/o/r/pull/1|2026-01-05T00:00:00Z'
 
+# Bot-only activity after my last word in another repo: a gatekeeper app assigning reviewers, then
+# a review bot on a plain account (comment and review). Its crew.bots entry sits in the user
+# file's overlay for that repo, which the root never reads: without it the bot is a person.
+pr "{\"number\":15,\"repository\":{\"nameWithOwner\":\"P/Q\"},\"reviewDecision\":\"REVIEW_REQUIRED\",\"mergeStateStatus\":\"BLOCKED\",
+    \"reviewRequests\":{\"nodes\":[{\"requestedReviewer\":{\"__typename\":\"User\",\"login\":\"rev\"}},{\"requestedReviewer\":{\"__typename\":\"User\",\"login\":\"release-reviewer\"}}]},
+    \"comments\":{\"nodes\":[{\"author\":$(U me),\"createdAt\":\"2026-01-02T00:00:00Z\"},
+                              {\"author\":{\"login\":\"gatekeeper\",\"__typename\":\"Bot\"},\"createdAt\":\"2026-01-03T00:00:00Z\"},
+                              {\"author\":$(U release-reviewer),\"createdAt\":\"2026-01-03T00:00:00Z\"}]},
+    \"reviews\":{\"nodes\":[{\"author\":$(U release-reviewer),\"state\":\"COMMENTED\",\"body\":\"release review: ok\",\"submittedAt\":\"2026-01-04T00:00:00Z\"}]}}" \
+  | answer >"$T/fx/mine.json"
+n15() { printf '%s\n' "$1" | jq -r 'select(.title | startswith("P/Q#15 ")) | .group + " | " + .next'; }
+printf '{"crew":{"bots":["ci-helper"]}}' >"$HIGHNESS_CONFIG"
+check 'bots: a plain-account bot with no entry reads as a person' "$(n15 "$(run)")" 'you | 2 unanswered review comments'
+printf '{"crew":{"bots":["ci-helper"]},"repos":{"p/q":{"crew":{"bots":["release-reviewer"]}}}}' >"$HIGHNESS_CONFIG"
+check 'bots: the repo overlay names it; bot-only activity is no review activity' "$(n15 "$(run)")" 'others | waiting on @rev to review'
+printf '{"repos":{"p":{"crew":{"bots":["release-reviewer"]}},"other":{"crew":{"bots":["rev"]}}}}' >"$HIGHNESS_CONFIG"
+check 'bots: an owner overlay, and only for its own repos' "$(n15 "$(run)")" 'others | waiting on @rev to review'
+
 # Config: review labels, review checks, extra search terms.
 pr '{"number":12,"reviewDecision":"REVIEW_REQUIRED","commits":{"nodes":[{"commit":{"committedDate":"2026-01-01T00:00:00Z","statusCheckRollup":{"contexts":{"nodes":[
     {"__typename":"StatusContext","context":"gate/reviews","state":"PENDING"},
