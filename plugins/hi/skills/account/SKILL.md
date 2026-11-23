@@ -1,6 +1,6 @@
 ---
 name: account
-description: Move the live agent sessions on this machine (the coordinator, hi-crew workers, other work sessions) onto the Claude account Orca has selected, each resuming its own chat in its own Orca pane, so workers keep their Dispatch and the coordinator its Run. Use after switching the Claude account in Orca (`orca account select` or the UI), when the user says "move my sessions to the new account", "switch the account for all agents", «перенеси сессии на новый аккаунт», «переключи агентов на другой аккаунт», or when the hi-crew agenda offered a switch and the person said yes.
+description: Move the live agent sessions on this machine (the coordinator, hi-crew workers, other work sessions) onto the Claude account Orca has selected, each resuming its own chat in its own Orca pane. Use after switching the Claude account in Orca (`orca account select` or the UI), when the user says "move my sessions to the new account", "switch the account for all agents", «перенеси сессии на новый аккаунт», «переключи агентов на другой аккаунт», or when the hi-crew agenda offered a switch and the person said yes.
 ---
 
 # /hi:account
@@ -16,7 +16,11 @@ there is nothing to move.
 After `orca account select`, a session already running stays on the old account. `account.sh
 move` moves each one: it waits until the session is idle, types `/exit` into its Orca pane, then
 `claude --resume <its session> <its own flags>`. Orca's pane shell starts `claude` on the
-selected account. The pane keeps its terminal handle, so Orca's messages still reach the session.
+selected account. The pane keeps its terminal handle and the session its chat. An orchestration
+worker's Dispatch does not survive the `/exit`, though: Orca fails it as soon as the worker's
+Claude exits (measured on Orca 1.4.271, highness#110). For a hi-crew worker, the coordinator's
+`crew.sh resume <KEY>` then gives the moved session a new Dispatch in the same pane; say so in
+the report for each worker moved.
 
 **Orca's own restart loses workers.** On a switch Orca can restart the sessions itself, but in a
 new pane with a new terminal handle: the chat survives, a hi-crew worker's Dispatch does not
