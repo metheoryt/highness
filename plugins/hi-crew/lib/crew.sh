@@ -718,7 +718,7 @@ cmd_spec() {
 # spec itself is never inlined (it is long). Every error is silence: a session start must never
 # fail on it.
 cmd_reentry() {
-  local in cwd real f row key title spec pr msg
+  local in cwd real f row="" key title spec pr msg
   in=$(head -c 16384 2>/dev/null); cat >/dev/null 2>&1
   command -v jq >/dev/null 2>&1 || return 0
   cwd=$(printf '%s' "$in" | jq -r '.cwd // empty' 2>/dev/null)

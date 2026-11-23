@@ -17,6 +17,12 @@ command -v jq >/dev/null || { echo '  skip: no jq'; exit 0; }
 S="$T/state/crew"
 mkdir -p "$T/bin" "$T/root" "$S/specs" "$S/handles"
 
+# No open ticket at all (an empty crew dir): reentry is silent and exits 0. It used to die on an
+# unset `row` under `set -u`, which failed every compaction's SessionStart hook on that box.
+err=$(printf '{"cwd":"%s"}' "$T" | bash "$C" reentry 2>&1 >/dev/null); rc=$?
+check 'reentry with no open tickets: exit 0, nothing on stderr' "$rc|$err" '0|'
+check 'reentry with no open tickets: no context' "$(printf '{"cwd":"%s"}' "$T" | bash "$C" reentry 2>/dev/null)" ''
+
 # Fake Orca: worker-start keeps its arguments and its spec, and answers a receipt (or fails with
 # FAKE_FAIL); worker-show says live for the dispatches in FAKE_LIVE, else what Orca answered for
 # a real lost worker (measured); worker-list has ctx_old, exited, in the workspace; the inbox
