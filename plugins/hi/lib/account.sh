@@ -8,8 +8,11 @@
 # old account. To move it, this script types `/exit` into its Orca pane and then the same
 # `claude --resume <id> …` line. The pane's shell starts `claude` through Orca's wrapper
 # function, which reads the selected account (ORCA_CLAUDE_PROFILE_POINTER) at every launch.
-# The pane keeps its terminal handle, so a hi-crew worker keeps its Dispatch and a coordinator
-# its Run. Measured: a worker moved between its ask and the answer got the answer and reported.
+# The pane keeps its terminal handle and the session its chat, and a coordinator keeps its Run.
+# An orchestration worker does not keep its Dispatch: Orca fails it as soon as the worker's
+# Claude exits (stage process_exited, measured on Orca 1.4.271, highness#110; on 1.4.265 a worker
+# moved between its ask and the answer had still reported, highness#106). hi-crew's
+# `crew.sh resume <KEY>` gives the moved session a new Dispatch in the same pane.
 #
 #   account.sh target                 the selected account: config dir<TAB>email<TAB>org uuid
 #   account.sh sessions               live agent sessions in Orca panes, every account, one per line:

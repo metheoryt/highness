@@ -56,7 +56,9 @@ this skill" printed above, two levels up.
    due, disabled, logged out) named as such and never offered. Offer
    a switch to one of them; never switch on your own: which plan pays is the person's call. On
    their yes: hi's `/hi:account` selects it and moves the live sessions onto it, each in its own
-   pane, so workers keep their Dispatch. Never run `$O account select` here yourself: unless
+   pane with its chat. Orca fails a moved worker's Dispatch when its Claude exits (Orca 1.4.271):
+   after the move, `bash "$C" resume <KEY>` for each worker it moved gives it a new Dispatch in
+   that same pane and session. Never run `$O account select` here yourself: unless
    Orca's account-switch setting is "Never restart", Orca then restarts every session in a new
    pane and each worker loses its Dispatch; `/hi:account` checks it first. Without the hi plugin,
    the person switches in the status bar, unticks the workers, and restarts them by hand. Then
@@ -136,10 +138,13 @@ and say in one line that Orca now wakes this session, not the other one, for tha
 - **A worker lost without reporting**: an escalation in `asks` whose line says the worker "is
   gone ... without sending worker_done" (Orca's "Worker lost without reporting": a usage limit,
   an account switch, a closed session). Find its ticket by the dispatch in the facts
-  (`bash "$C" list`), and offer "resume it in its own workspace?". On a yes,
-  `bash "$C" resume <KEY>`: a new worker in the recorded workspace and Run, on the spec copy under
-  a note to continue from the branch and its PR (no second PR); it records the new dispatch, which
-  retires the escalation. It refuses when the workspace is gone or the PR is merged or closed:
+  (`bash "$C" list`), and offer "resume it?". On a yes, `bash "$C" resume <KEY>`. When the worker's
+  Orca pane is still open and its Claude session is found, that session gets a new Dispatch there,
+  relaunched in the pane first if it no longer runs: it keeps its chat (stderr says "in its own
+  pane"). Otherwise a new worker in the recorded workspace and Run, on the spec copy under a note
+  to continue from the branch and its PR (no second PR). Either way it records the new dispatch,
+  which retires the escalation. If it says it relaunched the session but did not see it start,
+  look at that pane (a dialog?) before anything else, then run `resume` again. It refuses when the workspace is gone or the PR is merged or closed:
   say so, and offer `/hi-crew:start` for a fresh attempt or closing the facts. Never Orca's
   `--retry-of` for this: it needs the old Task, whose spec cannot carry the note.
 - **A person's comment on a PR**: show it with your read; on the user's decision, send the worker a

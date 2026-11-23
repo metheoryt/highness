@@ -102,7 +102,9 @@ running stay on the old account. `/hi:account` (`lib/account.sh move` in hi) mov
 coordinator, the workers and your other work sessions. It waits until each session is idle, then
 types `/exit` into its Orca pane and `claude --resume <its session> <its flags>`. Orca's pane shell
 starts that line on the selected account, and every account reads the same transcripts. The pane
-keeps its terminal handle, so a worker keeps its Dispatch and the coordinator its Run. A session
+keeps its terminal handle, so the coordinator keeps its Run. A worker's Dispatch is failed by Orca
+when its Claude exits; `crew.sh resume <KEY>` gives the moved worker a new one in the same pane,
+with its chat. A session
 mid-turn is never interrupted: it moves once idle, or is reported `busy` when the wait runs out.
 The session that runs the move goes last, in the background, after its turn. claude.ai connectors
 belong to the account. Each one the new account lacks is named in the report and to the session

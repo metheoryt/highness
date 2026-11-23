@@ -38,8 +38,26 @@ case "$1 $2" in
   "orchestration worker-show")
     case " ${FAKE_LIVE:-} " in
       *" $4 "*) echo '{"ok":true,"result":{"state":"running","stage":"running"}}' ;;
-      *) echo '{"ok":true,"result":{"state":"failed","stage":"process_exited","liveness":"exited"}}' ;;
+      *) if [ -n "${FAKE_PANE:-}" ]; then
+           printf '{"ok":true,"result":{"state":"failed","stage":"process_exited","liveness":"exited","terminal":"%s","terminalState":"retained"}}\n' "$FAKE_PANE"
+         else echo '{"ok":true,"result":{"state":"failed","stage":"process_exited","liveness":"exited"}}'; fi ;;
     esac ;;
+  "terminal show")
+    # A closed pane still answers ok, disconnected (measured); a vanished one is not found.
+    case "${FAKE_PANE_GONE:-}" in
+      closed) echo '{"ok":true,"result":{"terminal":{"status":null,"connected":false}}}' ;;
+      ?*) echo '{"ok":false,"error":{"code":"terminal_not_found"}}'; exit 1 ;;
+      *) echo '{"ok":true,"result":{"terminal":{"status":null,"connected":true,"writable":true}}}' ;;
+    esac ;;
+  "terminal send") # the relaunch line; FAKE_START: the session then runs in that pane
+    printf '%s\n' "$*" >>"$FAKE_LOG.send"
+    if [ -n "${FAKE_START:-}" ]; then
+      mkdir -p "$FAKE_PROC/4242" "$FAKE_CFG/sessions"
+      printf 'ORCA_TERMINAL_HANDLE=%s\0' "$FAKE_PANE" >"$FAKE_PROC/4242/environ"
+      echo '{"pid":4242,"sessionId":"sid1"}' >"$FAKE_CFG/sessions/4242.json"
+    fi
+    echo '{"ok":true}' ;;
+  "terminal wait") echo '{"ok":true}' ;;
   "orchestration worker-list") # newest first: a started ctx_new, then ctx_old
     new=''; [ -s "$FAKE_LOG" ] && new=$(printf '{"dispatchId":"ctx_new","liveness":"exited","workspace":"repo1::%s"},' "$FAKE_WS")
     printf '{"ok":true,"result":{"workers":[%s{"dispatchId":"ctx_old","liveness":"exited","workspace":"repo1::%s"}]}}\n' "$new" "$FAKE_WS" ;;
@@ -175,5 +193,86 @@ fresh; echo 'not json' >"$T/prstate"
 err=$(bash "$C" resume AB-1 2>&1 >/dev/null); rc=$?
 check 'unknown PR state: resumes' "$rc" 0
 has 'unknown PR state: warns' "$err" 'could not read the state'
+echo '{"state":"open"}' >"$T/prstate"
+
+# --- highness#110: the lost worker's pane is still open: its own session gets the new Dispatch
+# there, relaunched first when it no longer runs. Its transcript is found by the lost Dispatch's
+# id in a typed prompt; a tool result that merely mentions the id does not count.
+export HI_CLAUDE_DIRS="$T/cfg" HI_PROC="$T/proc" FAKE_CFG="$T/cfg" FAKE_PROC="$T/proc"
+slug=$(printf '%s' "$T/ws" | sed 's/[^A-Za-z0-9]/-/g')
+P="$T/cfg/projects/$slug"
+mkdir -p "$P" "$T/av"
+transcripts() {
+  rm -rf "$P"/*.jsonl "$T/cfg/sessions" "$T/proc"
+  jq -nc '{type: "user", permissionMode: "bypassPermissions", message: {role: "user",
+           content: "You are a dispatched worker...\n --task-id task_old --dispatch-id ctx_old --outcome succeeded"}}' >"$P/sid1.jsonl"
+  jq -nc '{type: "assistant", message: {model: "opus", content: [{type: "text", text: "ok"}]}}' >>"$P/sid1.jsonl"
+  jq -nc '{type: "user", permissionMode: "default", message: {role: "user",
+           content: [{type: "tool_result", content: "saw --dispatch-id ctx_old in a log"}]}}' >"$P/sid0.jsonl"
+}
+running() { # <pid> <session> <pane>: a live claude of that session in that pane
+  mkdir -p "$T/proc/$1" "$T/cfg/sessions"
+  printf 'ORCA_TERMINAL_HANDLE=%s\0' "$3" >"$T/proc/$1/environ"
+  jq -nc --argjson p "$1" --arg s "$2" '{pid: $p, sessionId: $s}' >"$T/cfg/sessions/$1.json"
+}
+inpane() { # <env...>: resume AB-1 on fresh facts; sets out, rc
+  fresh; transcripts; rm -f "$FAKE_LOG.send"
+  out=$(env FAKE_PANE=term_pane ORCA_CLAUDE_AGENT_VIEW_PLUGIN_DIR="$T/av" "$@" bash "$C" resume AB-1 2>&1); rc=$?
+}
+fellback() { # <name>: a new worker in the workspace, nothing typed into the pane
+  has "$1: falls back to a new worker" "$(cat "$FAKE_LOG" 2>/dev/null)" "--worktree path:$T/ws"
+  [ -s "$FAKE_LOG.send" ] && no "$1: typed nothing" || ok "$1: typed nothing"
+}
+
+# The pane is back at a shell prompt: relaunch, then the Dispatch.
+inpane FAKE_START=1
+check 'pane: exit 0' "$rc" 0
+check 'pane: relaunches its own session, with its permission mode, model and the agent-view plugin' \
+  "$(cat "$FAKE_LOG.send" 2>/dev/null)" \
+  "terminal send --terminal term_pane --text claude --resume sid1 --plugin-dir '$T/av' --dangerously-skip-permissions --model 'opus' --enter --json"
+args=$(cat "$FAKE_LOG" 2>/dev/null)
+has 'pane: the new Dispatch goes into that pane' "$args" '--terminal term_pane --run run_aaa111 --from term_coord'
+case "$args" in *--worktree*|*--agent*|*--model*) no 'pane: no new agent launch';; *) ok 'pane: no new agent launch';; esac
+spec=$(cat "$FAKE_LOG.spec" 2>/dev/null)
+has 'pane: the note says the chat is kept' "$spec" 'this
+is the same Claude session'
+has 'pane: the note names the lost Dispatch' "$spec" 'AB-1 (ctx_old) was lost'
+has 'pane: a kept reply, verbatim' "$spec" '  > Yes, rename it'
+case "$spec" in *'THE SPEC BODY'*) no 'pane: the spec is not sent again';; *) ok 'pane: the spec is not sent again';; esac
+has 'pane: says which way it went' "$out" 'in its own pane, its chat kept'
+check 'pane: records the new dispatch, the pane and the session, keeps the old one' \
+  "$(bash "$C" get AB-1 | jq -r '[.dispatch, .task, (.resumed | join(",")), .resumed_in, .session, (.resumed_spec // "-")] | join("|")')" \
+  'ctx_new|task_new|ctx_old|term_pane|sid1|-'
+check 'pane: the lost escalation is handled' "$(bash "$C" asks)" ''
+
+# The session still runs in its pane (the Dispatch failed under it): only the Dispatch.
+fresh; transcripts; rm -f "$FAKE_LOG.send"; running 4242 sid1 term_pane
+out=$(FAKE_PANE=term_pane bash "$C" resume AB-1 2>&1); rc=$?
+check 'alive in pane: exit 0' "$rc" 0
+[ -s "$FAKE_LOG.send" ] && no 'alive in pane: no relaunch' || ok 'alive in pane: no relaunch'
+has 'alive in pane: the Dispatch goes into that pane' "$(cat "$FAKE_LOG")" '--terminal term_pane'
+
+# Fallbacks to a new worker: today's behaviour.
+fresh; transcripts; rm -f "$FAKE_LOG.send"; running 4242 sid1 term_other
+FAKE_PANE=term_pane bash "$C" resume AB-1 >/dev/null 2>&1
+fellback 'session runs in another pane'
+fresh; transcripts; rm -f "$FAKE_LOG.send"; running 5151 sid9 term_pane
+FAKE_PANE=term_pane bash "$C" resume AB-1 >/dev/null 2>&1
+fellback 'another session runs in the pane'
+inpane FAKE_START=1 FAKE_PANE_GONE=1
+fellback 'pane gone'
+inpane FAKE_START=1 FAKE_PANE_GONE=closed
+fellback 'pane closed (Orca still answers for it, disconnected)'
+fresh; transcripts; rm -f "$FAKE_LOG.send" "$P/sid1.jsonl"
+out=$(FAKE_PANE=term_pane FAKE_START=1 bash "$C" resume AB-1 2>&1)
+fellback 'no session found (a tool result naming the Dispatch is not its prompt)'
+has 'no session found: says it starts a new worker' "$out" 'starting a new worker'
+
+# Relaunched, but never seen running: stop, start nothing beside it.
+inpane HI_RESUME_START_WAIT=1
+[ "$rc" != 0 ] && ok 'unconfirmed relaunch: exit non-zero' || no 'unconfirmed relaunch: exit non-zero'
+has 'unconfirmed relaunch: says look at the pane' "$out" 'look at the pane'
+[ -s "$FAKE_LOG" ] && no 'unconfirmed relaunch: started nothing' || ok 'unconfirmed relaunch: started nothing'
+check 'unconfirmed relaunch: facts unchanged' "$(bash "$C" get AB-1 | jq -r .dispatch)" ctx_old
 
 exit $fail
