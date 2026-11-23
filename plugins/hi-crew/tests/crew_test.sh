@@ -646,6 +646,31 @@ bash "$C" record W-4 "{\"run\":\"run_w1\",\"root\":\"$WR\",\"workspace\":\"$WS3\
 PATH="$W/bin3:$PATH" bash "$C" watch
 check 'watch: no PR on the branch, none recorded' "$(bash "$C" get W-4 | jq -r '.pr // "none"')" none
 bash "$C" close W-4
+# --- waits_on: a PR the ticket waits on, merged or closed, is told once, before the ticket has a PR
+bash "$C" events --ack; : >"$SENT"
+echo '{"state":"open"}' >"$WR/state-81.json"; echo '{"state":"merged"}' >"$WR/state-82.json"
+bash "$C" record W-8 "{\"run\":\"run_w1\",\"root\":\"$WR\",\"dispatch\":\"ctx_w8\",\"waits_on\":[\"https://forge/pr/81\"]}"
+bash "$C" watch
+check 'waits_on: an open PR is no event' "$(bash "$C" events)$(cat "$SENT")" ''
+echo '{"state":"merged"}' >"$WR/state-81.json"; bash "$C" watch
+check 'waits_on: a merge wakes the worker' "$(bash "$C" events | cut -f2,4,5,6)" \
+  "$(printf 'W-8\thttps://forge/pr/81\ta PR it waits on was merged\tworker')"
+case "$(cat "$SENT")" in *'send --to dispatch:ctx_w8 --from term_coord --type status --subject W-8: a PR it waits on was merged'*) ok 'waits_on: a round to the worker'"'"'s Dispatch' ;; *) no "waits_on send: $(cat "$SENT")" ;; esac
+bash "$C" watch
+check 'waits_on: told once' "$(bash "$C" events | wc -l | tr -d ' ')" 1
+bash "$C" record W-8 '{"waits_on":["https://forge/pr/81","https://forge/pr/82"]}'
+bash "$C" events --ack; : >"$SENT"; bash "$C" watch
+check 'waits_on: one added already merged is told on its first look' "$(bash "$C" events | cut -f4,5)" \
+  "$(printf 'https://forge/pr/82\ta PR it waits on was merged')"
+echo '{"state":"closed"}' >"$WR/state-83.json"
+bash "$C" record W-9 "{\"run\":\"run_w1\",\"root\":\"$WR\",\"waits_on\":[\"https://forge/pr/83\",\"https://forge/pr/none\"]}"
+bash "$C" events --ack; : >"$SENT"; bash "$C" watch
+check 'waits_on: no Dispatch wakes the coordinator, a PR with no state is skipped' "$(bash "$C" events | cut -f2,4,5,6)" \
+  "$(printf 'W-9\thttps://forge/pr/83\ta PR it waits on was closed\tcoordinator')"
+case "$(cat "$SENT")" in *'send --to run:run_w1 --from term_coord --type status --subject W-9: a PR it waits on was closed'*) ok 'waits_on: the coordinator got it' ;; *) no "waits_on coordinator: $(cat "$SENT")" ;; esac
+bash "$C" close W-8 2>/dev/null; bash "$C" close W-9 2>/dev/null
+check 'close: the waits note is gone' "$(ls "$W/state/crew/watch" | grep -c '^W-[89]\.waits$')" 0
+bash "$C" events --ack; : >"$SENT"
 # --- close drops the watch's notes on the ticket, and only on it
 : >"$W/state/crew/watch/W-3.prompt"; : >"$W/state/crew/watch/W-3.tool"; : >"$W/state/crew/watch/W-3.1.json"
 bash "$C" close W-3

@@ -135,6 +135,10 @@
 #                                     Dispatch took. Bots' plain comments, a bot review with no findings, the
 #                                     workers' own comments, labels and cross-references wake no one.
 #                                     The first look at a ticket only records it.
+#                                     A PR the ticket waits on (the facts' `waits_on`, a list of PR
+#                                     urls, recorded at start or by the worker) that merges or
+#                                     closes is told once, from any look, the first included: to the
+#                                     worker as a round, else the coordinator.
 #                                     A ticket with no `pr` yet gets its PR looked up with gh by the
 #                                     workspace's branch, and recorded when found (the worker records
 #                                     it itself at its draft-PR step: {{CREW}} in the spec)
@@ -297,7 +301,7 @@ cmd_close() {
   # The watch's notes on it (last PR state, the dialog and tool call told), so a ticket opened
   # again under the same key starts from a first look. Named one by one: a glob on "<KEY>.*"
   # would also take a key that extends this one ("A-1" and "A-1.2").
-  rm -f "$DIR/watch/$1.json" "$DIR/watch/$1.prompt" "$DIR/watch/$1.tool"
+  rm -f "$DIR/watch/$1.json" "$DIR/watch/$1.prompt" "$DIR/watch/$1.tool" "$DIR/watch/$1.waits"
 }
 
 # $DIR/run lists every Run hi-crew made, one per line (it once held a single shared Run).
@@ -910,6 +914,22 @@ pr_state() { # <facts json>
   (cd "$root" && sh -c "$line") 2>/dev/null
 }
 
+# The state (open | merged | closed) of a PR a ticket waits on: crew.pr_state at the ticket's root
+# with {{PR}} that PR, else, for a github.com PR, gh asked for the state alone (the full gh_state
+# reads every comment, which a waited-on PR's state does not need). Exit 1 when it cannot tell.
+wait_state() { # <facts json> <pr url>
+  local cmd s
+  cmd=$(cd "$(facts_root "$1")" && bash "$CONFIG" get '.crew.pr_state') || cmd=''
+  if [ -n "$cmd" ]; then
+    s=$(pr_state "$(printf '%s' "$1" | jq -c --arg pr "$2" '.pr = $pr')" | jq -r '.state // empty' 2>/dev/null)
+  else
+    case "$2" in https://github.com/*) ;; *) return 1 ;; esac
+    s=$(gh pr view "$2" --json state --jq '.state | ascii_downcase' 2>/dev/null)
+  fi
+  [ -n "$s" ] || return 1
+  printf '%s\n' "$s"
+}
+
 # The worker's Dispatch to wake for these facts: a follow-up round gets a new Dispatch in the same
 # workspace, so it is looked up in the Run by the workspace (a live one first, then the newest
 # Orca lists), else the recorded `dispatch`. Exit 1 when there is none.
@@ -1002,7 +1022,7 @@ cmd_sections() {
 
 cmd_watch() {
   need_jq
-  local w="$DIR/watch" lock="$DIR/watch/lock" t key pr run now snap what hit since tool kind hs ap to fp ip
+  local w="$DIR/watch" lock="$DIR/watch/lock" t key pr run now snap what hit since tool kind hs ap to fp ip wp ws
   mkdir -p "$w"
   if ! mkdir "$lock" 2>/dev/null; then
     [ -n "$(find "$lock" -maxdepth 0 -mmin +30 2>/dev/null)" ] || return 0  # another watch runs
@@ -1032,6 +1052,17 @@ cmd_watch() {
           "has had one $tool call open for $(( ($(date +%s) - since) / 60 )) min — a hung command?"
       fi
     fi
+    # The PRs the ticket waits on (`waits_on`, a list of PR urls): each one that merges or closes is
+    # told once, to the worker as a round, else the coordinator. Before the ticket's own PR, which
+    # a ticket waiting on another may not have yet.
+    printf '%s' "$t" | jq -r '.waits_on // [] | if type == "array" then .[] else . end | strings | select(. != "")' \
+      | while IFS= read -r wp; do
+        grep -qxF "$wp" "$w/$key.waits" 2>/dev/null && continue
+        ws=$(wait_state "$t" "$wp" </dev/null) || continue
+        case "$ws" in merged|closed) ;; *) continue ;; esac
+        printf '%s\n' "$wp" >>"$w/$key.waits"
+        event "$key" "$run" "$wp" "a PR it waits on was $ws" "$t"
+      done
     # No PR recorded yet (the worker records it at its draft-PR step): look it up by the branch,
     # and record what is found, so the digest and later passes read it from the facts.
     if [ -z "$pr" ]; then

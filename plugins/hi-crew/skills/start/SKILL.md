@@ -127,6 +127,10 @@ Below, `$O` stands for that executable.
    where `root` is the coordinator root (`bash "$C" root`), never re-derived from the cwd: the watch
    reads the team's settings there; `spec` is the copy step 5 kept. After a compaction the
    worker's session is pointed back at it (`crew.sh reentry`), and the retro reads it.
+   When the ticket must wait for another pull request to merge first (its links name one, a note
+   on merge order, the same migration number taken twice), add `"waits_on":["<PR url>",…]`: the
+   watch tells the worker once each one merges or closes, so no one has to ask a person when it
+   did. The worker records more itself; a later record replaces the whole list.
 8. Tell the user in one or two lines: the ticket, the workspace, what the worker will do, that its
    questions come here. Then **end your turn**. Never poll; Orca wakes you.
 
@@ -172,7 +176,9 @@ Several tickets: run steps 1–7 for each, then end the turn once.
   a PR merged or closed, people commented, a person approved it, an approval stopped counting, or
   a review was re-requested from a person (by anyone, a bot included). A CI failure and review
   bots' findings and comments go to the worker itself as a round (and an approval too, when crew.merge is
-  `on_green`); they reach you only when no worker Dispatch took them. Then
+  `on_green`), and so does a PR the ticket waits on (`waits_on`) merging or closing; they reach
+  you only when no worker Dispatch took them. A waited-on PR that reaches you: tell the user, and
+  offer a round to the worker to rebase and carry on. Then
   `bash "$C" events --ack`, and handle it as `hi-crew:agenda` does: merged or closed → offer to
   close the facts; a person's comment, an approval, or a worker event that fell back to you →
   read it, show it with your read, and send the worker a round only on the user's decision.
