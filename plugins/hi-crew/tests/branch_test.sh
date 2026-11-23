@@ -65,7 +65,19 @@ case "$1 $2" in
     [ -z "${FAKE_TAKEN:-}" ] || br="$br-2"
     d="$FAKE_WS/c$(wc -l <"$FAKE_LOG.create" | tr -d ' ')"
     git init -q "$d" && git -C "$d" symbolic-ref HEAD "refs/heads/$br"
+    # FAKE_SETUP=<seconds>: Orca writes a runner and starts it, as its Setup terminal does.
+    [ -z "${FAKE_YAML:-}" ] || printf 'setupAgentStartupPolicy: "wait-for-setup"\n' >"$d/orca.yaml"
+    if [ -n "${FAKE_SETUP:-}" ]; then
+      mkdir -p "$d/.git/orca"; printf '#!/bin/sh\nsleep %s\n' "$FAKE_SETUP" >"$d/.git/orca/setup-runner.sh"
+      echo "$d/.git/orca/setup-runner.sh" >"$FAKE_WS/typed"
+      [ "$FAKE_SETUP" = 0 ] || (nohup bash "$d/.git/orca/setup-runner.sh" >/dev/null 2>&1 &)
+    fi
     printf '{"ok":true,"result":{"worktree":{"path":"%s","branch":"refs/heads/%s"}}}\n' "$d" "$br" ;;
+  "repo show")
+    printf '{"ok":true,"result":{"repo":{"hookSettings":{"setupAgentStartupPolicy":"%s"}}}}\n' "${FAKE_POLICY:-start-immediately}" ;;
+  "terminal list") echo '{"ok":true,"result":{"terminals":[{"handle":"term_setup"}]}}' ;;
+  "terminal read")
+    jq -n --arg l "$(cat "$FAKE_WS/typed" 2>/dev/null)" '{ok: true, result: {terminal: {tail: ["$ bash \($l)", ""]}}}' ;;
   "orchestration worker-start")
     printf '%s\n' "$*" >>"$FAKE_LOG"
     [ -z "${FAKE_FAIL:-}" ] || { echo '{"ok":false,"error":{"message":"no such terminal"}}'; exit 1; }
@@ -117,5 +129,55 @@ echo '{}' >"$T/root/.claude/highness.json"
 bash "$C" autostart >/dev/null
 check 'unset: no worktree create' "$([ -f "$T/starts.create" ] && echo created || echo none)" none
 has 'unset: worker-start creates the workspace, as before' "$(cat "$T/starts")" "--worktree new-top-level --repo path:$T/root --name AB-7 --base-branch origin/main"
+
+# --- workspace in a wait-for-setup repo: Orca reports nothing for a plain create, so workspace
+# waits for the runner it wrote to stop running. Real runner processes, a fake Orca around them.
+export HI_CREW_SETUP_POLL=0.2
+ws() { rm -rf "$T/ws"/c* "$T/ws/typed" "$T/starts.create"; bash "$C" workspace --repo path:"$T/root" --name AB-8 --branch feat/AB-8 --base origin/main "$@" 2>"$T/err"; }
+runner="$T/ws/c1/.git/orca/setup-runner.sh"
+running() { ps -A -o args= | grep -F "$runner" | grep -Fvq 'grep -F' && echo running || echo done; }
+
+out=$(FAKE_POLICY=wait-for-setup FAKE_SETUP=2 ws); rc=$?
+check 'wait-for-setup: returns the path once the setup is done' "$rc $out $(running)" "0 $T/ws/c1 done"
+
+out=$(FAKE_POLICY=start-immediately FAKE_SETUP=2 ws); rc=$?
+check 'start-immediately: does not wait' "$rc $out $(running)" "0 $T/ws/c1 running"
+sleep 2
+
+out=$(FAKE_POLICY=wait-for-setup FAKE_SETUP=0 ws); rc=$?
+check 'setup done before the first look (typed, no process): returns' "$rc $out" "0 $T/ws/c1"
+
+out=$(FAKE_POLICY=wait-for-setup ws); rc=$?
+check 'no runner written (setup off): returns' "$rc $out" "0 $T/ws/c1"
+
+out=$(FAKE_POLICY=wait-for-setup FAKE_SETUP=5 ws --setup-timeout 1); rc=$?
+check 'still running past the timeout: the path, exit 3' "$rc $out" "3 $T/ws/c1"
+has 'still running: stderr carries the spec note with the runner' "$(cat "$T/err")" "grep -F '$runner'"
+sleep 4
+
+out=$(FAKE_POLICY=wait-for-setup FAKE_SETUP=5 ws --setup-timeout 0); rc=$?
+check '--setup-timeout 0: does not wait' "$rc $out $(running)" "0 $T/ws/c1 running"
+sleep 5
+
+out=$(FAKE_POLICY=wait-for-setup ws --setup-timeout soon); rc=$?
+check 'a bad --setup-timeout: exit 2' "$rc" 2
+
+# orca.yaml alone can set the policy: Orca waits when either says so.
+out=$(FAKE_POLICY=start-immediately FAKE_YAML=1 FAKE_SETUP=2 ws); rc=$?
+check "orca.yaml's wait-for-setup alone: waits" "$rc $out $(running)" "0 $T/ws/c1 done"
+
+# --- autostart in a wait-for-setup repo whose setup outlasts its wait: the worker starts, and its
+# spec tells it to wait for the setup.
+team '{{TYPE}}/{{OWNER}}/{{KEY}}-{{SLUG}}'
+reset; rm -rf "$T/ws"/c* "$T/ws/typed"
+FAKE_POLICY=wait-for-setup FAKE_SETUP=4 HI_CREW_AUTOSTART_SETUP_TIMEOUT=1 bash "$C" autostart >"$T/out"
+has 'autostart, setup outlasts the wait: the worker still starts' "$(cat "$T/starts")" "--worktree path:$T/ws/c1 --keep-open"
+has 'autostart, setup outlasts the wait: the spec says to wait for it' "$(cat "$S/specs/AB-7.md" 2>/dev/null)" 'Workspace setup still running'
+sleep 4
+
+reset; rm -rf "$T/ws"/c* "$T/ws/typed"
+FAKE_POLICY=wait-for-setup FAKE_SETUP=1 bash "$C" autostart >"$T/out"
+lacks 'autostart, setup done in time: no wait note in the spec' "$(cat "$S/specs/AB-7.md" 2>/dev/null)" 'Workspace setup still running'
+has 'autostart, setup done in time: started' "$(cat "$T/out")" "started	AB-7	$T/ws/c1"
 
 exit $fail

@@ -115,7 +115,11 @@ Below, `$O` stands for that executable.
      $O orchestration worker-start --spec-file <spec-file> --task-title '<KEY>: <title>' \
        --worktree path:<the printed path> --keep-open --agent <crew.agent> [--model <crew.model>] --json
      ```
-     The workspace is the printed path, not the receipt's.
+     The workspace is the printed path, not the receipt's. In a repo whose Orca setup policy is
+     wait-for-setup, `workspace` waits for the setup to finish (up to 9 minutes: give that Bash
+     call a 600000 ms timeout), since Orca holds back only an agent it starts with the workspace.
+     Exit 3: the workspace exists but its setup still runs; append what it printed on stderr to
+     the spec file (it tells the worker to wait for the setup), then start.
    - Exit 2 (a placeholder with no value, a bad template): show the error and stop.
 
    If worker-start fails, do not rerun it: read `failedStage` and load

@@ -116,12 +116,18 @@
 #                                     default feat), {{OWNER}} (crew.owner, the person's own name in
 #                                     branches, from their file). A placeholder with no value, an
 #                                     unknown one, or a result git refuses as a branch name: exit 2
-#   crew.sh workspace --repo SEL --name N --branch B --base REF
+#   crew.sh workspace --repo SEL --name N --branch B --base REF [--setup-timeout S]
 #                                     create a top-level Orca workspace on branch B (no name prefix;
 #                                     Orca adds a numeric suffix when B is taken, so read the branch
 #                                     back from the workspace), and print its path. The repo's setup
-#                                     runs per its Orca policy in a terminal of its own, and this
-#                                     returns without waiting for it. Start the worker in it with
+#                                     runs per its Orca policy in a terminal of its own. When that
+#                                     policy is wait-for-setup (the repo's hook settings or its
+#                                     orca.yaml), this waits for the setup to finish, at most S
+#                                     seconds (default 540; 0 does not wait): Orca gates only an
+#                                     agent it starts with the workspace, never this create. Still
+#                                     running then: the path is printed all the same, the spec
+#                                     paragraph telling the worker to wait for it goes to stderr,
+#                                     exit 3; add it to the spec before the start. Start the worker in it with
 #                                     worker-start --worktree path:<path> --keep-open (a worker in
 #                                     an existing workspace otherwise closes when it reports).
 #                                     worker-start has no branch option
@@ -769,9 +775,10 @@ cmd_branch() {
 
 cmd_workspace() {
   need_jq
-  local repo='' name='' branch='' base='' out path err
+  local repo='' name='' branch='' base='' timeout=540 out path err
   while [ $# -gt 0 ]; do
     case "$1" in
+      --setup-timeout) timeout=${2:-}; shift 2 ;;
       --repo) repo=${2:-}; shift 2 ;;
       --name) name=${2:-}; shift 2 ;;
       --branch) branch=${2:-}; shift 2 ;;
@@ -780,7 +787,8 @@ cmd_workspace() {
     esac
   done
   [ -n "$repo" ] && [ -n "$name" ] && [ -n "$branch" ] && [ -n "$base" ] \
-    || die 'usage: workspace --repo SEL --name N --branch B --base REF'
+    || die 'usage: workspace --repo SEL --name N --branch B --base REF [--setup-timeout S]'
+  case "$timeout" in ''|*[!0-9]*) die "workspace: --setup-timeout takes seconds, not '$timeout'" ;; esac
   out=$("$(orca_cmd)" worktree create --repo "$repo" --name "$name" --branch "$branch" --base-branch "$base" \
     --no-parent --json 2>&1)
   path=$(printf '%s' "$out" | jq -r 'select(.ok == true) | .result.worktree.path // empty' 2>/dev/null) || path=''
@@ -788,7 +796,85 @@ cmd_workspace() {
     err=$(first_err "$out"); [ -n "$err" ] || err=$(printf '%s\n' "$out" | head -1)
     die "workspace: orca worktree create failed: ${err:-no path in its answer}"
   fi
+  # A wait-for-setup repo: Orca gates only an agent it starts itself, never this plain create.
+  ws_wait_setup "$repo" "$path" "$timeout" || {
+    printf '%s\n' "$path"
+    setup_note "$(ws_runner "$path")" >&2
+    exit 3
+  }
   printf '%s\n' "$path"
+}
+
+# The setup runner Orca writes for a workspace (<git dir>/orca/setup-runner.sh), absolute.
+ws_runner() {
+  local r
+  r=$(git -C "$1" rev-parse --git-path orca/setup-runner.sh 2>/dev/null) || return 0
+  case "$r" in /*) ;; *) r="$1/$r" ;; esac
+  printf '%s\n' "$r"
+}
+
+# Whether Orca's policy for the repo is wait-for-setup: the repo's own hook settings or a committed
+# orca.yaml (Orca waits when either says so).
+ws_policy_waits() { # <repo selector> <workspace path>
+  local p
+  p=$("$(orca_cmd)" repo show --repo "$1" --json 2>/dev/null \
+    | jq -r '.result | (.repo // .) | .hookSettings.setupAgentStartupPolicy // empty' 2>/dev/null) || p=''
+  [ "$p" = wait-for-setup ] && return 0
+  [ -f "$2/orca.yaml" ] && grep -Eq "^setupAgentStartupPolicy:[[:space:]]*[\"']?wait-for-setup" "$2/orca.yaml"
+}
+
+# Whether the runner's command shows in one of the workspace's terminals: Orca types it there.
+ws_runner_typed() { # <workspace path> <runner>
+  local h
+  for h in $("$(orca_cmd)" terminal list --worktree "path:$1" --json 2>/dev/null \
+    | jq -r '.result.terminals[]?.handle // empty' 2>/dev/null); do
+    "$(orca_cmd)" terminal read --terminal "$h" --json 2>/dev/null \
+      | jq -r '.result.terminal.tail[]? // empty' 2>/dev/null | grep -Fq "$2" && return 0
+  done
+  return 1
+}
+
+ws_runner_running() { ps -A -o args= 2>/dev/null | grep -F "$1" | grep -Fvq 'grep -F'; }
+
+# Wait until the workspace's Orca setup is done, when its repo's policy is wait-for-setup and Orca
+# wrote a runner (none: setup is off for it). Orca reports nothing for a plain create, so: done is
+# the runner seen (a process running it, or its command typed in a terminal) and then no process
+# running it on two looks in a row. Exit 1 when it still runs after <timeout> seconds.
+ws_wait_setup() { # <repo selector> <workspace path> <timeout seconds>
+  local runner seen='' gone=0 deadline
+  [ "${3:-0}" -gt 0 ] 2>/dev/null || return 0
+  runner=$(ws_runner "$2"); [ -n "$runner" ] && [ -f "$runner" ] || return 0
+  ws_policy_waits "$1" "$2" || return 0
+  deadline=$(($(date +%s) + $3))
+  while :; do
+    if ws_runner_running "$runner"; then
+      seen=1; gone=0
+    else
+      [ -n "$seen" ] || ! ws_runner_typed "$2" "$runner" || seen=1
+      [ -z "$seen" ] || gone=$((gone + 1))
+      [ "$gone" -lt 2 ] || return 0
+    fi
+    [ "$(date +%s)" -lt "$deadline" ] || return 1
+    sleep "${HI_CREW_SETUP_POLL:-1}"
+  done
+}
+
+# The spec paragraph for a worker started while its workspace's setup still runs.
+setup_note() { # <runner>
+  cat <<EOF
+
+## Workspace setup still running
+
+This workspace's Orca setup (the repo waits for it before work starts) was still running when you
+were started. Before you install, build, test or commit anything, wait until it is done: this
+prints nothing once it is (run it again until then; do not sleep-poll in the foreground, use a
+background wait):
+
+    ps -A -o args= | grep -F $(q "$1") | grep -Fv 'grep -F'
+
+Its output is in the workspace's Setup terminal. If it failed, say so to the coordinator before
+you go on.
+EOF
 }
 
 # One shell word: 'it''s' -> 'it'\''s'.
@@ -1551,7 +1637,7 @@ as_usage() {
 
 as_start() { # <candidate json> <root> <run> <handle> <dry>
   local c=$1 root=$2 run=$3 handle=$4 key title url repo base agent model label sf bf out ws path branch err
-  local named='' wpath='' place
+  local named='' wpath='' place setup_err=''
   key=$(printf '%s' "$c" | jq -r .key); title=$(printf '%s' "$c" | jq -r '.title // .key')
   url=$(printf '%s' "$c" | jq -r '.url // ""')
   repo=$(printf '%s' "$c" | jq -r '.repo // empty'); [ -n "$repo" ] || repo=$(as_get repo) || repo=$root
@@ -1570,9 +1656,17 @@ as_start() { # <candidate json> <root> <run> <handle> <dry>
   mkdir -p "$AS_DIR/tried" && date -u +%Y-%m-%dT%H:%M:%SZ >"$AS_DIR/tried/$key"
   if [ -n "$named" ]; then
     # worker-start has no branch option: create the workspace on the branch, then start in it.
-    wpath=$(cd "$root" && bash "$HERE/crew.sh" workspace --repo "$repo" --name "$key" --branch "$named" --base "$base" 2>&1) || {
-      as_log failed "$key" "$(printf '%s\n' "$wpath" | sed 's/^crew: //' | head -1); not retried (rm $AS_DIR/tried/$key to retry)"
-      return 1; }
+    # A wait-for-setup repo's setup is waited for at most 120 s here, not to hold the watch's pass;
+    # still running then (exit 3), the spec tells the worker to wait for it.
+    setup_err=$(mktemp "${TMPDIR:-/tmp}/hi-crew-ws.XXXXXX") || return 1
+    wpath=$(cd "$root" && bash "$HERE/crew.sh" workspace --repo "$repo" --name "$key" --branch "$named" --base "$base" \
+      --setup-timeout "${HI_CREW_AUTOSTART_SETUP_TIMEOUT:-120}" 2>"$setup_err")
+    case $? in
+      0) : >"$setup_err" ;;
+      3) wpath=$(printf '%s\n' "$wpath" | head -1) ;;
+      *) as_log failed "$key" "$(sed 's/^crew: //' "$setup_err" | head -1); not retried (rm $AS_DIR/tried/$key to retry)"
+        rm -f "$setup_err"; return 1 ;;
+    esac
     place=(--worktree "path:$wpath" --keep-open)
   else
     place=(--worktree new-top-level --repo "$repo" --name "$key" --base-branch "$base")
@@ -1582,6 +1676,7 @@ as_start() { # <candidate json> <root> <run> <handle> <dry>
   bf=$(mktemp "${TMPDIR:-/tmp}/hi-crew-brief.XXXXXX") && sf="$bf.spec" || return 1
   printf 'Started by hi-crew autostart: the ticket carries the label `%s`, and no person has read it\nbefore this start. Read the ticket yourself%s; when it is not clear enough to act on, ask.\n' \
     "$label" "${url:+ ($url)}" >"$bf"
+  [ -z "$setup_err" ] || { cat "$setup_err" >>"$bf"; rm -f "$setup_err"; }
   err=$( (cd "$root" && bash "$HERE/crew.sh" spec --key "$key" --title "$title" --brief-file "$bf" --root "$root") 2>&1 >"$sf") \
     || { rm -f "$bf" "$sf"; as_log failed "$key" "could not build the spec${err:+: $(printf '%s\n' "$err" | sed 's/^crew: //' | head -1)}"; return 1; }
   out=$(cd "$root" && "$(orca_cmd)" orchestration worker-start --spec-file "$sf" --task-title "$key: $title" \
