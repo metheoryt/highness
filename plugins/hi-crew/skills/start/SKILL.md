@@ -184,7 +184,11 @@ Several tickets: run steps 1–7 for each, then end the turn once.
   closed → offer to close the facts; a person's comment, an approval, or a worker event that fell back to you →
   read it, show it with your read, and send the worker a round only on the user's decision.
 - **An escalation** (stopped without `worker_done`): tell the user; steer with
-  `$O orchestration send --to dispatch:<id>` only on their say.
+  `$O orchestration send --to dispatch:<id>` only on their say. Orca's "Worker stopped without
+  reporting" (`stopReason` `finished`: the worker only ended a turn) is not a lost worker when
+  that Dispatch has an open ask (`bash "$C" asks` lists the ask and drops the notice): fold it
+  into the ask, do not raise it on its own. With no open ask, it is news only once the worker's
+  terminal is gone (`asks` lists it then).
 - **The user wants another round** (a person's new review comments, a change of mind): send it to
   the same worker, `$O orchestration send --to dispatch:<last dispatch> --subject … --body …`. It
   arrives as a follow-up Task in the same workspace and chat; record the new dispatch id.

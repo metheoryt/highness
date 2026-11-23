@@ -66,7 +66,10 @@ this skill" printed above, two levels up.
    nothing on the person and stop.
 2. **What blocks a worker**: `bash "$C" asks` — open questions, decision gates, and escalations
    (a worker that stopped without reporting), across the Runs of all open tickets, each with its
-   Run. `$O orchestration inbox --limit 100 --full --json` gives the full text.
+   Run. Orca's "Worker stopped without reporting" (the worker only ended a turn, as it does after
+   an ask) is folded into that Dispatch's open ask, and with no open ask it shows only once the
+   worker's terminal is gone: a worker idle on its ask is waiting on the person, not lost.
+   `$O orchestration inbox --limit 100 --full --json` gives the full text.
    **Answers no worker will act on**: `bash "$C" stranded` — one JSON object per line, `what`:
    `unanswered` (asked, and the worker is gone), `unheard` (answered, and the worker stopped
    without a word after it), `unsent` (relay kept a reply Orca refused; `body` is it, and with an
