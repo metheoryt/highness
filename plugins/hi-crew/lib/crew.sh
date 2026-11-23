@@ -74,6 +74,9 @@
 #                                     message carries its id as thread_id and its dispatch is live
 #                                     (Orca closes the question of a settled or stopped worker); an
 #                                     escalation, while its dispatch has sent no later worker_done.
+#                                     Orca's "Worker stopped without reporting" (the worker only
+#                                     ended a turn) folds into the Dispatch's open ask, and with no
+#                                     open ask shows only once the worker's terminal is gone.
 #   crew.sh reports                   the latest worker_done per dispatch in those Runs, TSV:
 #                                     run id, dispatch id, created_at, outcome, subject
 #   crew.sh spec --key K --title T [--brief-file F] [--root R] [--no-profile]
@@ -533,10 +536,11 @@ inbox() { # [<runs json array>] (default: the open tickets' Runs)
 
 cmd_asks() {
   need_jq
-  local m resumed; m=$(inbox) || exit $?
+  local m resumed rows open line d; m=$(inbox) || exit $?
   # The Dispatches `resume` replaced: their escalation (the worker lost) is handled.
   resumed=$(cmd_list | jq -sc 'map(.resumed // []) | add // []') || resumed='[]'
-  printf '%s' "$m" | jq -r --argjson resumed "$resumed" '
+  # Each row: id, type, run, dispatch, created_at, stopReason, terminal handle, first line.
+  rows=$(printf '%s' "$m" | jq -r --argjson resumed "$resumed" '
     . as $m
     | [ $m[] | select(.thread_id != null and .thread_id != .id) | .thread_id ] as $answered
     | $m[]
@@ -546,12 +550,37 @@ cmd_asks() {
         (. as $e | [ $m[] | select(.type == "worker_done" and .dispatch == $e.dispatch
                                    and .created_at > $e.created_at) ] | length == 0
                    and ($resumed | index($e.dispatch) | not)))
-    | [ .id, .type, .run_id, .dispatch, .created_at, ((.body // .subject // "") | split("\n")[0]) ] | @tsv' \
-    | while IFS=$'\t' read -r id type rest; do
-        d=$(printf '%s' "$rest" | cut -f2)
-        case "$type" in question|decision_gate) dispatch_live "$d" || continue ;; esac
-        printf '%s\t%s\t%s\n' "$id" "$type" "$rest"
-      done
+    | (.payload // "{}" | fromjson? // {}) as $p
+    | [ .id, .type, .run_id, .dispatch, .created_at, ($p.stopReason // ""), ($p.handle // ""),
+        ((.body // .subject // "") | split("\n")[0]) ] | @tsv' \
+    | while IFS= read -r line; do
+        case "$(printf '%s' "$line" | cut -f2)" in
+          question|decision_gate) dispatch_live "$(printf '%s' "$line" | cut -f4)" || continue ;;
+        esac
+        printf '%s\n' "$line"
+      done)
+  [ -n "$rows" ] || return 0
+  # Orca's "Worker stopped without reporting" (stopReason finished) only says the worker ended a
+  # turn with no worker_done. A worker that asked does exactly that, by design, and so does one
+  # back at its prompt after a watch round: that notice folds into its open ask, and with no open
+  # ask it is listed only once the worker's terminal is gone (highness#125). Every other stop
+  # (lost, exited, errored, a usage limit) is listed as it came.
+  open=$(printf '%s\n' "$rows" | awk -F'\t' '($2 == "question" || $2 == "decision_gate") && $4 != "" { print $4 }')
+  printf '%s\n' "$rows" | while IFS= read -r line; do
+    if [ "$(printf '%s' "$line" | cut -f2,6)" = "$(printf 'escalation\tfinished')" ]; then
+      d=$(printf '%s' "$line" | cut -f4)
+      [ -n "$d" ] && printf '%s\n' "$open" | grep -qxF -- "$d" && continue
+      terminal_open "$(printf '%s' "$line" | cut -f7)" && continue
+    fi
+    printf '%s\n' "$line" | cut -f1-5,8
+  done
+}
+
+# Whether a worker's terminal is still open in Orca. No handle, a stale one (the terminal was
+# closed) or no answer is not proven open, so a notice that depends on it stays listed.
+terminal_open() {
+  [ -n "$1" ] || return 1
+  "$(orca_cmd)" terminal show --terminal "$1" --json 2>/dev/null | jq -e '.ok == true' >/dev/null 2>&1
 }
 
 # Whether a worker Dispatch can still take an answer. Orca closes a question whose Dispatch is

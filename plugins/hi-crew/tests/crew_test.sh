@@ -52,6 +52,14 @@ if [ "$2" = reply ]; then
   [ -z "${FAKE_REPLY_FAIL:-}" ] || { echo '{"ok":false,"error":{"code":"dispatch_inactive"}}'; exit 1; }
   printf '%s|%s\n' "$4" "$6" >>"$FAKE_SENT"; echo '{"ok":true,"result":{}}'; exit 0
 fi
+if [ "$1" = terminal ]; then
+  case " ${FAKE_TERMS:-} " in
+    *" $4 "*) echo '{"ok":true,"result":{"terminal":{}}}' ;;
+    *) echo '{"ok":false,"error":{"code":"terminal_handle_stale"}}'; exit 1 ;;
+  esac
+  exit 0
+fi
+if [ -n "${FAKE_INBOX:-}" ] && [ "$2" = inbox ]; then cat "$FAKE_INBOX"; exit 0; fi
 if [ "$2" = run-current ]; then
   [ -n "${FAKE_CURRENT:-}" ] || { echo '{"ok":false}'; exit 1; }
   printf '{"ok":true,"result":{"runId":"%s"}}\n' "$FAKE_CURRENT"; exit 0
@@ -91,6 +99,32 @@ check 'reports: latest worker_done per dispatch' "$(bash "$C" reports)" "$(print
 check 'asks: a settled worker'"'"'s question and gate drop out, its escalation stays' "$(FAKE_SETTLED='ctx_b ctx_c' FAKE_GONE=ctx_d bash "$C" asks | cut -f1 | tr '\n' ' ')" 'msg_e1 '
 bash "$C" close ABC-4
 check 'asks: a closed ticket'"'"'s Run drops out' "$(bash "$C" asks | cut -f1 | tr '\n' ' ')" 'msg_q2 msg_e1 '
+
+# --- asks: Orca's "Worker stopped without reporting" (stopReason finished) folds into the
+# Dispatch's open ask; with no open ask it shows only once the terminal is gone (highness#125)
+stop() { # <id> <dispatch> <stopReason> <handle>
+  printf ' {"id":"%s","run_id":"run_abc123","type":"escalation","thread_id":null,"created_at":"2026-01-02T10:00:00Z","subject":"Worker stopped without reporting","body":"Worker %s ended its turn","payload":"{\\"dispatchId\\":\\"%s\\",\\"handle\\":\\"%s\\",\\"stopReason\\":\\"%s\\"}"},\n' "$1" "$4" "$2" "$4" "$3"
+}
+{ echo '{"ok":true,"result":{"messages":['
+  echo ' {"id":"msg_qf","run_id":"run_abc123","type":"question","thread_id":"msg_qf","created_at":"2026-01-02T09:00:00Z","body":"Which way?","payload":"{\"dispatchId\":\"ctx_f\"}"},'
+  echo ' {"id":"msg_qj","run_id":"run_abc123","type":"question","thread_id":"msg_qj","created_at":"2026-01-02T09:00:00Z","body":"Answered?","payload":"{\"dispatchId\":\"ctx_j\"}"},'
+  echo ' {"id":"msg_rj","run_id":"run_abc123","type":"status","thread_id":"msg_qj","created_at":"2026-01-02T09:10:00Z","body":"yes","payload":null},'
+  echo ' {"id":"msg_qk","run_id":"run_abc123","type":"question","thread_id":"msg_qk","created_at":"2026-01-02T09:00:00Z","body":"Settled?","payload":"{\"dispatchId\":\"ctx_k\"}"},'
+  stop msg_sf ctx_f finished term_f   # idle on its open ask, terminal gone: folded into the ask
+  stop msg_sg ctx_g finished term_g   # no ask, terminal open: idle at its prompt, not lost
+  stop msg_sh ctx_h finished term_h   # no ask, terminal gone: listed
+  stop msg_si ctx_i errored term_i    # another stop reason: listed as before
+  stop msg_sj ctx_j finished term_j   # its ask was answered: not open, terminal gone: listed
+  stop msg_sk ctx_k finished term_k   # its ask's Dispatch settled: not open, terminal gone: listed
+  echo ' {"id":"msg_sn","run_id":"run_abc123","type":"escalation","thread_id":null,"created_at":"2026-01-02T10:00:00Z","body":"Stopped","payload":"{\"dispatchId\":\"ctx_n\",\"stopReason\":\"finished\"}"}'
+  echo ']}}'
+} >"$T/inbox-stops.json"
+check 'asks: a stop notice folds into an open ask; alone only once the terminal is gone' \
+  "$(FAKE_INBOX="$T/inbox-stops.json" FAKE_TERMS='term_g term_i' FAKE_SETTLED=ctx_k bash "$C" asks | cut -f1 | tr '\n' ' ')" \
+  'msg_qf msg_sh msg_si msg_sj msg_sk msg_sn '
+check 'asks: a stop notice keeps its columns' \
+  "$(FAKE_INBOX="$T/inbox-stops.json" FAKE_TERMS='term_g term_i' FAKE_SETTLED=ctx_k bash "$C" asks | grep '^msg_sh')" \
+  "$(printf 'msg_sh\tescalation\trun_abc123\tctx_h\t2026-01-02T10:00:00Z\tWorker term_h ended its turn')"
 
 # --- relay: the reply and its choice lines in one step; --gaps: answers sent any other way
 export FAKE_SENT="$T/sent"; : >"$FAKE_SENT"
