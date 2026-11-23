@@ -15,11 +15,12 @@
 #            off or double, with its source: a skills-dir link or a marketplace),
 #            profile:<dir> (every other Claude config dir Orca uses: ok, or gaps against the
 #            worker profile's set), pins:<installed_plugins.json> (stale project pins) or pins ok,
-#            hi-crew (its crew.sh),
+#            drift:<installed_plugins.json> (live project pins at another version than the user
+#            install) or drift ok, hi-crew (its crew.sh),
 #            session-state (that hi-crew registers the session-state hooks),
 #            orchestration, orca-skill, watch (these three from `crew.sh setup-status`), board
 #   person   config, crew.agent, crew.model, preferences, tracker (from crew.sh; tracker only when
-#            one is configured), overlay
+#            one is configured), session.language (set, default when null, unset), overlay
 #   repo     orca-project, then every row of `repo-setup.sh status` except launcher and board,
 #            which the machine section already has. Only inside a git work tree.
 #
@@ -145,10 +146,35 @@ _stale_pins() { # <installed_plugins.json>
   done
 }
 
-# The rows for every other config dir and the stale pins of all of them.
+# Live project pins of highness plugins at another version than the user-scope install of the same
+# id: a session in that project runs other code than everywhere else (highness#128). A pin whose
+# dir is gone is _stale_pins's, never drift; a pin with no user entry to compare is skipped. Both
+# sides compare by version, then by gitCommitSha (the only signal for a plugin that declares no
+# version). Prints id<TAB>scope<TAB>projectPath<TAB>pin version<TAB>user version per drift.
+_drift() { # <installed_plugins.json>
+  local id sc pp pv ps uv us p
+  jq -r '.plugins // {} | to_entries[] | .key as $k
+         | ([.value[]? | select(.scope == "user")] | first) as $u
+         | select($u != null)
+         | .value[]? | select(.scope == "project" or .scope == "local")
+         | [$k, .scope, (.projectPath // ""), (.version // ""), (.gitCommitSha // ""),
+            ($u.version // ""), ($u.gitCommitSha // "")] | @tsv' \
+    "$1" 2>/dev/null | while IFS='	' read -r id sc pp pv ps uv us; do
+    [ -n "$pp" ] && [ -d "$pp" ] || continue
+    case " $PLUGINS " in *" ${id%@*} "*) ;; *) continue ;; esac
+    [ "$pv" = unknown ] && pv=''; [ "$uv" = unknown ] && uv=''
+    if [ -n "$pv" ] && [ -n "$uv" ] && [ "$pv" != "$uv" ]; then :
+    elif [ -n "$ps" ] && [ -n "$us" ] && [ "$ps" != "$us" ]; then
+      pv="${pv:+$pv }$(printf '%.7s' "$ps")"; uv="${uv:+$uv }$(printf '%.7s' "$us")"
+    else continue; fi
+    printf '%s\t%s\t%s\t%s\t%s\n' "$id" "$sc" "$pp" "$pv" "$uv"
+  done
+}
+
+# The rows for every other config dir, and the stale pins and drift of all of them.
 # <worker profile> <the plugins the worker profile loads, space-separated>
 rows_profiles() {
-  local prof=$1 want=$2 d list p hits n off dbl state file files='' phys pins any=''
+  local prof=$1 want=$2 d list p hits n off dbl state file files='' phys pins any='' drift anyd=''
   while IFS= read -r d; do
     [ -n "$d" ] || continue
     file="$d/plugins/installed_plugins.json"
@@ -161,7 +187,9 @@ $phys
 $phys
 "
         pins=$(_stale_pins "$file" | awk -F'\t' '{ printf "%s%s → %s", (NR > 1 ? "; " : ""), $1, $2 }')
-        if [ -n "$pins" ]; then _row machine "pins:$file" stale "$pins"; any=1; fi ;;
+        if [ -n "$pins" ]; then _row machine "pins:$file" stale "$pins"; any=1; fi
+        drift=$(_drift "$file" | awk -F'\t' '{ printf "%s%s: %s at %s (%s) vs %s (user)", (NR > 1 ? "; " : ""), $1, $3, $4, $2, $5 }')
+        if [ -n "$drift" ]; then _row machine "drift:$file" drift "$drift"; anyd=1; fi ;;
       esac
     fi
     [ "$d" = "$prof" ] && continue
@@ -188,6 +216,7 @@ $phys
 $(_config_dirs "$prof")
 EOF
   [ -n "$any" ] || _row machine pins ok 'no project pin of a highness plugin points at a dir that is gone'
+  [ -n "$anyd" ] || _row machine drift ok 'no live project pin of a highness plugin differs from its user install'
 }
 
 # Orca's account-switch setting (account.sh restart-mode). Orca restarts a session it moves to
@@ -273,6 +302,15 @@ rows_person() {
   else _row person config ok "$f"; fi
 
   printf '%s\n' "$CREW_ROWS" | awk -F'\t' 'NF >= 2 && $1 ~ /^(crew\.|tracker$|preferences$)/ { print "person\t" $0 }'
+
+  # session.language (highness#63): read the way the session rules read it, personal file only.
+  if key=$(bash "$HERE/config.sh" get --user .session.language 2>/dev/null) && [ -n "$key" ]; then
+    _row person session.language set "$key"
+  elif bash "$HERE/config.sh" has --user .session.language >/dev/null 2>&1; then
+    _row person session.language default 'null: skills answer a wordless call in English, on purpose'
+  else
+    _row person session.language unset 'a wordless skill call (a bare /hi-crew:agenda) is answered in English'
+  fi
 
   [ -n "${TOP:-}" ] || return 0
   if [ -f "$TOP/.claude/highness.json" ]; then _row person overlay team-file "$TOP/.claude/highness.json"; return; fi

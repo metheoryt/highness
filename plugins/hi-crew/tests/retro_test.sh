@@ -45,7 +45,7 @@ bash "$C" record proj-7 "{\"title\":\"Seven\",\"repo\":\"team/proj\",\"workspace
 # --- gather: every part degrades on its own
 out=$(bash "$R" gather proj-7)
 has 'bundle names the PR' "$out" 'https://github.com/team/proj/pull/9'
-has 'no transcript is said, not fatal' "$out" $'## transcript\nnot found'
+has 'no transcript is said, not fatal' "$out" $'## transcripts\nnot found'
 has 'no denial log is said' "$out" 'no denial log at'
 has 'no choices is said' "$out" $'## choices\nnone'
 if bash "$R" gather nope-1 2>/dev/null; then no 'gather refuses unknown ticket'; else ok 'gather refuses unknown ticket'; fi
@@ -104,7 +104,7 @@ out=$(HI_RETRO_SPEC_REPO=team/spec bash "$R" file proj-8 "$T/f.json"); rc=$?
 check 'filing exits 0' "$rc" 0
 check 'tool fault filed in its repo' "$(grep '^create' "$GH_LOG" | sed -n 1p | grep -o -- '-R [^ ]*')" '-R team/tool'
 check 'brief gap deduped by title' "$(printf '%s\n' "$out" | sed -n 2p)" $'brief\tworker spec — name the test command!\tdup https://github.com/x/y/issues/5'
-check 'decision filed in the root repo' "$(grep '^create' "$GH_LOG" | sed -n 2p | grep -o -- '-R [^ ]*')" '-R team/root'
+check 'decision filed in the ticket repo' "$(grep '^create' "$GH_LOG" | sed -n 2p | grep -o -- '-R [^ ]*')" '-R team/proj'
 has 'decision carries needs-decision' "$(grep '^create' "$GH_LOG" | sed -n 2p)" '--label needs-decision'
 check 'two created, one dup' "$(grep -c '^create' "$GH_LOG")" 2
 : >"$GH_COMMENT"
@@ -129,6 +129,79 @@ echo '[{"kind":"tool","title":"a","body":"b"},{"kind":"tool","title":"a","body":
 if bash "$R" file proj-8 "$T/four.json" 2>/dev/null; then no 'more than 3 refused'; else ok 'more than 3 refused'; fi
 echo '[{"kind":"mood","title":"a","body":"b"}]' >"$T/bad.json"
 if bash "$R" file proj-8 "$T/bad.json" 2>/dev/null; then no 'unknown kind refused'; else ok 'unknown kind refused'; fi
+# The refusal names the finding and the accepted kinds (highness#130).
+has 'bad kind: the accepted values named' "$(bash "$R" file proj-8 "$T/bad.json" 2>&1)" 'finding 1: kind "mood": give one of tool'
+echo '[{"kind":"tool","title":"a","body":"b"},{"title":"a","body":"b"}]' >"$T/nokind.json"
+has 'missing kind: which finding, and the values' "$(bash "$R" file proj-8 "$T/nokind.json" 2>&1)" 'finding 2: kind missing: give one of tool (a tool fault), brief (a worker-spec gap), decision (for a person)'
+echo '[{"kind":"tool","title":"a"}]' >"$T/nobody.json"
+has 'missing body named' "$(bash "$R" file proj-8 "$T/nobody.json" 2>&1)" 'finding 1: body missing'
+
+# --- the ticket's repo (highness#130): a finding with no repo goes there before the root, and an
+# Orca selector in the facts (autostart records path:<clone>) resolves to the clone's owner/repo.
+CLONE="$T/clone"; mkdir -p "$CLONE"
+git -C "$CLONE" init -q && git -C "$CLONE" remote add origin git@github.com:team/clone.git
+bash "$C" record proj-11 "{\"title\":\"Eleven\",\"repo\":\"path:$CLONE\",\"workspace\":\"$WS\",\"root\":\"$ROOT\"}"
+bash "$C" record proj-12 "{\"title\":\"Twelve\",\"workspace\":\"$WS\",\"root\":\"$ROOT\"}"
+bash "$C" record proj-13 "{\"title\":\"Thirteen\",\"repo\":\"name:clone\",\"workspace\":\"$WS\",\"root\":\"$ROOT\"}"
+echo '[{"kind":"tool","title":"repo-less","body":"b"}]' >"$T/rl.json"
+echo '[]' >"$GH_OPEN"; : >"$GH_LOG"
+bash "$R" file proj-11 "$T/rl.json" >/dev/null
+check 'path: facts repo resolves to the clone' "$(grep '^create' "$GH_LOG" | tail -1 | grep -o -- '-R [^ ]*')" '-R team/clone'
+bash "$R" file proj-12 "$T/rl.json" >/dev/null
+check 'no facts repo: the root' "$(grep '^create' "$GH_LOG" | tail -1 | grep -o -- '-R [^ ]*')" '-R team/root'
+echo "[{\"kind\":\"tool\",\"title\":\"sel\",\"body\":\"b\",\"repo\":\"path:$CLONE\"}]" >"$T/sel.json"
+bash "$R" file proj-12 "$T/sel.json" >/dev/null
+check "a finding's own path: repo resolves too" "$(grep '^create' "$GH_LOG" | tail -1 | grep -o -- '-R [^ ]*')" '-R team/clone'
+echo '[{"kind":"tool","title":"bogus","body":"b","repo":"not a repo"}]' >"$T/bogus.json"
+: >"$GH_LOG"
+out=$(bash "$R" file proj-12 "$T/bogus.json"); rc=$?
+check 'a finding repo naming nothing fails' "$rc" 1
+has '... and says which' "$out" "failed: the finding's repo 'not a repo' names no GitHub owner/repo"
+check '... and files nothing elsewhere' "$(grep -c '^create' "$GH_LOG")" 0
+# id: and name: are asked of Orca.
+cat >"$T/bin/orca-fake" <<EOF
+#!/bin/sh
+case "\$*" in *"--repo name:clone"*) printf '%s\n' '{"result":{"repo":{"path":"$CLONE","gitRemoteIdentity":{"canonicalKey":"github.com/team/viaorca"}}}}' ;; *) exit 1 ;; esac
+EOF
+chmod +x "$T/bin/orca-fake"
+ORCA_CLI_COMMAND="$T/bin/orca-fake" bash "$R" file proj-13 "$T/rl.json" >/dev/null
+check 'name: selector asked of Orca' "$(grep '^create' "$GH_LOG" | tail -1 | grep -o -- '-R [^ ]*')" '-R team/viaorca'
+# The retro comment goes to the resolved repo, not `gh -R path:/…`.
+: >"$GH_COMMENT"
+bash "$R" comment proj-11 || no 'comment with a path: repo posts'
+check 'comment: path: repo resolved' "$(grep '^comment' "$GH_LOG" | tail -1)" 'comment issue comment 11 -R team/clone --body-file -'
+bash "$C" record proj-14 "{\"title\":\"Fourteen\",\"repo\":\"path:$T/nowhere\",\"workspace\":\"$WS\",\"root\":\"$T/noroot\"}"
+has 'comment: an unresolvable repo is named' "$(cd "$T" && bash "$R" comment proj-14 2>&1)" "repo 'path:$T/nowhere' names no GitHub owner/repo"
+
+# --- every transcript of a restarted worker (highness#130): found in each config dir, one per
+# session, oldest first by first entry (the first one was touched last), a usage-limit stop is a
+# signal, the gap until the restart a stall, and the denials of every session kept.
+WS2="$T/ws2"; mkdir -p "$WS2"
+SLUG=$(printf '%s' "$WS2" | sed 's|[/.]|-|g')
+mkdir -p "$T/cfgA/projects/$SLUG" "$T/cfgB/projects/$SLUG"
+cat >"$T/cfgA/projects/$SLUG/s-first.jsonl" <<'EOF'
+{"type":"user","timestamp":"2026-02-01T09:00:00.000Z","message":{"content":"go"}}
+{"type":"assistant","timestamp":"2026-02-01T09:30:00.000Z","apiError":"usage_limit_reached","isApiErrorMessage":true,"message":{"content":[{"type":"text","text":"You've hit your 5-hour limit · resets 3pm"}]}}
+EOF
+cat >"$T/cfgB/projects/$SLUG/s-restart.jsonl" <<'EOF'
+{"type":"user","timestamp":"2026-02-01T15:05:00.000Z","message":{"content":"resume"}}
+{"type":"assistant","timestamp":"2026-02-01T15:06:00.000Z","message":{"content":[{"type":"tool_use","id":"r1","name":"Bash","input":{"command":"make test"}}]}}
+{"type":"user","timestamp":"2026-02-01T15:06:30.000Z","message":{"content":[{"type":"tool_result","tool_use_id":"r1","is_error":true,"content":"Exit code 2"}]}}
+EOF
+cp "$T/cfgA/projects/$SLUG/s-first.jsonl" "$T/cfgB/projects/$SLUG/s-first.jsonl"
+touch "$T/cfgA/projects/$SLUG/s-first.jsonl" "$T/cfgB/projects/$SLUG/s-first.jsonl"
+printf '%s\n' '{"session":"s-first","cwd":"/x","by":"hi-guard","decision":"deny"}' '{"session":"s-restart","cwd":"/y","by":"claude-code","decision":"deny"}' \
+  '{"session":"s-other","cwd":"/z","by":"x","decision":"deny"}' >"$T/den.jsonl"
+bash "$C" record proj-10 "{\"title\":\"Ten\",\"repo\":\"team/proj\",\"workspace\":\"$WS2\",\"root\":\"$ROOT\"}"
+out=$(HI_RETRO_CONFIG_DIRS="$T/cfgA $T/cfgB" HI_RETRO_DENIALS="$T/den.jsonl" bash "$R" gather proj-10)
+has 'both transcripts, oldest first' "$out" $'1\t'"$T/cfgA/projects/$SLUG/s-first.jsonl"$'\n2\t'"$T/cfgB/projects/$SLUG/s-restart.jsonl"
+check 'one per session across config dirs' "$(printf '%s\n' "$out" | grep -c 's-first.jsonl')" 1
+has 'the usage-limit stop is a signal' "$out" $'1\tlimit\t2026-02-01T09:30:00.000Z\t\t\tYou\'ve hit your 5-hour limit'
+has 'the restart transcript is read' "$out" $'2\terror\t2026-02-01T15:06:30.000Z\tBash\tmake test\tExit code 2'
+has 'the wait for the restart is a stall' "$out" $'2\tstall\t2026-02-01T09:30:00.000Z\t\t\t335 min'
+has 'denials of the first session' "$out" '"session":"s-first"'
+has 'denials of the restart' "$out" '"session":"s-restart"'
+case "$out" in *s-other*) no 'denials of other sessions dropped (restart)' ;; *) ok 'denials of other sessions dropped (restart)' ;; esac
 
 # --- the configured sink: placeholders shell-quoted, its last line is the result, dup passes through
 cat >"$T/sink" <<'EOF'
