@@ -47,7 +47,9 @@ case "$1 $2" in
     case "${FAKE_PANE_GONE:-}" in
       closed) echo '{"ok":true,"result":{"terminal":{"status":null,"connected":false}}}' ;;
       ?*) echo '{"ok":false,"error":{"code":"terminal_not_found"}}'; exit 1 ;;
-      *) echo '{"ok":true,"result":{"terminal":{"status":null,"connected":true,"writable":true}}}' ;;
+      *) if [ -n "${FAKE_DIALOG:-}" ]; then
+           echo '{"ok":true,"result":{"terminal":{"status":null,"connected":true,"writable":true,"agentWait":{"kind":"permission"}}}}'
+         else echo '{"ok":true,"result":{"terminal":{"status":null,"connected":true,"writable":true,"agentWait":null}}}'; fi ;;
     esac ;;
   "terminal send") # the relaunch line; FAKE_START: the session then runs in that pane
     printf '%s\n' "$*" >>"$FAKE_LOG.send"
@@ -198,22 +200,28 @@ echo '{"state":"open"}' >"$T/prstate"
 # --- highness#110: the lost worker's pane is still open: its own session gets the new Dispatch
 # there, relaunched first when it no longer runs. Its transcript is found by the lost Dispatch's
 # id in a typed prompt; a tool result that merely mentions the id does not count.
-export HI_CLAUDE_DIRS="$T/cfg" HI_PROC="$T/proc" FAKE_CFG="$T/cfg" FAKE_PROC="$T/proc"
+export HI_CLAUDE_DIRS="$T/cfg
+$T/cfg2" HI_PROC="$T/proc" FAKE_CFG="$T/cfg" FAKE_PROC="$T/proc"
+# The account workers run on (crew.sh account) is $T/cfg; $T/cfg2 is another one.
+mkdir -p "$T/cfg" "$T/cfg2" "$T/profiles"
+export HI_ORCA_PROFILES="$T/profiles"
+jq --arg d "$T/cfg" '.crew.budget.config_dir = $d' "$T/user.json" >"$T/user.json.new" && mv "$T/user.json.new" "$T/user.json"
 slug=$(printf '%s' "$T/ws" | sed 's/[^A-Za-z0-9]/-/g')
 P="$T/cfg/projects/$slug"
 mkdir -p "$P" "$T/av"
 transcripts() {
-  rm -rf "$P"/*.jsonl "$T/cfg/sessions" "$T/proc"
+  rm -rf "$P"/*.jsonl "$T/cfg/sessions" "$T/cfg2/sessions" "$T/proc"
   jq -nc '{type: "user", permissionMode: "bypassPermissions", message: {role: "user",
            content: "You are a dispatched worker...\n --task-id task_old --dispatch-id ctx_old --outcome succeeded"}}' >"$P/sid1.jsonl"
   jq -nc '{type: "assistant", message: {model: "opus", content: [{type: "text", text: "ok"}]}}' >>"$P/sid1.jsonl"
   jq -nc '{type: "user", permissionMode: "default", message: {role: "user",
            content: [{type: "tool_result", content: "saw --dispatch-id ctx_old in a log"}]}}' >"$P/sid0.jsonl"
 }
-running() { # <pid> <session> <pane>: a live claude of that session in that pane
-  mkdir -p "$T/proc/$1" "$T/cfg/sessions"
+running() { # <pid> <session> <pane> [<config dir>]: a live claude of that session in that pane
+  local cfg=${4:-$T/cfg}
+  mkdir -p "$T/proc/$1" "$cfg/sessions"
   printf 'ORCA_TERMINAL_HANDLE=%s\0' "$3" >"$T/proc/$1/environ"
-  jq -nc --argjson p "$1" --arg s "$2" '{pid: $p, sessionId: $s}' >"$T/cfg/sessions/$1.json"
+  jq -nc --argjson p "$1" --arg s "$2" '{pid: $p, sessionId: $s}' >"$cfg/sessions/$1.json"
 }
 inpane() { # <env...>: resume AB-1 on fresh facts; sets out, rc
   fresh; transcripts; rm -f "$FAKE_LOG.send"
@@ -251,6 +259,19 @@ out=$(FAKE_PANE=term_pane bash "$C" resume AB-1 2>&1); rc=$?
 check 'alive in pane: exit 0' "$rc" 0
 [ -s "$FAKE_LOG.send" ] && no 'alive in pane: no relaunch' || ok 'alive in pane: no relaunch'
 has 'alive in pane: the Dispatch goes into that pane' "$(cat "$FAKE_LOG")" '--terminal term_pane'
+
+# Still running in its pane, but on another account than workers run on: move it first.
+fresh; transcripts; rm -f "$FAKE_LOG.send"; running 4242 sid1 term_pane "$T/cfg2"
+err=$(FAKE_PANE=term_pane bash "$C" resume AB-1 2>&1) && no 'other account: exit 0'
+has 'other account: says move it first' "$err" 'move it first'
+[ -s "$FAKE_LOG" ] && no 'other account: started nothing' || ok 'other account: started nothing'
+check 'other account: facts unchanged' "$(bash "$C" get AB-1 | jq -r .dispatch)" ctx_old
+
+# A dialog open in the pane: the Dispatch would answer it.
+fresh; transcripts; rm -f "$FAKE_LOG.send"; running 4242 sid1 term_pane
+err=$(FAKE_PANE=term_pane FAKE_DIALOG=1 bash "$C" resume AB-1 2>&1) && no 'dialog: exit 0'
+has 'dialog: says answer it there' "$err" 'waits on a dialog'
+[ -s "$FAKE_LOG" ] && no 'dialog: started nothing' || ok 'dialog: started nothing'
 
 # Fallbacks to a new worker: today's behaviour.
 fresh; transcripts; rm -f "$FAKE_LOG.send"; running 4242 sid1 term_other

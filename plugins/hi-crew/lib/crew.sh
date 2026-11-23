@@ -1844,18 +1844,22 @@ proc_env() { # <pid> <NAME>
   fi
 }
 
-# Live Claude sessions, one per line: pid<TAB>session<TAB>terminal handle (empty outside Orca).
-# Claude Code keeps sessions/<pid>.json in its config dir while the process runs.
+# Live Claude sessions, one per line: pid<TAB>session<TAB>terminal handle (empty outside Orca)
+# <TAB>config dir (physical). Claude Code keeps sessions/<pid>.json in its config dir while the
+# process runs.
 live_sessions() {
-  local dir f row pid
+  local dir f row pid seen=''
   while IFS= read -r dir; do
     [ -n "$dir" ] && [ -d "$dir/sessions" ] || continue
+    dir=$(cd -P "$dir" 2>/dev/null && pwd -P) || continue
+    case "$NL$seen$NL" in *"$NL$dir$NL"*) continue ;; esac
+    seen="$seen$NL$dir"
     for f in "$dir"/sessions/*.json; do
       [ -f "$f" ] || continue
       row=$(jq -r 'select((.sessionId | type) == "string") | [.pid, .sessionId] | @tsv' "$f" 2>/dev/null) || continue
       pid=${row%%"$TAB"*}
       [ -n "$row" ] && proc_alive "$pid" || continue
-      printf '%s\t%s\n' "$row" "$(proc_env "$pid" ORCA_TERMINAL_HANDLE)"
+      printf '%s\t%s\t%s\n' "$row" "$(proc_env "$pid" ORCA_TERMINAL_HANDLE)" "$dir"
     done
   done <<EOF
 $(claude_dirs)
@@ -1901,24 +1905,32 @@ relaunch_line() { # <transcript> <session> <model>
 # the caller falls back to a new worker. Dies when it relaunched the session but could not see it
 # start: a dialog may be open there, and a second worker must not start beside it.
 resume_in_pane() {
-  local key=$1 facts=$2 d=$3 handle=$4 asked=$5 ws run pane sid row s pid h line tr model title sf out rc i
+  local key=$1 facts=$2 d=$3 handle=$4 asked=$5 ws run pane sid row s pid h dir cd acct line tr model title sf out rc i
   shift 5
   ws=$(printf '%s' "$facts" | jq -r '.workspace // empty')
   run=$(printf '%s' "$facts" | jq -r '.run // empty')
   pane=$(lost_pane "$d") || return 1
   sid=$(session_of "$ws" "$@") || return 1
-  pid=''
-  while IFS="$TAB" read -r row s h; do
+  pid='' cd=''
+  while IFS="$TAB" read -r row s h dir; do
     [ -n "$row" ] || continue
     if [ "$s" = "$sid" ]; then
       [ "$h" = "$pane" ] || return 1   # it runs, but in another pane
-      pid=$row
+      pid=$row cd=$dir
     elif [ "$h" = "$pane" ]; then
       return 1                          # another session runs in that pane
     fi
   done <<EOF
 $(live_sessions)
 EOF
+  # Still running, but on an account other than the one workers run on (the switch left it, or
+  # its limit is why it stopped): a Dispatch typed into it would stop the same way. A new worker
+  # beside a live session is no answer either.
+  if [ -n "$pid" ]; then
+    acct=$(as_account 2>/dev/null) && acct=$(cd -P "$acct" 2>/dev/null && pwd -P) || acct=''
+    [ -z "$acct" ] || [ "$acct" = "$cd" ] \
+      || die "resume: $key's session still runs in its pane $pane, but on the account at $cd, not $acct which workers run on: move it first (hi's /hi:account, or account.sh move --only $pane), then run resume again"
+  fi
   if [ -z "$pid" ]; then
     tr=$(transcript_of "$ws" "$sid") || return 1
     model=$(printf '%s' "$facts" | jq -r '.model // empty')
@@ -1932,6 +1944,10 @@ EOF
       sleep 1
     done
     "$(orca_cmd)" terminal wait --terminal "$pane" --for tui-idle --timeout-ms 30000 --json >/dev/null 2>&1 </dev/null
+  fi
+  # A dialog open in the pane would take the new Dispatch's text as its answer.
+  if "$(orca_cmd)" terminal show --terminal "$pane" --json 2>/dev/null | jq -e '(.result.terminal.agentWait // null) != null' >/dev/null 2>&1; then
+    die "resume: $key's session in its pane $pane waits on a dialog: answer it there, then run resume again"
   fi
   title=$(printf '%s' "$facts" | jq -r '.title // empty'); [ -n "$title" ] || title=$key
   sf=$(mktemp "${TMPDIR:-/tmp}/hi-crew-resume.XXXXXX") || die 'resume: no temp file'
