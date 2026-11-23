@@ -11,18 +11,21 @@ RT="${CLAUDE_PLUGIN_ROOT}/lib/retro.sh"
 
 ## 1. Read
 
-`bash "$RT" gather <KEY>` prints one bundle: the facts, where the spec, PR and ticket are, the
-worker's transcript and the signals in it (failed tool calls, asks, interrupts, stalls), the
-denial log's lines for that session, and the ticket's choice records. A part it cannot find says
-so; go on without it.
+`bash "$RT" gather <KEY>` prints one bundle: the facts, where the spec, PR and ticket are, every
+transcript of the worker, numbered oldest first (a worker restarted or resumed after a usage
+limit has several, and the PR usually comes from the last), the signals in them (failed tool
+calls, asks, interrupts, usage-limit stops, stalls; each line starts with its transcript's
+number), the denial log's lines for those sessions, and the ticket's choice records. A part it
+cannot find says so; go on without it.
 
 Then read what it points at: the PR (body, review threads, CI) and the ticket with its comments,
-with the forge and tracker tools the team uses. Open the transcript only around the signals: it
+with the forge and tracker tools the team uses. Open a transcript only around the signals: it
 is long, and the signals say where to look.
 
 Look only at what cost time or went wrong:
 
-- **stalls**: a long gap, a dialog nobody answered, a session that sat idle;
+- **stalls**: a long gap, a dialog nobody answered, a session that sat idle, a worker stopped at a
+  usage limit (`limit`) and the wait until its restart;
 - **permission denies**: a guard rule or the harness refused a command (the denial log, `error`
   signals naming a hook);
 - **retries**: the same command run again and again, a tool that failed the same way twice;
@@ -38,9 +41,9 @@ Each finding is one of three kinds, by where its fix lives:
 
 | kind | what | goes to |
 |---|---|---|
-| `tool` | a tool's fault: a script that failed, a guard rule that denied a safe command, a dialog a tool should have kept away | an issue in that tool's repo (set `repo`: `owner/repo`) |
+| `tool` | a tool's fault: a script that failed, a guard rule that denied a safe command, a dialog a tool should have kept away | an issue in that tool's repo (set `repo`: `owner/repo`; without it, the ticket's own repo) |
 | `brief` | a gap in the worker spec: the worker lacked a rule or a fact it needed, or followed one that misled it | an issue against the worker spec (hi-crew's own repo) |
-| `decision` | a process question only a person can settle: who decides, what the rule should be | a `needs-decision` item in the team's tracker |
+| `decision` | a process question only a person can settle: who decides, what the rule should be | a `needs-decision` item in the team's tracker (with no `crew.retro_sink`: an issue in the ticket's repo) |
 
 Keep the three that cost the most. Before writing one, search the open issues (or the team's
 tracker) for it; when one already says it, set `"dup": "<its key or URL>"` and it is not filed
