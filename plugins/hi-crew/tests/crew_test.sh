@@ -167,6 +167,34 @@ bash "$C" relay ABC-2 --id msg_q2 --again "$T/r-rec" >/dev/null || no 'relay wit
 check 'relay: recommended recorded; as recommended, against, own and reframed read apart' \
   "$(bash "$C" choices ABC-2 | tail -4 | jq -r '[.question, .recommended, (.as_recommended | tostring)] | join("|")' | tr '\n' ' ')" \
   'r1|A|true r2|A|false r3|A|false r4|A|false '
+# One reply over several points: a choice line per point, each covered by the shared reply unless
+# the point says otherwise.
+n0=$(lines); prev=$(bash "$C" choices ABC-2 | tail -1 | jq -r .at)
+jq -n '{body: "yes, send it; but for s3 C", reply: "yes, send it; but for s3 C", points: [
+  {question: "s1", options: [{name: "A"}, {name: "B"}], recommended: "A"},
+  {question: "s2", recommended: "B"},
+  {question: "s3", recommended: "A", took: "own", picked: "C", reply: "but for s3 C"},
+  {question: "s4", recommended: "A", picked: "B"}]}' >"$T/r-shared"
+check 'relay: a shared reply prints what each point took' "$(bash "$C" relay ABC-2 --id msg_q2 --again "$T/r-shared")" \
+  "relayed ABC-2 A, B, C, B (again, supersedes $prev) → ctx_b"
+check 'relay: a shared reply writes one line per point' "$(( $(lines) - n0 ))" 4
+check 'relay: covered points take the recommended option and the reply verbatim; a point of its own is kept' \
+  "$(bash "$C" choices ABC-2 | tail -4 | jq -r '[.question, .took, .picked, .reply, (.covered | tostring), (.as_recommended | tostring)] | join("|")' | tr '\n' ' ')" \
+  's1|option|A|yes, send it; but for s3 C|true|true s2|option|B|yes, send it; but for s3 C|true|true s3|own|C|but for s3 C|null|false s4|option|B|yes, send it; but for s3 C|true|false '
+n0=$(lines); : >"$FAKE_SENT"
+jq -n '{body: "yes", reply: "yes", points: [{question: "t1", recommended: "A"}, {question: "t2"}]}' >"$T/r-norec"
+case "$(bash "$C" relay ABC-2 --id msg_q2 --again "$T/r-norec" 2>&1; echo "exit $?")" in
+  *'covers point 2 (t2)'*'Nothing sent'*'exit 2') ok 'relay: a shared reply over a point with nothing to take is refused' ;;
+  *) no 'relay: a shared reply over a point with nothing to take is refused' ;; esac
+jq -n '{body: "yes", reply: 5, points: [{question: "t1", recommended: "A"}]}' >"$T/r-badreply"
+if bash "$C" relay ABC-2 --id msg_q2 --again "$T/r-badreply" 2>/dev/null; then no 'relay refuses a reply that is not a string'; else ok 'relay refuses a reply that is not a string'; fi
+check 'relay: a refused shared reply sends and records nothing' "$(wc -c <"$FAKE_SENT" | tr -d ' ') $(lines)" "0 $n0"
+# A line written before replies were split bundles several points; it still reads.
+printf '%s\n' '{"key":"ABC-1","at":"2026-01-01T00:00:00Z","question":"five points: ship, notes, docs, tag, post","took":"option","picked":"yes, send it","reply":"yes, send it","ask":"msg_old","dispatch":"ctx_old"}' \
+  '{"key":"ABC-1","at":"2026-01-01T00:00:01Z","question":"two points: a, b","took":"option","picked":"A","recommended":"A","reply":"yes"}' >>"$HIGHNESS_STATE/crew/choices.jsonl"
+check 'choices: old bundled lines still read, as_recommended derived as before' \
+  "$(bash "$C" choices ABC-1 | tail -2 | jq -r '[.picked, (.as_recommended | tostring), (has("covered") | tostring)] | join("|")' | tr '\n' ' ')" \
+  'yes, send it|null|false A|true|false '
 bash "$C" choice ABC-1 '{"question":"q3","took":"option","picked":"A","recommended":"A"}'
 check 'choice: a line written by hand derives as_recommended too' "$(bash "$C" choices ABC-1 | tail -1 | jq -r .as_recommended)" true
 printf '%s\n' '{"key":"ABC-1","at":"2026-01-01T00:00:00Z","question":"old","took":"option","picked":"A"}' >>"$HIGHNESS_STATE/crew/choices.jsonl"

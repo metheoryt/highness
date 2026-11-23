@@ -50,7 +50,9 @@
 # the asker recommended, null when the ask made no recommendation; absent on lines written
 # before it was recorded). relay adds ask (the message id), run, dispatch, asked_at, ask_body
 # (the ask verbatim: its options are usually prose in it) and sent (the body relayed); a line
-# relay --again wrote adds supersedes (the `at` of the answer it replaces). New
+# relay --again wrote adds supersedes (the `at` of the answer it replaces); covered (true) marks a
+# point one shared reply answered, not a reply of its own (cmd_relay). Lines written before
+# replies were split may bundle several points in one line. New
 # fields may be added; these keep their names and meaning. `choices` adds as_recommended, not
 # stored: true when the person took the recommended option, false when they took another one,
 # their own or reframed the question, null when there was no recommendation (or none recorded)
@@ -341,11 +343,18 @@ relayed_last() {
 #   {"body": "<the text sent to the worker>",
 #    "points": [{"question":…, "options":[{"name":…,"loses":…,"leans_on":…}],
 #                "recommended":<option name>|null,
-#                "took":"option"|"own"|"reframed", "picked":…, "reply":"<their words, verbatim>"}]}
+#                "took":"option"|"own"|"reframed", "picked":…, "reply":"<their words, verbatim>"}],
+#    "reply": "<the person's words, verbatim, when one reply answers several points>"}
 # Everything is checked before the reply goes out, so a refusal sends nothing. Each point becomes
 # one choices.jsonl line, with the ask's id, Run, Dispatch, time and verbatim text added, and
 # recommended null when the point leaves it out; an empty "points" still writes one line (took
 # null), so a relayed reply never shows as a gap.
+# One reply for several points ("yes, send it" closing five): "points" lists every point the ask
+# named and the top-level "reply" covers each point with no "reply" of its own: took defaults to
+# "option", picked to the point's recommended, reply is the shared one, and the line is marked
+# covered (true). A point the person answered otherwise carries its own took/picked/reply and is
+# kept as given. A covered point that ends up taking an option with nothing to pick (no picked, no
+# recommended) refuses the relay.
 # --action <id>: the person said yes to the worker's prepared action (lib/action.sh). It runs
 # once, here, before the reply goes out, and the reply starts with its outcome; the body follows
 # as the person's words. A reply Orca refuses (the worker is gone) is kept for `stranded`, and its
@@ -373,8 +382,15 @@ cmd_relay() {
   keyfile "$key" >/dev/null || exit 2
   [ -f "$file" ] || die "relay: no reply file: $file"
   reply=$(jq -ce 'select(type == "object" and (.body | type) == "string" and .body != ""
-                         and ((.points // []) | type) == "array" and all((.points // [])[]; type == "object"))' "$file" 2>/dev/null) \
-    || die 'relay: the reply file must be a JSON object with a non-empty "body" and a "points" array of objects'
+                         and ((.points // []) | type) == "array" and all((.points // [])[]; type == "object")
+                         and ((.reply // "") | type) == "string")' "$file" 2>/dev/null) \
+    || die 'relay: the reply file must be a JSON object with a non-empty "body", a "points" array of objects and, if any, a string "reply"'
+  # A point the shared reply covers takes its recommended option; with none, the reply picks nothing.
+  out=$(printf '%s' "$reply" | jq -r 'select((.reply // "") != "") | (.points // []) | to_entries[]
+        | select((.value | has("reply") | not) and (.value.took // "option") == "option"
+                 and (.value.picked // .value.recommended) == null)
+        | "point \(.key + 1) (\(.value.question // "no question"))"' | paste -sd ' ' -)
+  [ -z "$out" ] || die "relay: the shared reply covers $out, which names no recommended option to take; give it its own took/picked/reply. Nothing sent"
   if [ -z "$id" ]; then
     local d ids
     d=$(cmd_get "$key" 2>/dev/null | jq -r '.dispatch // empty')
@@ -419,7 +435,10 @@ $body"
        ask_body: ($a.body // $p.question // ""), sent: $sent}
       + (if $aid != "" then {action: $aid} else {} end)
       + (if $prev != "" then {supersedes: $prev} else {} end) as $base
-    | (if ($r.points // []) == [] then [{question: null, took: null}] else $r.points end)[]
+    | (if ($r.points // []) == [] then [{question: null, took: null}]
+       elif ($r.reply // "") == "" then $r.points
+       else $r.points | map(if has("reply") then .
+         else {took: "option"} + . | {picked: .recommended} + . + {reply: $r.reply, covered: true} end) end)[]
     | {key: $key, at: $now, question: null, recommended: null}
       + (if (($p.options // []) | length) > 0 then {options: $p.options} else {} end)
       + . + $base') || die 'relay: could not build the choice lines'
@@ -436,8 +455,8 @@ $body"
   [ -z "$aid" ] || act_set "$(act_meta "$key" "$aid")" '{"delivered": true}'
   if printf '%s\n' "$recs" >>"$DIR/choices.jsonl"; then
     printf 'relayed %s %s → %s\n' "$key" \
-      "$(printf '%s' "$reply" | jq -r '[(.points // [])[] | (.picked // .took // "?") | tostring]
-        | if length == 0 then "(no points)" else join(", ") end')$([ -z "$prev" ] || printf ' (again, supersedes %s)' "$prev")" \
+      "$(printf '%s\n' "$recs" | jq -rs 'if .[0].question == null and .[0].took == null and length == 1 then "(no points)"
+        else map(.picked // .took // "?" | tostring) | join(", ") end')$([ -z "$prev" ] || printf ' (again, supersedes %s)' "$prev")" \
       "$(printf '%s' "$ask" | jq -r '.dispatch // "?"')"
     return 0
   fi

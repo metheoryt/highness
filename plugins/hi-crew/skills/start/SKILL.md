@@ -147,7 +147,14 @@ Several tickets: run steps 1–7 for each, then end the turn once.
   tickets. Never answer a worker with `orchestration reply` directly; `bash "$C" choices --gaps`
   lists every answer sent that way. Write a reply file:
   `{"body":"<the user's decisions, said to be the user's>","points":[{"question":…,"options":[{"name":…,"loses":…,"leans_on":…}],"recommended":<option name>|null,"took":"option"|"own"|"reframed","picked":…,"reply":"<their words, verbatim>"}]}`,
-  one point per decision, then `bash "$C" relay <KEY> --id <message_id> <reply-file>`.
+  one point per point the ask named, then `bash "$C" relay <KEY> --id <message_id> <reply-file>`.
+  When one reply answers several points ("yes, send it" closing five), never bundle them into one
+  point: list every point with its `question`, `options` and `recommended`, and put the reply
+  verbatim once, top level, as `"reply"`. Each point with no `reply` of its own is covered by it
+  and takes its recommended option. Give a point its own `took`, `picked` and `reply` only where
+  the person answered it otherwise ("yes, but for the third C"); a blanket "no" or "neither" is
+  no shared yes, so give those points their own answer. Relay refuses a covered point that has
+  nothing recommended to take.
   `recommended` is the option the worker recommended in its ask, by its `name` there (the one
   `picked` holds when they take it), and null when the ask recommended none; `bash "$C" choices`
   then reads each answer as taken as recommended or against it.
