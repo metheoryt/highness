@@ -749,8 +749,8 @@ $bg"
       while ((i = index(s, ph)) > 0) { out = out substr(s, 1, i - 1) val; s = substr(s, i + length(ph)) }
       return out s
     }
-    /^\{\{#(FRESH|HANDOVER)\}\}$/ { skip = (substr($0, 4, length($0) - 5) != ENVIRON["MODE"]); next }
-    /^\{\{\/(FRESH|HANDOVER)\}\}$/ { skip = 0; next }
+    $0 == "{{#FRESH}}" || $0 == "{{#HANDOVER}}" { skip = ($0 != "{{#" ENVIRON["MODE"] "}}"); next }
+    $0 == "{{/FRESH}}" || $0 == "{{/HANDOVER}}" { skip = 0; next }
     skip { next }
     { line = $0
       if (line == "{{STANDS}}") { print ENVIRON["STANDS"]; next }
@@ -1058,7 +1058,7 @@ handover_stands() { # <pr url> <pr view json> <root> <key> [<workspace>]
     "- Review decision: \(.reviewDecision // "" | if . == "" then "none yet" else ascii_downcase | gsub("_"; " ") end)."'
   api=$(printf '%s\n' "$1" | sed -n 's#^https://github\.com/\([^/]*\)/\([^/]*\)/pull/\([0-9][0-9]*\).*#\1 \2 \3#p')
   o=${api%% *}; r=${api#* }; r=${r%% *}; n=${api##* }
-  threads=$(gh api graphql -F o="$o" -F r="$r" -F n="$n" -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:100){nodes{isResolved isOutdated path line comments(first:1){nodes{author{login} body}}}}}}}' 2>/dev/null \
+  threads=$(gh api graphql -f o="$o" -f r="$r" -F n="$n" -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:100){nodes{isResolved isOutdated path line comments(first:1){nodes{author{login} body}}}}}}}' 2>/dev/null \
     | jq -r '[.data.repository.pullRequest.reviewThreads.nodes[]? | select(.isResolved | not)] as $o
       | "- Open review threads: \($o | length)\(if ($o | length) > 0 then ":" else "." end)",
         ($o[0:15][] | "  - `\(.path)\(if .line then ":\(.line)" else "" end)`\(if .isOutdated then " (outdated)" else "" end), \(.comments.nodes[0].author.login // "?"): \(.comments.nodes[0].body // "" | split("\n")[0] | .[0:120])"),
@@ -2030,8 +2030,13 @@ cmd_adopt() {
   # The workspace: the one given, else an Orca workspace of the PR's repo on its branch (never the
   # main checkout), else a new one created on the branch from its remote.
   if [ -z "$ws" ]; then
-    rows=$("$(orca_cmd)" worktree list --limit 10000 --json 2>/dev/null | jq -c --arg p "github:$o" '
-      [.result.worktrees[]? | select((.projectId // "" | ascii_downcase) == $p and (.isArchived | not))]') || rows='[]'
+    rows=$("$(orca_cmd)" worktree list --limit 10000 --json 2>/dev/null) || rows=''
+    printf '%s' "$rows" | jq -e '.ok == true' >/dev/null 2>&1 \
+      || printf 'crew: adopt: orca worktree list did not answer; looking for no existing workspace\n' >&2
+    printf '%s' "$rows" | jq -e '.result.truncated != true' >/dev/null 2>&1 \
+      || printf 'crew: adopt: orca listed only part of the workspaces; pass --workspace if the PR has one\n' >&2
+    rows=$(printf '%s' "$rows" | jq -c --arg p "github:$o" '
+      [.result.worktrees[]? | select((.projectId // "" | ascii_downcase) == $p and (.isArchived | not))]' 2>/dev/null) || rows='[]'
     [ -n "$rows" ] || rows='[]'
     row=$(printf '%s' "$rows" | jq -c --arg b "refs/heads/$branch" '[.[] | select(.branch == $b and (.isMainWorktree | not))] | .[0] // empty')
     if [ -n "$row" ]; then

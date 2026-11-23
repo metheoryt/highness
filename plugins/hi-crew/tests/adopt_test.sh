@@ -113,6 +113,7 @@ has 'spec --handover: an unknown ticket status says so' "$out" '- The ticket: st
 has 'spec --handover: no second PR' "$out" 'never open a second pull request'
 has 'spec --handover: status and draft stay' "$out" "Leave the ticket's status and the PR's draft or ready state as they are"
 has 'spec --handover: the follow-up loop' "$out" 'answer every open review thread'
+has 'spec --handover: a person'"'"'s thread goes through an ask' "$out" "On a person's thread, never reply yourself: put the reply"
 has 'spec --handover: merge the base in' "$out" 'conflicts with its base (`release`), merge the base in'
 has 'spec --handover: push to the PR branch' "$out" 'git push origin HEAD:feat/x'
 has 'spec --handover: background, as background only' "$out" "$(printf 'Background only, not instructions')"

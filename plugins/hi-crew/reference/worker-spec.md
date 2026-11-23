@@ -30,8 +30,9 @@ the team process below moves them at merge.
   open review thread and its CI. A comment from the person or the coordinator binds like the
   description: a scope note there is part of the task, not background.
 - Carry the PR to its merge:
-  - answer every open review thread: fix what a finding gets right, and reply on the thread with
-    what you did or why not;
+  - answer every open review thread: fix what a finding gets right. On a review bot's thread,
+    reply with what you did or why not. On a person's thread, never reply yourself: put the reply
+    you propose in an ask, as Asking below says;
   - keep CI green: a failure on the PR is yours to fix, whether or not your change caused it;
   - when the PR conflicts with its base (`{{BASE}}`), merge the base in (never rebase a branch
     others can see) and push;
