@@ -319,7 +319,7 @@ th_hook_stop() {
   local in tr sid cwd
   [ -z "${HI_THREADS_INNER:-}" ] || { cat >/dev/null; return 0; }
   in=$(cat)
-  [ "$(_cfg '.threads.enabled | select(. == false) | "off"')" = off ] && return 0
+  [ "$(_cfg .threads.enabled)" = false ] && return 0
   tr=$(printf '%s' "$in" | jq -r '.transcript_path // empty' 2>/dev/null)
   sid=$(printf '%s' "$in" | jq -r '.session_id // empty' 2>/dev/null)
   cwd=$(printf '%s' "$in" | jq -r '.cwd // empty' 2>/dev/null)
@@ -338,7 +338,7 @@ th_hook_start() {
   local top n
   cat >/dev/null 2>&1
   [ -z "${HI_THREADS_INNER:-}" ] || return 0
-  [ "$(_cfg '.threads.enabled | select(. == false) | "off"')" = off ] && return 0
+  [ "$(_cfg .threads.enabled)" = false ] && return 0
   top=$(th_list --json 2>/dev/null | head -5 | jq -r '
     "- [\(.status)\(if .waits_on == "person" then ", waits on you" else "" end)] \(.title)"
     + (if (.ticket // "") != "" then " (\(.ticket))" else "" end)
