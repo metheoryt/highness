@@ -33,12 +33,17 @@
 #                                     Orca refused), one JSON object per line, with the live session
 #                                     in the workspace if any; the agenda asks "resume it?"
 #   crew.sh resume <KEY>              a worker lost without reporting (a usage limit, an account
-#                                     switch): start a new one in its recorded workspace and Run,
-#                                     on the spec copy under a "resuming" note, and record its
-#                                     dispatch and task, and the noted spec as `resumed_spec`
-#                                     (<state dir>/specs/<KEY>.resumed.md, for that dispatch:
-#                                     `resumed_for`). Refuses when the workspace is gone, the
-#                                     PR is merged or closed, or the worker is still live (cmd_resume)
+#                                     switch): when its Orca pane is still open and its Claude
+#                                     session can be found, that session gets a new Dispatch in
+#                                     the pane, relaunched there first (`claude --resume`) when it
+#                                     is no longer running; it keeps its chat (`resumed_in`: the
+#                                     pane, `session`). Otherwise a new worker in its recorded
+#                                     workspace and Run, on the spec copy under a "resuming" note,
+#                                     the noted spec recorded as `resumed_spec` (<state dir>/specs/
+#                                     <KEY>.resumed.md, for that dispatch: `resumed_for`). Either
+#                                     way the new dispatch and task are recorded. Refuses when the
+#                                     workspace is gone, the PR is merged or closed, or the worker
+#                                     is still live (cmd_resume)
 #   crew.sh adopt <KEY> --pr <url> [--title T] [--workspace P] [--repo SEL] [--brief-file F]
 #                 [--background X]... [--root R]
 #                                     hand an open github.com PR that another session drove to a
@@ -1878,14 +1883,218 @@ EOF
   return 0
 }
 
-# resume <KEY>: start a new worker on <KEY> in its recorded workspace and Run, after the last one
-# was lost without reporting (a usage limit, an account switch, a closed session). Orca's own
-# retry does not fit: --retry-of needs --task, and a Task's spec cannot carry the note below,
-# while `claude --resume` cannot follow a session into another Claude profile. So this is a new
-# Task: the spec copy (the facts' `spec`) under a note that says the work so far is in the
-# workspace, then the new dispatch and task recorded, the old dispatch kept in `resumed` (asks
-# drops its "lost" escalation). Refuses, starting nothing: no facts, no workspace, no spec copy,
-# a merged or closed PR, or a worker on it Orca still counts live. Prints the receipt.
+# --- resume in the lost worker's own pane (highness#110) ---------------------------------------
+# Measured on Orca 1.4.271: a worker whose Claude exits (/exit, a crash) has its Dispatch failed
+# at once (stage process_exited) while its pane stays open (terminalState retained). Typing
+# `claude --resume <session> …` into that pane continues the session with its chat, on whichever
+# account Orca has selected (every account's config dir links projects/ to ~/.claude/projects),
+# and `orchestration worker-start --terminal <pane>` from the coordinator gives it a new Task and
+# Dispatch there: its ask and worker_done reach the coordinator again. Orca refuses --terminal
+# from a worker, so only the coordinator can do this.
+
+# Every Claude config dir a worker may have run under, one per line: HI_CLAUDE_DIRS when set
+# (newline-separated, tests), else each Orca profile's account homes, this session's, ~/.claude.
+claude_dirs() {
+  local p d
+  if [ -n "${HI_CLAUDE_DIRS:-}" ]; then printf '%s\n' "$HI_CLAUDE_DIRS"; return 0; fi
+  as_profiles "$("$(orca_cmd)" account list --agent claude --json 2>/dev/null)" | awk 'NF && !seen[$0]++' \
+    | while IFS= read -r p; do for d in "$p"/*/home; do [ -d "$d" ] && printf '%s\n' "$d"; done; done
+  printf '%s\n' "${CLAUDE_CONFIG_DIR:-}" "$HOME/.claude"
+}
+
+# session_of <workspace> <dispatch>…: the Claude session that worked the first of these Dispatches
+# found. Orca types a Dispatch's preamble into the worker as a prompt, so the transcript whose
+# typed prompt (a user message whose content is a string, not a tool result) carries
+# `--dispatch-id <it>` is that worker's. Transcripts sit under projects/<the workspace with every
+# character but a letter or digit turned into '-'>/<session>.jsonl.
+session_of() {
+  local ws=$1 d dir slug f seen='' pd
+  shift
+  slug=$(printf '%s' "$ws" | sed 's/[^A-Za-z0-9]/-/g')
+  for d in "$@"; do
+    [ -n "$d" ] || continue
+    while IFS= read -r dir; do
+      [ -n "$dir" ] && [ -d "$dir/projects/$slug" ] || continue
+      pd=$(cd -P "$dir/projects/$slug" 2>/dev/null && pwd -P) || continue
+      case "$NL$seen$NL" in *"$NL$pd$NL"*) continue ;; esac
+      seen="$seen$NL$pd"
+      f=$(grep -lF -e "--dispatch-id $d" "$pd"/*.jsonl 2>/dev/null | while IFS= read -r f; do
+        jq -e --arg n "--dispatch-id $d" 'select(.type == "user" and (.message.content | type) == "string"
+            and (.message.content | contains($n)))' "$f" >/dev/null 2>&1 && { printf '%s\n' "$f"; break; }
+      done)
+      [ -n "$f" ] && { basename "$f" .jsonl; return 0; }
+    done <<EOF
+$(claude_dirs)
+EOF
+  done
+  return 1
+}
+NL='
+'
+
+# The transcript of a session (any config dir), for the flags it ran with.
+transcript_of() { # <workspace> <session>
+  local slug dir
+  slug=$(printf '%s' "$1" | sed 's/[^A-Za-z0-9]/-/g')
+  while IFS= read -r dir; do
+    [ -n "$dir" ] && [ -f "$dir/projects/$slug/$2.jsonl" ] && { printf '%s\n' "$dir/projects/$slug/$2.jsonl"; return 0; }
+  done <<EOF
+$(claude_dirs)
+EOF
+  return 1
+}
+
+# Processes: HI_PROC is a /proc-shaped fixture dir for tests (<pid>/environ); macOS has `ps -E`.
+proc_alive() { if [ -n "${HI_PROC:-}" ]; then [ -d "$HI_PROC/$1" ]; else kill -0 "$1" 2>/dev/null; fi; }
+proc_env() { # <pid> <NAME>
+  local p=${HI_PROC:-/proc}
+  if [ -r "$p/$1/environ" ]; then
+    tr '\0' '\n' <"$p/$1/environ" 2>/dev/null | sed -n "s/^$2=//p" | head -1
+  elif [ -z "${HI_PROC:-}" ]; then
+    ps -E -ww -o command= -p "$1" 2>/dev/null | tr ' ' '\n' | sed -n "s/^$2=//p" | head -1
+  fi
+}
+
+# Live Claude sessions, one per line: pid<TAB>session<TAB>terminal handle (empty outside Orca)
+# <TAB>config dir (physical). Claude Code keeps sessions/<pid>.json in its config dir while the
+# process runs.
+live_sessions() {
+  local dir f row pid seen=''
+  while IFS= read -r dir; do
+    [ -n "$dir" ] && [ -d "$dir/sessions" ] || continue
+    dir=$(cd -P "$dir" 2>/dev/null && pwd -P) || continue
+    case "$NL$seen$NL" in *"$NL$dir$NL"*) continue ;; esac
+    seen="$seen$NL$dir"
+    for f in "$dir"/sessions/*.json; do
+      [ -f "$f" ] || continue
+      row=$(jq -r 'select((.sessionId | type) == "string") | [.pid, .sessionId] | @tsv' "$f" 2>/dev/null) || continue
+      pid=${row%%"$TAB"*}
+      [ -n "$row" ] && proc_alive "$pid" || continue
+      printf '%s\t%s\t%s\n' "$row" "$(proc_env "$pid" ORCA_TERMINAL_HANDLE)" "$dir"
+    done
+  done <<EOF
+$(claude_dirs)
+EOF
+}
+TAB=$(printf '\t')
+
+# lost_pane <dispatch>: the terminal handle of a lost worker's pane, when Orca still has it open.
+lost_pane() {
+  local h
+  [ -n "$1" ] || return 1
+  h=$("$(orca_cmd)" orchestration worker-show --dispatch "$1" --json 2>/dev/null \
+    | jq -r 'select(.ok == true) | .result | select((.terminalState // "") == "retained") | .terminal // empty' 2>/dev/null)
+  [ -n "$h" ] || return 1
+  # A closed pane still answers ok, with connected false (measured, Orca 1.4.271).
+  "$(orca_cmd)" terminal show --terminal "$h" --json 2>/dev/null \
+    | jq -e '.ok == true and .result.terminal.connected == true and .result.terminal.writable != false
+             and ((.result.terminal.status // "running") == "running")' >/dev/null 2>&1 || return 1
+  printf '%s\n' "$h"
+}
+
+# The line that relaunches a session in its pane: the permission mode it last ran in (from its
+# transcript), the model recorded for the worker, and Orca's agent-view plugin dir, which Orca
+# passes every agent it launches (ORCA_CLAUDE_AGENT_VIEW_PLUGIN_DIR in this session).
+relaunch_line() { # <transcript> <session> <model>
+  local mode line="claude --resume $2" av=${ORCA_CLAUDE_AGENT_VIEW_PLUGIN_DIR:-}
+  [ -n "$av" ] && [ -d "$av" ] && line="$line --plugin-dir $(q "$av")"
+  mode=$(jq -r 'select(.type == "user" and (.permissionMode | type) == "string") | .permissionMode' "$1" 2>/dev/null | tail -1)
+  case "$mode" in
+    bypassPermissions) line="$line --dangerously-skip-permissions" ;;
+    ''|default) ;;
+    *[!A-Za-z]*) ;;
+    *) line="$line --permission-mode $mode" ;;
+  esac
+  [ -n "$3" ] && line="$line --model $(q "$3")"
+  printf '%s\n' "$line"
+}
+
+# resume_in_pane <key> <facts> <lost dispatch> <coordinator handle> <asked> <dispatch>…: give the
+# lost worker's own session a new Dispatch in its own pane, relaunching it there first when it no
+# longer runs. Prints the receipt and records the facts; exit 0. Exit 1, having changed nothing:
+# no open pane, no session found, the session runs elsewhere, or another one runs in the pane;
+# the caller falls back to a new worker. Dies when it relaunched the session but could not see it
+# start: a dialog may be open there, and a second worker must not start beside it.
+resume_in_pane() {
+  local key=$1 facts=$2 d=$3 handle=$4 asked=$5 ws run pane sid row s pid h dir cd acct line tr model title sf out rc i
+  shift 5
+  ws=$(printf '%s' "$facts" | jq -r '.workspace // empty')
+  run=$(printf '%s' "$facts" | jq -r '.run // empty')
+  pane=$(lost_pane "$d") || return 1
+  sid=$(session_of "$ws" "$@") || return 1
+  pid='' cd=''
+  while IFS="$TAB" read -r row s h dir; do
+    [ -n "$row" ] || continue
+    if [ "$s" = "$sid" ]; then
+      [ "$h" = "$pane" ] || return 1   # it runs, but in another pane
+      pid=$row cd=$dir
+    elif [ "$h" = "$pane" ]; then
+      return 1                          # another session runs in that pane
+    fi
+  done <<EOF
+$(live_sessions)
+EOF
+  # Still running, but on an account other than the one workers run on (the switch left it, or
+  # its limit is why it stopped): a Dispatch typed into it would stop the same way. A new worker
+  # beside a live session is no answer either.
+  if [ -n "$pid" ]; then
+    acct=$(as_account 2>/dev/null) && acct=$(cd -P "$acct" 2>/dev/null && pwd -P) || acct=''
+    [ -z "$acct" ] || [ "$acct" = "$cd" ] \
+      || die "resume: $key's session still runs in its pane $pane, but on the account at $cd, not $acct which workers run on: move it first (hi's /hi:account, or account.sh move --only $pane), then run resume again"
+  fi
+  if [ -z "$pid" ]; then
+    tr=$(transcript_of "$ws" "$sid") || return 1
+    model=$(printf '%s' "$facts" | jq -r '.model // empty')
+    line=$(relaunch_line "$tr" "$sid" "$model")
+    "$(orca_cmd)" terminal send --terminal "$pane" --text "$line" --enter --json >/dev/null 2>&1 </dev/null || return 1
+    i=0
+    until live_sessions | awk -F'\t' -v s="$sid" -v h="$pane" '$2 == s && $3 == h { f = 1 } END { exit !f }'; do
+      i=$((i + 1))
+      [ "$i" -le "${HI_RESUME_START_WAIT:-90}" ] \
+        || die "resume: typed \`$line\` into $key's pane $pane, but its session was not seen running: look at the pane (a dialog?), then run resume again"
+      sleep 1
+    done
+    "$(orca_cmd)" terminal wait --terminal "$pane" --for tui-idle --timeout-ms 30000 --json >/dev/null 2>&1 </dev/null
+  fi
+  # A dialog open in the pane would take the new Dispatch's text as its answer.
+  if "$(orca_cmd)" terminal show --terminal "$pane" --json 2>/dev/null | jq -e '(.result.terminal.agentWait // null) != null' >/dev/null 2>&1; then
+    die "resume: $key's session in its pane $pane waits on a dialog: answer it there, then run resume again"
+  fi
+  title=$(printf '%s' "$facts" | jq -r '.title // empty'); [ -n "$title" ] || title=$key
+  sf=$(mktemp "${TMPDIR:-/tmp}/hi-crew-resume.XXXXXX") || die 'resume: no temp file'
+  {
+    printf '## Resumed in your own session: read this first\n\n'
+    printf 'Your Dispatch on %s%s was lost (a usage limit, an account switch or an exit), but this\n' "$key" "${d:+ ($d)}"
+    printf 'is the same Claude session: your chat, your spec and your work so far are above. Orca gave you\n'
+    printf 'a new Task and Dispatch: from now on use the Task ID and Dispatch ID in this message for every\n'
+    printf 'ask, escalation and worker_done, never the earlier ones. Your spec still binds.\n\n'
+    [ -z "$asked" ] || printf 'Questions you asked under the lost Dispatch whose answer never reached you:\n\n%s\n\n' "$asked"
+    printf 'Continue where you stopped.\n'
+  } >"$sf"
+  out=$(cd "$(facts_root "$facts")" && "$(orca_cmd)" orchestration worker-start --spec-file "$sf" \
+    --task-title "$key: $title (resumed)" --terminal "$pane" --run "$run" ${handle:+--from "$handle"} --json 2>&1)
+  rc=$?
+  rm -f "$sf"
+  if [ $rc -ne 0 ] || [ "$(printf '%s' "$out" | jq -r '.ok // false' 2>/dev/null)" != true ]; then
+    die "resume: $key's session runs again in its pane $pane, but the new Dispatch failed; do not rerun it, read failedStage (orca skills get orchestration --reference references/recovery-and-cleanup.md): $out"
+  fi
+  (cmd_record "$key" "$(printf '%s' "$out" | jq -c --argjson f "$facts" --arg d "$d" --arg p "$pane" --arg s "$sid" --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
+    {dispatch: .result.dispatchId, task: .result.taskId, resumed_at: $now, resumed_in: $p, session: $s,
+     resumed: (($f.resumed // []) + (if $d != "" then [$d] else [] end))}')") \
+    || die "resume: the worker has a new Dispatch, but its facts were not recorded; record its dispatch and task by hand: $out"
+  printf '%s\n' "$out"
+  return 0
+}
+
+# resume <KEY>: get a worker going again on <KEY> after the last one was lost without reporting
+# (a usage limit, an account switch, a closed session). First in its own pane, keeping its chat
+# (resume_in_pane). When that cannot be done, a new worker in its recorded workspace and Run.
+# Orca's own retry does not fit there: --retry-of needs --task, and a Task's spec cannot carry
+# the note below. So it is a new Task: the spec copy (the facts' `spec`) under a note that says
+# the work so far is in the workspace. Either way the new dispatch and task are recorded and the
+# old dispatch kept in `resumed` (asks drops its "lost" escalation). Refuses, starting nothing: no
+# facts, no workspace, no spec copy, a merged or closed PR, or a worker on it Orca still counts
+# live. Prints the receipt; a line on stderr says which way it went.
 cmd_resume() {
   [ $# -eq 1 ] || die 'usage: resume <KEY>'
   need_jq
@@ -1933,6 +2142,14 @@ cmd_resume() {
                           + ($ans | split("\n") | map("  > " + .) | join("\n")) + "\n"
          else "  No answer came before it stopped. Ask again if it still stands.\n" end)') || asked=''
   rm -f "$m"
+  # Its own pane and session first: the worker keeps its chat. The Dispatches to look its session
+  # up by: the lost one, then the facts' latest and the ones earlier resumes replaced.
+  if resume_in_pane "$key" "$facts" "$d" "$handle" "$asked" "$d" \
+      $(printf '%s' "$facts" | jq -r '(.dispatch // empty), ((.resumed // []) | reverse | .[])'); then
+    printf 'crew: resume: %s got a new Dispatch in its own pane, its chat kept\n' "$key" >&2
+    return 0
+  fi
+  printf 'crew: resume: %s: no open pane with its session; starting a new worker in its workspace\n' "$key" >&2
   sf=$(mktemp "${TMPDIR:-/tmp}/hi-crew-resume.XXXXXX") || die 'resume: no temp file'
   {
     printf '## Resuming %s: read this first\n\n' "$key"
