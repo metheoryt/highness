@@ -128,8 +128,10 @@
 #                                     Dispatch: CI failed, new findings from review bots, and an
 #                                     approval when crew.merge is on_green. The coordinator, by a
 #                                     status message to its Run: merged or closed, new comments from
-#                                     people, an approval otherwise, and a worker event no Dispatch
-#                                     took. Bots' plain comments, a bot review with no findings, the
+#                                     people, an approval otherwise, an approval that no longer
+#                                     counts, a review re-requested from a person who reviewed
+#                                     (whoever asked, a bot included), and a worker event no
+#                                     Dispatch took. Bots' plain comments, a bot review with no findings, the
 #                                     workers' own comments, labels and cross-references wake no one.
 #                                     The first look at a ticket only records it.
 #                                     A ticket with no `pr` yet gets its PR looked up with gh by the
@@ -193,11 +195,15 @@
 # root, recorded at start): a command that prints one JSON object for a PR,
 #   {"state": "open|merged|closed", "draft": bool, "head": sha, "ci": "success|failure|pending|",
 #    "people": <count of comments by people>, "people_at": <latest time one was written or edited>,
-#    "findings": <count of review bots' findings>, "approvals": [<logins of people who approve>]}
+#    "findings": <count of review bots' findings>, "approvals": [<logins of people who approve>],
+#    "rerequested": [<logins of people asked to review again>]}
 # with {{PR}}, {{ROOT}}, {{MARKER}}, {{BOTS}} and {{FINDING_PATTERNS}} replaced by the
 # shell-quoted PR url, root, crew.marker, the JSON array of logins that are not people and the
-# JSON array of crew.finding_patterns. findings and approvals are optional: a state without them
-# never fires their events.
+# JSON array of crew.finding_patterns. findings, approvals and rerequested are optional: a state
+# without them never fires their events. An approval counts while its reviewer is not asked to
+# review again; a login leaving `approvals` is "no longer counts", and a new one in `rerequested`
+# (a person with an earlier review on the PR who is asked again) is a re-request. A first
+# request, such as a gatekeeper assigning reviewers, is neither.
 # Not people: a [bot] login, a forge Bot account, the forge Actions users (github-actions,
 # forgejo-actions, gitea-actions) and every login in crew.bots (a list; a team's AI reviewer or
 # gatekeeper on a normal account goes there). A comment is a person's when its author is a person
@@ -752,7 +758,7 @@ q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 # list never reads as findings gone and then back, or a bot's comment as a person's.
 gh_state() { # <pr url> <marker> <bots json array> [<finding patterns json array>]
   local view api n inline typed page
-  view=$(gh pr view "$1" --json state,isDraft,headRefOid,statusCheckRollup,comments,reviews,latestReviews 2>/dev/null) || return 1
+  view=$(gh pr view "$1" --json state,isDraft,headRefOid,statusCheckRollup,comments,reviews,latestReviews,reviewRequests 2>/dev/null) || return 1
   api=$(printf '%s\n' "$1" | sed -n 's#^https://github\.com/\([^/]*\)/\([^/]*\)/pull/\([0-9][0-9]*\).*#repos/\1/\2 \3#p')
   inline='[]' typed='[]'
   if [ -n "$api" ]; then
@@ -787,6 +793,10 @@ gh_state() { # <pr url> <marker> <bots json array> [<finding patterns json array
     | def body_finding: (.body // "") as $b | any($pats[]; . as $p | try ($b | test($p)) catch false);
       [$all[] | select(.bot and (.inline or .state == "CHANGES_REQUESTED"
                                  or (.state != null and body_finding)))] as $found
+    # Re-requested: a person asked to review again, after a review of theirs. A first request (a
+    # gatekeeper assigning reviewers) is not one, and a re-requested approval does not count.
+    | [.reviewRequests[]? | .login // empty | select(. != "" and (bot(.; "") | not))] as $asked
+    | [$asked[] | select(. as $l | any($all[]; .state != null and .who == $l))] as $again
     | { state: (.state | ascii_downcase), draft: .isDraft, head: .headRefOid,
         ci: ([.statusCheckRollup[]? | (.conclusion // .state // "" | ascii_upcase)] as $c
              | if ($c | length) == 0 then ""
@@ -797,7 +807,8 @@ gh_state() { # <pr url> <marker> <bots json array> [<finding patterns json array
         people: ($people | length),
         findings: ($found | length),
         approvals: ([.latestReviews[]? | select(.state == "APPROVED") | .author.login // ""
-                     | select(. != "" and (bot(.; "") | not))] | unique) }'
+                     | select(. != "" and (bot(.; "") | not) and (. as $l | $asked | index($l) | not))] | unique),
+        rerequested: ($again | unique) }'
 }
 
 # What changed between two PR states, one line each: who is woken (worker | coordinator), TAB,
@@ -821,7 +832,19 @@ changes() { # <before> <after> <approval goes to: worker | coordinator>
     if ($a | has("approvals")) then
       (($b.approvals // []) - $a.approvals) as $new
       | if ($new | length) > 0 then "\($ap)\tapproved by \($new | join(", "))" else empty end
-    else empty end'
+    else empty end,
+    # An approval that stops counting, and a review asked again, are news for a person, whoever asked
+    # (a gatekeeper bot on new commits, a dismissal on push, the reviewer changing their verdict).
+    (($b.rerequested // []) as $again
+     | (if ($a | has("approvals")) and ($b | has("approvals")) then $a.approvals - $b.approvals else [] end) as $lost
+     | [$lost[] | select(. as $l | $again | index($l))] as $lostAgain
+     | (if ($lostAgain | length) > 0
+          then "coordinator\treview re-requested from \($lostAgain | join(", ")): their approval no longer counts"
+        else empty end),
+       (($lost - $lostAgain) | if length > 0 then "coordinator\tapproval by \(join(", ")) no longer counts" else empty end),
+       (if ($a | has("rerequested")) then ($again - $a.rerequested - $lost)
+          | if length > 0 then "coordinator\treview re-requested from \(join(", "))" else empty end
+        else empty end))'
 }
 
 # The coordinator root of a ticket's facts: its recorded `root`, else derived from the cwd.

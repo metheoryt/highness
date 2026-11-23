@@ -540,7 +540,8 @@ check 'an approval is told once' "$(bash "$C" events | wc -l | tr -d ' ')" 1
 cp "$WR/.claude/highness.json" "$W/cfg.bak"
 jq '.crew.merge = "on_green"' "$W/cfg.bak" >"$WR/.claude/highness.json"
 st5 '{"state":"open","ci":"success","head":"c3","people":0,"findings":6,"approvals":["lead","new"]}'
-check 'on_green: an approval wakes the worker, who merges' "$(bash "$C" events | tail -1 | cut -f5,6)" "$(printf 'approved by new\tworker')"
+check 'on_green: an approval wakes the worker, who merges' "$(bash "$C" events | grep 'approved by new' | cut -f5,6)" "$(printf 'approved by new\tworker')"
+check 'on_green: an approval lost is still the coordinator'"'"'s' "$(bash "$C" events | tail -1 | cut -f5,6)" "$(printf 'approval by rev no longer counts\tcoordinator')"
 mv "$W/cfg.bak" "$WR/.claude/highness.json"
 bash "$C" events --ack; : >"$SENT"
 FAKE_SEND_FAIL=1 st5 '{"state":"open","ci":"failure","head":"c4c4c4c4c4","people":0,"findings":6,"approvals":["lead","new"]}'
@@ -569,6 +570,24 @@ mv "$W/cfg.bak" "$WR/.claude/highness.json"
 bash "$C" events --ack; : >"$SENT"
 st5 '{"state":"open","ci":"failure","head":"c4c4c4c4c4","people":3,"people_at":"2026-01-06T00:00:00Z","findings":8,"approvals":["lead","new"]}'
 check 'patterns removed: no event' "$(bash "$C" events)$(cat "$SENT")" ''
+# A review asked again and an approval that stops counting reach the coordinator, whoever asked.
+s5() { st5 "{\"state\":\"open\",\"ci\":\"failure\",\"head\":\"c4c4c4c4c4\",\"people\":3,\"people_at\":\"2026-01-06T00:00:00Z\",\"findings\":8,$1}"; }
+s5 '"approvals":["lead","new"],"rerequested":[]'
+check 're-requests appearing are no event' "$(bash "$C" events)$(cat "$SENT")" ''
+s5 '"approvals":["lead"],"rerequested":["new"]'
+check 'an approver asked again wakes the coordinator' "$(bash "$C" events | cut -f5,6)" \
+  "$(printf 'review re-requested from new: their approval no longer counts\tcoordinator')"
+case "$(cat "$SENT")" in *'send --to run:run_w1 --from term_coord --type status --subject W-5: review re-requested from new'*) ok 'the re-request goes to the Run' ;; *) no "re-request send: $(cat "$SENT")" ;; esac
+bash "$C" events --ack; : >"$SENT"
+s5 '"approvals":["lead"],"rerequested":["new","rev"]'
+check 'a reviewer asked again' "$(bash "$C" events | cut -f5,6)" "$(printf 'review re-requested from rev\tcoordinator')"
+bash "$C" events --ack
+s5 '"approvals":[],"rerequested":["new","rev"]'
+check 'an approval dismissed' "$(bash "$C" events | cut -f5,6)" "$(printf 'approval by lead no longer counts\tcoordinator')"
+bash "$C" events --ack
+s5 '"approvals":["new"],"rerequested":["rev"]'
+check 'approved again after the re-request' "$(bash "$C" events | cut -f5)" 'approved by new'
+bash "$C" events --ack; : >"$SENT"
 # A team's own crew.pr_state gets the bots and the finding patterns as JSON, and the marker.
 cp "$WR/.claude/highness.json" "$W/cfg.bak"
 jq '.crew.bots = ["gatekeeper"] | .crew.finding_patterns = ["Outside the diff"]
@@ -690,7 +709,7 @@ JSON
 EOF
 chmod +x "$W/bin/gh"
 GS=$(PATH="$W/bin:$PATH" bash -c 'eval "$(sed -n "/^gh_state()/,/^}/p" "$1")"; gh_state x "(agent)"' _ "$C")
-check 'gh_state' "$GS" '{"state":"open","draft":false,"head":"abc","ci":"failure","people_at":"2026-01-02T00:00:00Z","people":2,"findings":0,"approvals":[]}'
+check 'gh_state' "$GS" '{"state":"open","draft":false,"head":"abc","ci":"failure","people_at":"2026-01-02T00:00:00Z","people":2,"findings":0,"approvals":[],"rerequested":[]}'
 # Bots on normal accounts (crew.bots), the forge Actions user, review bots' findings, approvals.
 cat >"$W/bin/gh" <<'EOF'
 #!/bin/sh
@@ -702,7 +721,7 @@ if [ "$1" = api ]; then
          {"user":{"login":"me","type":"User"},"body":"(agent) renamed","updated_at":"2026-01-11T00:00:00Z"}]'
   exit 0
 fi
-cat <<'JSON'
+sed "s|RR|${RR:-[]}|" <<'JSON'
 {"state":"OPEN","isDraft":true,"headRefOid":"abc","statusCheckRollup":[],
  "comments":[{"author":{"login":"me"},"body":"(agents disagree here","updatedAt":"2026-01-02T00:00:00Z"},
              {"author":{"login":"forgejo-actions"},"body":"summary, rewritten on push","updatedAt":"2026-01-06T00:00:00Z"},
@@ -710,13 +729,21 @@ cat <<'JSON'
  "reviews":[{"author":{"login":"rev"},"body":"why?","state":"COMMENTED","submittedAt":"2026-01-01T00:00:00Z"},
             {"author":{"login":"rev"},"body":"LGTM","state":"APPROVED","submittedAt":"2026-01-08T00:00:00Z"},
             {"author":{"login":"gatekeeper"},"body":"fix the tests","state":"CHANGES_REQUESTED","submittedAt":"2026-01-09T00:00:00Z"},
-            {"author":{"login":"reviewer-x"},"body":"Reviewed 3 files, no comments","state":"COMMENTED","submittedAt":"2026-01-09T00:00:00Z"}],
+            {"author":{"login":"reviewer-x"},"body":"Reviewed 3 files, no comments","state":"COMMENTED","submittedAt":"2026-01-09T00:00:00Z"},
+            {"author":{"login":"lead"},"body":"","state":"APPROVED","submittedAt":"2026-01-08T00:00:00Z"},
+            {"author":{"login":"ops"},"body":"","state":"APPROVED","submittedAt":"2026-01-08T00:00:00Z"}],
  "latestReviews":[{"author":{"login":"rev"},"state":"APPROVED"},{"author":{"login":"lead"},"state":"APPROVED"},
-                  {"author":{"login":"gatekeeper"},"state":"CHANGES_REQUESTED"},{"author":{"login":"merge-bot[bot]"},"state":"APPROVED"}]}
+                  {"author":{"login":"gatekeeper"},"state":"CHANGES_REQUESTED"},{"author":{"login":"merge-bot[bot]"},"state":"APPROVED"}],
+ "reviewRequests":RR}
 JSON
 EOF
-GS=$(PATH="$W/bin:$PATH" bash -c 'eval "$(sed -n "/^gh_state()/,/^}/p" "$1")"; gh_state https://github.com/o/r/pull/3 "(agent)" "[\"forgejo-actions\",\"gatekeeper\",\"reviewer-x\"]"' _ "$C")
-check 'gh_state: bots, findings, approvals' "$GS" '{"state":"open","draft":true,"head":"abc","ci":"","people_at":"2026-01-03T12:00:00Z","people":3,"findings":2,"approvals":["lead","rev"]}'
+gs3() { RR=$1 PATH="$W/bin:$PATH" bash -c 'eval "$(sed -n "/^gh_state()/,/^}/p" "$1")"; gh_state https://github.com/o/r/pull/3 "(agent)" "[\"forgejo-actions\",\"gatekeeper\",\"reviewer-x\"]"' _ "$C"; }
+GS=$(gs3 '[]')
+check 'gh_state: bots, findings, approvals' "$GS" '{"state":"open","draft":true,"head":"abc","ci":"","people_at":"2026-01-03T12:00:00Z","people":3,"findings":2,"approvals":["lead","rev"],"rerequested":[]}'
+# Asked again: lead, who approved (no longer counted), and ops, whose approval GitHub already
+# dropped from latestReviews; a first request (new), a team and a bot are not re-requests.
+GS=$(gs3 '[{"__typename":"User","login":"lead"},{"__typename":"User","login":"ops"},{"__typename":"User","login":"new"},{"__typename":"Team","name":"Devs","slug":"devs"},{"__typename":"User","login":"gatekeeper"}]')
+check 'gh_state: re-requested reviews' "$(printf '%s' "$GS" | jq -c '{approvals, rerequested}')" '{"approvals":["rev"],"rerequested":["lead","ops"]}'
 GS=$(PATH="$W/bin:$PATH" bash -c 'eval "$(sed -n "/^gh_state()/,/^}/p" "$1")"; gh_state https://github.com/o/r/pull/4 "(agent)" "[]"' _ "$C")
 check 'gh_state: no inline comments, no state' "$GS" ''
 # gh pr view reads comments and reviews through GraphQL: a bot's login has no [bot] and no type.
@@ -748,7 +775,7 @@ cat <<'JSON'
 JSON
 EOF
 GS=$(PATH="$W/bin:$PATH" bash -c 'eval "$(sed -n "/^gh_state()/,/^}/p" "$1")"; gh_state https://github.com/o/r/pull/5 "(agent)" "[]"' _ "$C")
-check 'gh_state: GraphQL bot logins are not people' "$GS" '{"state":"open","draft":false,"head":"abc","ci":"","people_at":"2026-02-02T00:00:00Z","people":2,"findings":1,"approvals":[]}'
+check 'gh_state: GraphQL bot logins are not people' "$GS" '{"state":"open","draft":false,"head":"abc","ci":"","people_at":"2026-02-02T00:00:00Z","people":2,"findings":1,"approvals":[],"rerequested":[]}'
 GS=$(FAIL_TYPED=1 PATH="$W/bin:$PATH" bash -c 'eval "$(sed -n "/^gh_state()/,/^}/p" "$1")"; gh_state https://github.com/o/r/pull/5 "(agent)" "[]"' _ "$C")
 check 'gh_state: authors untyped, no state' "$GS" ''
 # A review bot that puts findings only in its review body: a body matching crew.finding_patterns is

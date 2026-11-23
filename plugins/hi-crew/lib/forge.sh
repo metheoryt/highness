@@ -30,7 +30,10 @@
 #                  terms (say "label:needs-review"), not the person's own, under section `name`,
 #                  group `group` (default others)
 # The bots whose comments ask nothing of the person: crew.bots, the forge Actions users, any
-# [bot] login and any forge Bot account.
+# [bot] login and any forge Bot account. Their activity is no review activity: a bot's comment or
+# review after the person's last word owes nothing, its approval is no approval, a review
+# requested from it is no one awaited. crew.bots is read at the root and, for each PR, from the
+# user file's `repos.<owner/repo>` and `repos.<owner>` of the PR's repo.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -56,6 +59,14 @@ GATES=$(cfg review_checks) || GATES=''
 EXTRA=$(bash "$CONFIG" get '.agenda.forge.reviews | select(type == "array") | tojson' 2>/dev/null) || EXTRA='[]'
 BOTS=$({ printf '%s\n' github-actions forgejo-actions gitea-actions; bash "$CONFIG" list '.crew.bots' 2>/dev/null; } \
   | jq -Rsc 'split("\n") | map(select(. != "")) | unique')
+# The searches span every repo, but config.sh reads the overlays of the cwd's repo only: the
+# crew.bots of each `repos.<owner/repo>` and `repos.<owner>` in the user file (config.sh's keys:
+# lowercase) apply to the PRs of that repo or owner. A repo's own committed file is not read: the
+# PR's repo may have no clone here.
+OVERLAY_BOTS=$(jq -c '[(.repos // {}) | to_entries[] | {key, value: [.value.crew.bots? // [] | .[]? | strings]}
+                       | select(.value | length > 0)] | from_entries' \
+  "${HIGHNESS_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/highness/config.json}" 2>/dev/null) || OVERLAY_BOTS='{}'
+[ -n "$OVERLAY_BOTS" ] || OVERLAY_BOTS='{}'
 
 # What the agenda already shows: the urls to skip (normalized), and the tickets' roles.
 SEEN=$(jq -Rsc '
@@ -134,7 +145,14 @@ search() {
     || { printf '%s' "$out" | tail -1; return 1; }
   printf '%s' "$out" | jq -e '.data.search' >/dev/null 2>&1 \
     || { printf '%s' "$out" | jq -r '[.errors[]?.message] | first // "gh answered without data"' 2>/dev/null | head -1; return 1; }
-  printf '%s\n' "$out"
+  # A login on its repo's overlay bots list is a Bot account from here on, author or requested.
+  printf '%s' "$out" | jq -c --argjson ob "$OVERLAY_BOTS" '
+    .data.search.nodes |= ((. // []) | map(
+      ((.repository.nameWithOwner // "") | ascii_downcase) as $r
+      | (($ob[$r] // []) + ($ob[$r | split("/") | .[0] // ""] // [])) as $extra
+      | if ($extra | length) == 0 then .
+        else (.. | objects | select((.login // "") as $l | $l != "" and any($extra[]; . == $l))) |= (.__typename = "Bot")
+        end))'
 }
 err() { jq -cn --arg s "$1" --arg e "$2" '{section: $s, error: ("gh: " + $e)}'; }
 

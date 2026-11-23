@@ -51,7 +51,7 @@ Below, `$O` stands for that executable.
   | `crew.owner` | the person's own name in branch names, for `{{OWNER}}`; set it in the person's own file, not the team's | a template with `{{OWNER}}` refuses to start |
   | `crew.marker` | the prefix workers put on everything they post under the person's account | `(agent)` |
   | `crew.pr_state` | a command that prints one PR's state as JSON, for the watch (below; the fields are in `lib/crew.sh`'s header); `{{PR}}`, `{{ROOT}}`, `{{MARKER}}`, `{{BOTS}}`, `{{FINDING_PATTERNS}}` become the shell-quoted PR url, the coordinator root, the marker, the JSON array of logins that are not people and the JSON array of `crew.finding_patterns`. A team's own command must apply the last two and print `findings` and `approvals`, or those events never fire. It runs outside any terminal, so it finds its own credentials | `gh` for a github.com PR; other forges go unwatched |
-  | `crew.bots` | logins that are not people, added to the forge Actions users (`github-actions`, `forgejo-actions`, `gitea-actions`) and any `[bot]` or Bot account: a team's AI reviewer or gatekeeper on a normal account. A GitHub App bot (CodeRabbit, Bugbot, Codex) is a Bot account and needs no entry. Their comments wake no one; their inline comments and change requests are findings, sent to the worker | the Actions users only |
+  | `crew.bots` | logins that are not people, added to the forge Actions users (`github-actions`, `forgejo-actions`, `gitea-actions`) and any `[bot]` or Bot account: a team's AI reviewer or gatekeeper on a normal account. A GitHub App bot (CodeRabbit, Bugbot, Codex) is a Bot account and needs no entry. Their comments wake no one and the agenda counts none of their activity as review activity; their inline comments and change requests are findings, sent to the worker. A review they re-request from a person, and an approval that stops counting, still reach the coordinator. Set per repo in the user file's `repos.<owner/repo>` or `repos.<owner>` for a repo that cannot carry one | the Actions users only |
   | `crew.finding_patterns` | regexes (jq syntax) for a review bot that puts some findings only in its review body, with no inline comment: a not-a-person's review whose body matches one counts as a finding and wakes the worker. Name the marker of the bot's findings sections, which its summary-only reviews lack (for CodeRabbit: `Outside diff range comments`, `Nitpick comments`, `Additional comments`). A changed list fires nothing for the reviews already there | none: a review body is never a finding |
 
   Read them at that root: `(cd "$(bash "$C" root)" && bash "${CLAUDE_PLUGIN_ROOT}/lib/config.sh" get '.crew.<key>')`.
@@ -168,7 +168,8 @@ Several tickets: run steps 1–7 for each, then end the turn once.
   no PR: show its evidence, and offer to close the ticket (if the worker left it open) and
   `bash "$C" close <KEY>`.
 - **A `status` from the watch** (body starts `hi-crew watch:`; the subject is `<KEY>: <what>`):
-  a PR merged or closed, people commented, or a person approved it. A CI failure and review
+  a PR merged or closed, people commented, a person approved it, an approval stopped counting, or
+  a review was re-requested from a person (by anyone, a bot included). A CI failure and review
   bots' findings go to the worker itself as a round (and an approval too, when crew.merge is
   `on_green`); they reach you only when no worker Dispatch took them. Then
   `bash "$C" events --ack`, and handle it as `hi-crew:agenda` does: merged or closed → offer to
