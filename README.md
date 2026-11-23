@@ -353,6 +353,13 @@ scripts:
 A personal hook set in Orca's repo settings takes precedence over `orca.yaml` unless the repo's
 command source policy says otherwise; `/hi:repo-setup` shows which one Orca will run.
 
+In an Orca tab, `hi` asks the agent to name the tab after the work in it — the ticket or the thing
+being fixed, not the skill that opened the session — and to rename it when the subject changes
+(`lib/tab-title.sh`; `highness tab-title "<title>"` from a shell). Turn off Orca's own **Auto
+Generate Tab Titles** so the two do not overwrite each other. A tab opened from another Orca
+window, with this host as its remote server, keeps its old name there: Orca stores the rename on
+this host but that window does not redraw it.
+
 ## Requirements
 
 bash 3.2+, git, jq. Optional: [Orca](https://github.com/stablyai/orca) 1.4.246 or newer, gortex. hi follows the current Orca and keeps no path for an older one: with an older Orca, `wt.sh` says to update it and makes plain git worktrees meanwhile.

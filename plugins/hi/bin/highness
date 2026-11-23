@@ -7,13 +7,14 @@
 #   highness worktree-setup      lib/worktree-setup.sh in the cwd's worktree; always exits 0
 #   highness worktree-teardown   lib/worktree-teardown.sh; always exits 0
 #   highness wt <args…>          lib/wt.sh (its own usage and exit codes)
+#   highness tab-title <title>   name this session's Orca tab (lib/tab-title.sh set); exits 0 unless the title is empty
 #   highness root                the plugin root (lib/, reference/ live under it)
 #   highness version             the plugin version
 set -u
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P) || exit 1
 
 usage() {
-  echo 'usage: highness worktree-setup | worktree-teardown | wt <args…> | root | version' >&2
+  echo 'usage: highness worktree-setup | worktree-teardown | wt <args…> | tab-title <title> | root | version' >&2
   exit 2
 }
 
@@ -22,6 +23,7 @@ case "$cmd" in
   worktree-setup)    bash "$ROOT/lib/worktree-setup.sh" "$@"; exit 0 ;;
   worktree-teardown) bash "$ROOT/lib/worktree-teardown.sh" "$@"; exit 0 ;;
   wt)                exec bash "$ROOT/lib/wt.sh" "$@" ;;
+  tab-title)         exec bash "$ROOT/lib/tab-title.sh" set "$@" ;;
   root)              printf '%s\n' "$ROOT" ;;
   version)
     v=$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$ROOT/.claude-plugin/plugin.json" 2>/dev/null | head -1)
