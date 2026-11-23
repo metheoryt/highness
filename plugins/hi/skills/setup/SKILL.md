@@ -1,6 +1,6 @@
 ---
 name: setup
-description: Check and fix what a machine and a person need before the first /hi-crew:start — jq, Orca and its orchestration, the highness launcher, which highness plugins each Claude profile Orca uses loads (missing, loaded twice, stale project pins), the hi-crew watch, the board columns hi moves workspaces between, the person's highness config (crew.agent, crew.model, a repo overlay, their preferences file, offering /hi:meet when there is none) — and then the repo in the cwd (an Orca project, plus every /hi:repo-setup row). One status table, then one proposed fix per gap, each run only on a yes. Never writes a file a repo tracks. Use on a fresh box, when the user asks to set up or check hi / hi-crew / highness, "why does hi-crew not work here", or before a first /hi-crew:start.
+description: Check and fix what a machine and a person need before the first /hi-crew:start — jq, Orca and its orchestration, the highness launcher, which highness plugins each Claude profile Orca uses loads (missing, loaded twice, stale project pins, project pins at another version than the user install), the hi-crew watch, the board columns hi moves workspaces between, the person's highness config (crew.agent, crew.model, session.language, a repo overlay, their preferences file, offering /hi:meet when there is none) — and then the repo in the cwd (an Orca project, plus every /hi:repo-setup row). One status table, then one proposed fix per gap, each run only on a yes. Never writes a file a repo tracks. Use on a fresh box, when the user asks to set up or check hi / hi-crew / highness, "why does hi-crew not work here", or before a first /hi-crew:start.
 ---
 
 # /hi:setup
@@ -87,6 +87,20 @@ file a repo tracks is a printed proposal, as in `/hi:repo-setup`'s `local` mode.
         && mv '<file>.new' '<file>'
 
   Say that running sessions keep what they loaded.
+- `drift:<file> drift`: a project or local pin of a highness plugin whose dir still exists is at
+  another version than the user-scope install of the same plugin, so a session in that project
+  runs other code than every other session (`<id>: <dir> at <pin> (<scope>) vs <user> (user)`; a
+  plugin that declares no version is compared by commit, shown after the version). Ask which side
+  is behind; usually the pin. `claude plugin update` with a project or local scope only sees the
+  project of its cwd, so the fix, one per pin and on a yes:
+
+      cd '<dir>' && CLAUDE_CONFIG_DIR='<the profile that holds <file>>' claude plugin update <id> --scope <scope>
+
+  When the user install is the older one: the same command with `--scope user` from anywhere. If
+  the person did not mean to pin it at all, `claude plugin uninstall <id> --scope <scope>` from
+  `<dir>` drops the pin instead; that one edits `<dir>/.claude/settings.json` (project) or
+  `settings.local.json` (local), so in a repo that tracks the file it is a printed proposal. Say
+  that running sessions keep what they loaded.
 - `plugins unknown`: `claude` is missing or `claude plugin list --json` failed; say so, and that
   the plugin rows were not checked.
 - `hi-crew off`: hi-crew is not enabled for workers, so there are no orchestration, watch or crew
@@ -138,6 +152,13 @@ as the whole new JSON before it happens, and keep every key it already has.
   file a repo tracks. `rejected`: the tracker refused the token; it needs a new one. `config`: the
   detail names the bad key (in the repo's file or the person's). `error`: the tracker did not
   answer (network, a VPN); say so, nothing to fix here.
+- `session.language unset`: no language for a skill call with no words of the person's yet (a
+  bare `/hi-crew:agenda`): those answer in English. Offer to set it to the language the person
+  writes in this session, as an English name (`"session": {"language": "Russian"}`), shown as the
+  whole new file. On a bare `/hi:setup` with no words of theirs, ask which language instead of
+  guessing. It is read from the top level of the person's file only (never the repo's file or a
+  `repos` block). A no is `null` there, on purpose, which reads as `default` and is not offered
+  again. `set` and `default` need nothing.
 - `overlay team-file`: the detail names the team file that applies. From a clone with no file of
   its own it is the umbrella's (an umbrella above the clone whose `repos.txt` lists it); nothing
   to fix. When the user expected the umbrella's file and the row says `none`, the umbrella does
