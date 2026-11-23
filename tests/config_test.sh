@@ -47,6 +47,13 @@ JSON
 h() { (cd "$T/$1" && HIGHNESS_CONFIG="$T/user2.json" bash "$C" has "$2" >/dev/null); }
 if h mine .crew.model; then check 'has: a key set to null' yes yes; else check 'has: a key set to null' no yes; fi
 if (cd "$T/mine" && HIGHNESS_CONFIG="$T/user2.json" bash "$C" get .crew.model >/dev/null); then check 'get: null reads unset' set unset; else check 'get: null reads unset' unset unset; fi
+printf '{"crew": {"on": false, "empty": "", "up": true}, "repos": {"acme": {"crew": {"on": true, "up": false}}}}' >"$T/user3.json"
+g3() { (cd "$T/$1" && HIGHNESS_CONFIG="$T/user3.json" bash "$C" get "$2"); }
+check 'get: false prints false and exits 0'             "$({ g3 mine .crew.on; echo "rc=$?"; } | tr '\n' ' ')" 'false rc=0 '
+check 'get: an owner overlay true wins over a top false' "$(g3 other .crew.on)" true
+check 'get: an owner overlay false wins over a top true' "$(g3 other .crew.up)" false
+check 'get: an empty string is a value'                 "$({ g3 mine .crew.empty; echo "rc=$?"; } | tr '\n' ' ')" ' rc=0 '
+if g3 mine .crew.off >/dev/null; then check 'get: absent next to false reads unset' set unset; else check 'get: absent next to false reads unset' unset unset; fi
 if h mine .crew.agent; then check 'has: an absent key' yes no; else check 'has: an absent key' no no; fi
 if h other .crew.agent; then check 'has: through an owner overlay' yes yes; else check 'has: through an owner overlay' no yes; fi
 if h mine .nothing.deeper; then check 'has: under an absent parent' yes no; else check 'has: under an absent parent' no no; fi

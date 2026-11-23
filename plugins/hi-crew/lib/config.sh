@@ -19,7 +19,8 @@
 # `repos.<owner>`, user top level. `list` concatenates the arrays of all of them in that order,
 # which is how deny patterns from a team and from one person add up.
 #
-#   config.sh get [--user|--personal] <jq-path>    the value (raw for strings); exit 1 when unset
+#   config.sh get [--user|--personal] <jq-path>    the value (raw for strings; false prints
+#                                                  false); exit 1 when unset or null
 #   config.sh list [--user|--personal] <jq-path>   one array element per line from every source;
 #                                                  nothing when unset
 #   config.sh has [--user|--personal] <jq-path>    the file that sets the key, even to null (how a
@@ -135,7 +136,9 @@ _get() {
   command -v jq >/dev/null 2>&1 || return 1
   while IFS="$(printf '\t')" read -r f base; do
     [ -n "$f" ] || continue
-    v=$(jq -er "($base // {}) | $1 | select(. != null)" "$f" 2>/dev/null) || continue
+    # Presence, not truthiness: `jq -e` would fail on a false value and read it as unset.
+    v=$(jq -r "[($base // {}) | $1 | select(. != null)]
+               | if length == 0 then error(\"unset\") else .[] end" "$f" 2>/dev/null) || continue
     printf '%s\n' "$v"
     return 0
   done <<EOF
