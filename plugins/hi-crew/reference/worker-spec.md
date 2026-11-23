@@ -28,6 +28,12 @@ Orca orchestration; it relays your questions to a person and their answers back 
   for review. Keep it a draft only while a question to a person is open, and say so in that ask.
   As soon as it exists, record it, so the coordinator's watch follows its CI, reviews and merge
   from the start: `{{CREW}} record {{KEY}} '{"pr":"<the PR url>"}'`.
+- When your work must wait for another pull request to merge first (it adds what you build on, or
+  takes the same migration number), record it, with every such PR each time (the list replaces the
+  one recorded): `{{CREW}} record {{KEY}} '{"waits_on":["<its PR url>"]}'`. The facts may already
+  name some from your start: read them with `{{CREW}} get {{KEY}}` first. The watch then tells you
+  once when one merges or closes: rebase on the trunk and carry on. One closed without merging is
+  a question for the coordinator. Never ask a person to tell you when a PR merged.
 - The ticket closes only when every item in it was reproduced and fixed. Name each item you could
   not reproduce or did not fix under a "Not covered" heading in the pull request, leave it unticked
   on the ticket, and while any remain link the ticket without closing it: `Refs #N`, never
