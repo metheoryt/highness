@@ -691,6 +691,20 @@ EOF
 chmod +x "$W/bin/gh"
 GS=$(PATH="$W/bin:$PATH" bash -c 'eval "$(sed -n "/^gh_state()/,/^}/p" "$1")"; gh_state x "(agent)"' _ "$C")
 check 'gh_state' "$GS" '{"state":"open","draft":false,"head":"abc","ci":"failure","people_at":"2026-01-02T00:00:00Z","people":2,"findings":0,"approvals":[]}'
+# A worker answering a review bot mentions it before the marker: still its own (highness#123).
+cat >"$W/bin/gh" <<'EOF'
+#!/bin/sh
+cat <<'JSON'
+{"state":"OPEN","isDraft":false,"headRefOid":"abc","statusCheckRollup":[],
+ "comments":[{"author":{"login":"me"},"body":"@coderabbitai (agent) no follow-up issue","updatedAt":"2026-01-05T00:00:00Z"},
+             {"author":{"login":"me"},"body":"@a @b\n(agent, per the user) both done","updatedAt":"2026-01-06T00:00:00Z"},
+             {"author":{"login":"rev"},"body":"@coderabbitai please look","updatedAt":"2026-01-02T00:00:00Z"},
+             {"author":{"login":"rev"},"body":"> (agent) x\n\nwhy?","updatedAt":"2026-01-03T00:00:00Z"},
+             {"author":{"login":"rev"},"body":"@me > (agent) x\n\nwhy?","updatedAt":"2026-01-04T00:00:00Z"}]}
+JSON
+EOF
+GS=$(PATH="$W/bin:$PATH" bash -c 'eval "$(sed -n "/^gh_state()/,/^}/p" "$1")"; gh_state x "(agent)"' _ "$C")
+check 'gh_state: a leading @mention before the marker is own' "$GS" '{"state":"open","draft":false,"head":"abc","ci":"","people_at":"2026-01-04T00:00:00Z","people":3,"findings":0,"approvals":[]}'
 # Bots on normal accounts (crew.bots), the forge Actions user, review bots' findings, approvals.
 cat >"$W/bin/gh" <<'EOF'
 #!/bin/sh
