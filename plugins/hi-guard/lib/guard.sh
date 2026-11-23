@@ -7,14 +7,20 @@
 # {"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":…}} object, and one
 # line in the denial log (lib/denials.sh).
 # Rules, first match wins:
-#   1. `sudo` as a command word (unquoted, unescaped: `\sudo`, `'su'do`); or anywhere as a word
-#      in an interpreter segment (sh/bash/dash/zsh/ksh/mksh/fish/busybox, su, eval, ssh; not the
-#      argv of a script file a shell runs: `bash wt.sh --name '… sudo …'`) or in
-#      the -c code of a shell word anywhere in the segment (`nice bash -o pipefail -c '…'`,
-#      `$SHELL -c '…'`), of script or flock (`script -qc '…'`, `flock f -c '…'`) or the -S
-#      string of env. That code, eval's arguments, flock's command after the lock file and the
-#      arguments of a command word that is itself an expansion (`$X sudo id`, `$BASH -c '…'`)
-#      are scanned as commands in turn: 16 scans, then the rest the strict way, never skipped.
+#   1. `sudo` as a command word (unquoted, unescaped: `\sudo`, `'su'do`): first in a simple
+#      command (after ; && || | ( $( ` or a newline, past env assignments and wrappers), not a
+#      word of data (a quoted argument, a grep pattern, a data heredoc body: highness-121).
+#      Code a command runs as a string is scanned as commands in turn: the -c code of a shell
+#      word anywhere in the segment (`nice bash -o pipefail -c '…'`, `$SHELL -c '…'`), of
+#      script or flock (`script -qc '…'`, `flock f -c '…'`), the -S string of env, eval's
+#      arguments, flock's command after the lock file, the arguments of a command word that is
+#      itself an expansion (`$X sudo id`, `$BASH -c '…'`), and ssh's remote command (the words
+#      after the host, as ssh joins them) and its -o RemoteCommand/ProxyCommand/LocalCommand/
+#      KnownHostsCommand: 16 scans, then the rest the strict way, never skipped. sudo anywhere
+#      as a word still denies where the scan does not model the code (_runs_sudo): a shell's
+#      argv after its -c code, a shell's words when it runs no script file and no -c (`bash -s
+#      sudo`; not `bash wt.sh --name '… sudo …'`), fish/busybox/su, an ssh whose options do
+#      not parse, an interpreter or ssh segment holding a here-string, and the strict scan.
 #  1b. `rbw get` as a command (built in, no config), unless it reads one field other than the
 #      password: `rbw get <entry> --field <name>`. Plain, --full, --raw, --clipboard or
 #      --field password all print (or hand over) the password, and a filter after them still
@@ -72,12 +78,18 @@
 # that expands nothing executable (no $(…), no `…`, no line ending in a backslash), and its
 # `<<` belongs to an exempt command, to `git commit|tag|notes` or `gh pr|issue|release` (a
 # message), or to a `cat` that is the whole of a "$(…)" argument of one of those two;
-# also to a top-level cat, tee, python, python3, node, jq, awk or sed whose output feeds
-# nothing further on its line (no `|`, no `(` after it). Every other body (cat … | bash,
-# eval "$(cat <<EOF)", bash /dev/stdin, ssh host <<'EOF', …) stays checked the strict way:
-# line by line, quote-blind. A body written to a file and run later is not followed: a kept
-# trade (#11), since without the data consumers a heredoc of prose naming sudo is denied every
-# week, and writing a script then running it is a deliberate two-step, not an honest slip.
+# also to a top-level command whose segment runs no code (codeseg in the scan: no shell, ssh,
+# eval, source, exec, xargs, parallel, at, script, flock, env, sudo, make, crontab, chroot-like
+# or container word (an interpreter like perl is data, as python was), no expansion as the
+# command word, not git, not the end of a compound command, not `( … )`) and whose output
+# feeds nothing further on its line (no `|`, no `(` after it). Every other body (cat … | bash,
+# eval "$(cat <<EOF)", bash /dev/stdin, ssh host <<'EOF', done <<EOF, …) stays checked the
+# strict way: line by line, quote-blind. Data for rule 1 only: a body that became data with
+# highness-121 (any consumer but cat, tee, python, python3, node, jq, awk, sed) still reaches
+# rules 1b, 2 and 3 as commands, as before. Not followed: a body written to a file and run
+# later, and a shell function or alias that runs its stdin (`r <<'EOF'` where r is `bash`) —
+# a kept trade (#11, #121): otherwise prose naming sudo is denied every week, and running a
+# body through a wrapper of one's own is a deliberate step, not an honest slip.
 # The scan may only decide "allow" on what it models exactly: a command holding anything it
 # does not model (see the scan's header: an unclosed quote, a $'…' escape, a ${…} with quotes
 # or expansions other than a plain $NAME inside, quotes in $((…)), a $-delimiter, …), or over
@@ -125,7 +137,8 @@ _out() {  # _out <deny|ask> <reason>; logs it too (denials.sh), with pretool's s
 # quote-blind split, for those bodies and for a command P cannot close. Records (RS1 = \036):
 # S<raw text>, then W<words> (unquoted, unescaped, joined by \037, redirections dropped: a
 # word ending in an unquoted < or > (or >& <& >| &>) and the word after it, any other word
-# holding one), one K<body> per kept body, T<text> (the text rule 2 reads: each segment's raw
+# holding one), one K<body> per kept body, one D<body> per body that is data for rule 1 only
+# (see the header), T<text> (the text rule 2 reads: each segment's raw
 # text and its unquoted words), and P<1|0> last. With allc set (guard.checks configured), every
 # segment also gets a C<words> record, kept or not.
 #
@@ -202,6 +215,7 @@ function emit(   k, b, keep, wl, c, cw, rd) {
   c = bval("c")
   if (c ~ /[^ \t\n]/) {
     wl = wlist(); tn = split(wl, tv, US); cmdword(1); cw = CW; rd = reader()
+    for (k = 1; k <= nh; k++) if (hkind[k] == 3 && hseg[k] == nseg && hnp[k] == np && codeseg()) hcode[k] = 1
     keep = interesting(CW)
     if (index(CW, "$")) keep = expkeep()
     for (k = 1; !keep && k <= tn; k++) {
@@ -273,9 +287,24 @@ function cmdword(start,   i, x) {
   if (i < tn) CW2 = tv[i + 1]
   if ((CW == "bash" || CW == "sh") && i < tn) { x = tv[i + 1]; sub(/.*\//, "", x); if (isx(x)) CW = x }
 }
-# A quoted body read by a consumer that is not a shell is data, unless its output goes on
-# (a pipe, a process substitution: hfed). A consumer that may run it as shell code stays checked.
+# A top-level body is data unless its segment may run it as code (codeseg) or its output goes
+# on (a pipe, a process substitution: hfed). datacmd: the consumers that were data before
+# highness-121; the data body of any other still reaches rules 1b, 2 and 3 (a D record).
 function datacmd() { return CW ~ /^(cat|tee|python|python3|node|jq|awk|sed)$/ }
+# codeseg(): the segment (tv, CW set) may run a heredoc body as code: no command word (the body
+# goes to a `( … )` or nothing yet), the end of a compound command, git (an alias can run a shell),
+# an expansion as the command word, or any word that is a shell, ssh, or a command that runs
+# its stdin or its arguments (`docker exec -i c sh`, `xargs`, `parallel`, `at`, `source`), make
+# (recipes run in sh), crontab, a command that starts a shell when given none (`chroot /x`,
+# `unshare`, `nsenter`, `runuser`, `docker run -i img`), or a container tool.
+function codeseg(   k, b) {
+  if (CW == "" || CW ~ /^(done|fi|esac|\}|git)$/ || index(CW, "$")) return 1
+  for (k = 1; k <= tn; k++) {
+    b = tv[k]; if (length(b) <= 256) sub(/.*\//, "", b)
+    if (b ~ /^(sh|bash|dash|zsh|ksh|mksh|fish|busybox|su|ssh|eval|source|\.|exec|xargs|parallel|at|batch|script|flock|env|sudo|doas|make|gmake|bmake|crontab|chroot|unshare|nsenter|runuser|setpriv|machinectl|systemd-run|docker|podman|kubectl)$/ || tv[k] ~ /^\$.*SHELL/) return 1
+  }
+  return 0
+}
 # fed(): the heredocs of the current segment feed something further (| or a `(` after them).
 function fed(   k) { for (k = 1; k <= nh; k++) if (hseg[k] == nseg && hnp[k] == np) hfed[k] = 1 }
 function msgcmd() {
@@ -306,13 +335,14 @@ function heredoc(i, n,   j, dash, w, q, c, k, kind) {
   kind = 0
   tn = split(wlist(), tv, US); cmdword(1)
   if (isx(CW) || msgcmd()) kind = 1
-  else if (np == 0 && datacmd()) kind = 3
+  else if (np == 0) { kind = 3; hdat[nh + 1] = datacmd() }
   else if (CW == "cat" && np > 0 && ftype[np] == "s" && fret[np] == "d") {
     tn = 0
     for (k = fwb[np]; k < fwn[np]; k++) if (wf[k] == 0) tv[++tn] = wv[k]
     cmdword(1); if (msgcmd()) kind = 2
   }
   nh++; hdash[nh] = dash; hword[nh] = w; hkind[nh] = kind; hq[nh] = q; hseg[nh] = nseg; hnp[nh] = np; hfed[nh] = 0
+  hcode[nh] = 0; if (kind != 3) hdat[nh] = 1
   return j
 }
 # inert(body): an unquoted heredoc body that expands nothing executable: no $(…), no `…`, and
@@ -406,11 +436,9 @@ function scanline(line,   n, i, c, nx, k, j) {
   if (!ok) exit
   if (contl) { contl = 0; return }
   if (st == "c") {
-    for (k = 1; k <= nh; k++) {
-      if (hkind[k] == 2) hkind[k] = (hseg[k] == nseg && hnp[k] == np) ? 1 : 0
-      else if (hkind[k] == 3) hkind[k] = hfed[k] ? 0 : 1
-    }
-    emit()
+    for (k = 1; k <= nh; k++) if (hkind[k] == 2) hkind[k] = (hseg[k] == nseg && hnp[k] == np) ? 1 : 0
+    emit()   # before kind 3 is settled: codeseg needs the whole segment (`<<X bash`)
+    for (k = 1; k <= nh; k++) if (hkind[k] == 3) hkind[k] = (hfed[k] || hcode[k]) ? 0 : 1
     if (nh > 0) { hb = 1; bclr("h") }
     return
   }
@@ -467,6 +495,7 @@ hb > 0 {
   if (hdash[hb]) sub(/^\t+/, "", c)
   if (c == hword[hb]) {
     if (hkind[hb] != 1 || (!hq[hb] && !inert(bval("h")))) printf "K%s%s", bval("h"), RS1
+    else if (!hdat[hb]) printf "D%s%s", bval("h"), RS1
     bclr("h"); hb++
     if (hb > nh) { hb = 0; nh = 0 }
   } else { badd("h", $0); badd("h", "\n") }
@@ -484,7 +513,8 @@ END {
 '
 
 # _scan <P|L> <text>: append the simple commands bash must look at to SR (raw) and SW (words),
-# the kept heredoc bodies to KEPT, the text rule 2 reads to TEXT, and (with ALLC=1) every
+# the kept heredoc bodies to KEPT, the data bodies rules 1b-3 still read to DATA, the text
+# rule 2 reads to TEXT, and (with ALLC=1) every
 # simple command's words to SC. SOK=1 iff the P scan closed.
 _scan() {
   local out r recs=()
@@ -497,6 +527,7 @@ _scan() {
       W*) SW+=("${r#W}") ;;
       C*) SC+=("${r#C}") ;;
       K*) KEPT=$KEPT${r#K} ;;
+      D*) DATA=$DATA${r#D} ;;
       T*) TEXT=$TEXT${r#T} ;;
       P1*) SOK=1 ;;
     esac
@@ -554,17 +585,18 @@ _cmdword() {
 # are re-quoted with %q, so the scan sees the same words), not a -c string. Empty when none.
 _code() {
   local n=${#W[@]} k j w
-  CODE='' ARGS=0
-  if [ "$CW" = eval ]; then CODE="${W[*]:CI+1}"; return 0; fi
+  CODE='' ARGS=0 CK='' CJ=0
+  if [ "$CW" = eval ]; then CODE="${W[*]:CI+1}"; CK=eval; return 0; fi
+  if [ "$CW" = ssh ]; then _ssh_code; return 0; fi
   # env -S'…' (a wrapper, so before CI) splits its string into a command
   for ((k = 0; k < n && k <= CI; k++)); do
     _base "${W[k]}"; [ "$B" = env ] || continue
     for ((j = k + 1; j < n; j++)); do
       w=${W[j]}
       case "$w" in
-        -S|--split-string) CODE=${W[j+1]:-}; return 0 ;;
-        --split-string=*) CODE=${w#*=}; return 0 ;;
-        -S*) CODE=${w#-S}; return 0 ;;
+        -S|--split-string) CODE=${W[j+1]:-}; CK=env; return 0 ;;
+        --split-string=*) CODE=${w#*=}; CK=env; return 0 ;;
+        -S*) CODE=${w#-S}; CK=env; return 0 ;;
         -*|*=*) ;;
         *) break ;;
       esac
@@ -573,8 +605,10 @@ _code() {
   for ((k = CI; k < n; k++)); do
     _base "${W[k]}"
     case "$B" in
-      sh|bash|dash|zsh|ksh|mksh|fish|busybox|su|'$'*SHELL*) ;;
+      sh|bash|dash|zsh|ksh|mksh|'$'*SHELL*) CK=shell ;;
+      fish|busybox|su) CK=loose ;;
       script|flock)
+        CK=script
         for ((j = k + 1; j < n; j++)); do
           w=${W[j]}
           case "$w" in
@@ -603,7 +637,7 @@ _code() {
         --) break ;;
         -o|+o|-O|+O) j=$((j + 1)) ;;
         --*) ;;
-        [-+]*c*) CODE=${W[j+1]:-}; return 0 ;;
+        [-+]*c*) CODE=${W[j+1]:-}; CJ=$((j + 1)); return 0 ;;
         [-+]*) ;;
         *) break ;;
       esac
@@ -612,7 +646,55 @@ _code() {
       printf -v CODE '%q ' "${W[@]:k+1}"; ARGS=1; return 0
     fi
   done
+  CK=''
   return 0
+}
+
+# _ssh_code: CODE = what `ssh` (W[CI]) runs: its remote command (the words after the host,
+# joined by spaces, as ssh sends them to the remote shell) and the value of any -o
+# RemoteCommand, ProxyCommand, LocalCommand or KnownHostsCommand, one per line. CK=ssh when
+# the options parsed (OpenSSH reads options after the host too, up to the first other word);
+# an unknown option leaves CK empty, and the segment is searched for the word instead.
+_ssh_code() {
+  local n=${#W[@]} j=$((CI + 1)) w c i want='' host=0 opts=''
+  while [ "$j" -lt "$n" ]; do
+    w=${W[j]}
+    if [ -n "$want" ]; then
+      [ "$want" != o ] || opts=$opts$w$'\n'
+      want=''; j=$((j + 1)); continue
+    fi
+    case "$w" in
+      --) j=$((j + 1)); [ "$host" = 1 ] || j=$((j + 1)); break ;;   # `-- host cmd`, `host -- cmd`
+      -?*)
+        for ((i = 1; i < ${#w}; i++)); do
+          c=${w:i:1}
+          case "$c" in
+            [BbcDEeFIiJLlmOopQRSWw])
+              if [ $((i + 1)) -lt ${#w} ]; then [ "$c" != o ] || opts=$opts${w:i+1}$'\n'
+              else want=$c; fi
+              break ;;
+            [46AaCfGgKkMNnqsTtVvXxYy]) ;;
+            *) return 0 ;;
+          esac
+        done ;;
+      *) [ "$host" = 0 ] || break; host=1 ;;
+    esac
+    j=$((j + 1))
+  done
+  [ -z "$want" ] || return 0
+  CK=ssh
+  [ "$j" -ge "$n" ] || CODE="${W[*]:j}"
+  [ -n "$opts" ] || return 0
+  while IFS= read -r w; do
+    c=$(printf '%s' "${w%%[ =]*}" | tr 'A-Z' 'a-z')
+    case "$c" in
+      remotecommand|proxycommand|localcommand|knownhostscommand)
+        w=${w#*[ =]}; CODE=$CODE$'\n'$w ;;
+    esac
+  done <<EOF
+$opts
+EOF
+  CODE=${CODE#$'\n'}
 }
 
 # _script_argv: 0 iff the shell at W[CI] runs a script file, so the words after it are its argv,
@@ -637,11 +719,29 @@ _script_argv() {
   return 0
 }
 
-# _runs_sudo <raw>: 0 iff the segment (W, CW, CODE set) runs sudo: as its command word, as a
-# word in an interpreter segment (bash/sh/…, su, eval, ssh; not a script's argv), or as a word
-# in its -c code.
+# _runs_sudo <raw> [strict]: 0 iff the segment (W, CW, CODE, CK set) runs sudo as its command
+# word. Code it runs as a string (a shell's -c, eval, env -S, script/flock -c, ssh's remote
+# command and command options) is scanned as commands of its own (pretool), so only these are
+# searched for sudo as a word: the argv after a shell's -c code (its "$@" may run it), a shell's
+# words when it runs no script file and no -c (`bash -s sudo`), fish/busybox/su and their code
+# (fish's `and sudo` is not modeled), an ssh whose options did not parse, any interpreter or
+# ssh segment holding a here-string (`ssh box bash <<< '…'`: the scan drops it), and, with
+# strict set, every interpreter segment of the quote-blind scan.
 _runs_sudo() {
+  local j
   [ "$CW" = sudo ] && return 0
+  if [ "${2:-}" != 1 ] && [[ $1 != *'<<<'* ]]; then
+    if [ "$CK" = shell ] && [ "$CJ" -gt 0 ]; then
+      for ((j = CJ + 1; j < ${#W[@]}; j++)); do [[ ${W[j]} =~ $WORD_SUDO_RE ]] && return 0; done
+    fi
+    case "$CW" in
+      bash|sh|dash|zsh|ksh|mksh) [ "$CK" = shell ] || _script_argv || { [[ $1 =~ $WORD_SUDO_RE ]] && return 0; } ;;
+      fish|busybox|su) [[ $1 =~ $WORD_SUDO_RE ]] && return 0 ;;
+      ssh) [ "$CK" = ssh ] || { [[ $1 =~ $WORD_SUDO_RE ]] && return 0; } ;;
+    esac
+    [ "$CK" = loose ] && [[ $CODE =~ $WORD_SUDO_RE ]]
+    return
+  fi
   case "$CW" in
     bash|sh|dash|zsh|ksh|mksh) _script_argv || { [[ $1 =~ $WORD_SUDO_RE ]] && return 0; } ;;
     fish|busybox|su|eval|ssh) [[ $1 =~ $WORD_SUDO_RE ]] && return 0 ;;
@@ -751,7 +851,7 @@ EOF
 }
 
 pretool() {
-  local vals tool cwd cmd sid p flat r x='' k=0 scans=0 ok=0 pend j files checked
+  local vals tool cwd cmd sid p flat r x='' k=0 scans=0 ok=0 pend j files checked dstart RULE1
   MORE=()
   vals=$(jq -r 'if type == "object" then
                   [(.tool_name // ""), (.cwd // ""), (.tool_input.command? // ""), (.session_id // "")]
@@ -779,25 +879,34 @@ EOF
 
   # SR/SW: the simple commands; KEPT: heredoc bodies checked the strict way. A command the
   # scan cannot close (or one too big, or holding the record separators) is all strict.
-  SR=() SW=() SC=() KEPT='' TEXT=''
+  SR=() SW=() SC=() KEPT='' TEXT='' DATA='' STRICT=()
   case "$cmd" in
     *[$'\036\037']*) ;;
     *) [ "${#cmd}" -gt "$SCAN_MAX" ] || { _scan P "$cmd"; ok=$SOK; } ;;
   esac
-  [ "$ok" = 1 ] || { SR=() SW=() SC=() TEXT=''; KEPT=$cmd; }
+  [ "$ok" = 1 ] || { SR=() SW=() SC=() TEXT='' DATA=''; KEPT=$cmd; }
 
   # rule 1 on every segment but an exempt one; KEPT is scanned the strict way. A shell's -c
   # code and eval's arguments are scanned in turn, their commands appended.
   # Code the P scan cannot close (or past 16 scans) is checked the strict way: it joins KEPT,
   # one L scan per round (MORE, joined once: an append per code is quadratic in bash).
-  pend=$KEPT
+  # A body that is data for rule 1 only (DATA, a D record) still reaches rules 1b, 2 and 3 as it
+  # did before highness-121: once rule 1 is done, it goes through the same loop from SR index
+  # dstart on, sudo unchecked, so its commands (and their nested code) reach guard.checks and
+  # its text (and that code) reach KEPT, which rules 1b and 2 read. RULE1 is KEPT without them.
+  pend=$KEPT dstart=-1 RULE1=''
   while :; do
     if [ "$k" -ge "${#SR[@]}" ]; then
       if [ "${#MORE[@]}" -gt 0 ]; then
         printf -v j '%s\n' "${MORE[@]}"; MORE=(); KEPT=$KEPT$j; pend=$pend$j
       fi
-      [ -n "$pend" ] || break
-      _scan L "$pend"; pend=''; continue
+      if [ -z "$pend" ]; then
+        [ "$dstart" -lt 0 ] && [ -n "$DATA" ] || break
+        dstart=${#SR[@]} RULE1=$KEPT pend=$DATA KEPT=$KEPT$DATA
+      fi
+      j=${#SR[@]}; _scan L "$pend"; pend=''
+      for ((; j < ${#SR[@]}; j++)); do STRICT[j]=1; done
+      continue
     fi
     _setw "$k"; _cmdword
     if ! _isx "$CW"; then
@@ -809,12 +918,13 @@ EOF
       elif [ -n "$CODE" ]; then
         MORE+=("$CODE")
       fi
-      if _runs_sudo "${SR[k]}"; then x=1; break; fi
+      if [ "$dstart" -lt 0 ] && _runs_sudo "${SR[k]}" "${STRICT[k]:-}"; then x=1; break; fi
     fi
     k=$((k + 1))
   done
+  [ "$dstart" -ge 0 ] || RULE1=$KEPT
   flat=''   # tr, not ${KEPT//…}: bash's pattern substitution is quadratic on a long text
-  [ -z "$KEPT" ] || flat=$(printf '%s' "$KEPT" | tr '\n' ';')
+  [ -z "$RULE1" ] || flat=$(printf '%s' "$RULE1" | tr '\n' ';')
   if [ "$x" = 1 ] || [[ $flat =~ $SUDO_RE ]] || [[ $flat =~ $SSH_SUDO_RE ]]; then
     _out deny "hi-guard: sudo is not run from an agent session. Do not work around this: show the user the exact command and why it is needed, and ask them to run it themselves."
     return 0
