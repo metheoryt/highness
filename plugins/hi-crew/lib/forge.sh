@@ -48,9 +48,7 @@ command -v jq >/dev/null 2>&1 || exit 0
 command -v gh >/dev/null 2>&1 || { cat >/dev/null; exit 0; }
 
 cfg() { bash "$CONFIG" get ".agenda.forge.$1" 2>/dev/null; }
-# config.sh get treats false as unset: ask for a word instead.
-[ "$(bash "$CONFIG" get '.agenda.forge | if . == false then "off" elif . == null then null else "on" end' 2>/dev/null)" = off ] \
-  && { cat >/dev/null; exit 0; }
+[ "$(bash "$CONFIG" get '.agenda.forge' 2>/dev/null)" = false ] && { cat >/dev/null; exit 0; }
 QUERY=$(cfg query) || QUERY=''
 NEED=$(cfg approvals) || NEED=0
 case "$NEED" in ''|*[!0-9]*) NEED=0 ;; esac

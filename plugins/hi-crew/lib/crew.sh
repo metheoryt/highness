@@ -208,7 +208,8 @@
 # forgejo-actions, gitea-actions) and every login in crew.bots (a list; a team's AI reviewer or
 # gatekeeper on a normal account goes there). A comment is a person's when its author is a person
 # and it is not the workers' own: it does not start with the marker, or with the marker extended
-# inside its brackets ("(agent, ...) ..."); an approval's text counts as the approval, not as a
+# inside its brackets ("(agent, ...) ..."), after any leading @mentions ("@bot (agent) ..." is
+# the worker's, "> (agent)" quoted by a person is not); an approval's text counts as the approval, not as a
 # comment. A finding is a not-a-person's inline review comment, its review requesting changes, or
 # its review whose body matches one of crew.finding_patterns (a list of regexes, empty by default):
 # a review bot that puts some findings only in the review body ("outside the diff" sections) is
@@ -777,7 +778,8 @@ gh_state() { # <pr url> <marker> <bots json array> [<finding patterns json array
     # Not a person: a [bot] login, a forge Bot account (by type, or by login when the source
     # has no type), or a login on the bots list.
     def bot($l; $t): ($l | test("\\[bot\\]$")) or $t == "Bot" or any($bots[], $typed[]; . == $l);
-    def own: (.body // "") as $b | ($b | startswith($m))
+    # Leading @mentions go first: a worker answering a review bot addresses it ("@bot (agent) ...").
+    def own: (.body // "" | sub("^(\\s*@\\S+)*\\s*"; "")) as $b | ($b | startswith($m))
              or (($m | endswith(")")) and ($b | startswith(($m | rtrimstr(")")) + ",")));
     ([.comments[]? | {who: (.author.login // ""), at: (.updatedAt // .createdAt // ""), body}]
      + [.reviews[]? | select(.state != "PENDING")
