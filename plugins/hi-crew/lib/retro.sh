@@ -5,9 +5,11 @@
 # reference/retro.md is the procedure. This script does the mechanical parts:
 #
 #   retro.sh gather <KEY>                 what to read, as one bounded bundle: the ticket's facts,
-#                                         its spec, PR and ticket, the worker's transcript and the
-#                                         signals in it (tool errors, asks, interrupts, stalls),
-#                                         the denial log's lines for its session, the ticket's
+#                                         its spec, PR and ticket, every transcript of the worker
+#                                         (a restarted or resumed one has several) and the
+#                                         signals in them (tool errors, asks, interrupts,
+#                                         usage-limit stops, stalls), the denial log's lines for
+#                                         those sessions, the ticket's
 #                                         choice records. Each part says "none" or "not found"
 #                                         on its own: a missing part never stops the retro
 #   retro.sh file <KEY> <findings.json>   file at most 3 findings, a JSON array of
@@ -28,6 +30,8 @@
 # counts). Unset: GitHub issues through gh, deduplicated by title against the open issues, in
 #   - the finding's own "repo" (owner/repo: a tool fault goes to the tool's repo);
 #   - for kind "brief" (a gap in the worker spec), the repo this plugin came from;
+#   - else the ticket's own repo (the facts' "repo": owner/repo, or an Orca selector such as
+#     path:<clone>, resolved to that clone's owner/repo);
 #   - else the root's own repo. Kind "decision" gets the label needs-decision when the repo has it.
 # A finding with "dup" set (the coordinator found the open item itself) is not filed again.
 # Bodies are measured facts, never a person's words; $HOME in them becomes ~ before filing.
@@ -71,60 +75,101 @@ gh_slug() { # <dir>
   case "$u" in */*) printf '%s\n' "$u" ;; *) return 1 ;; esac
 }
 
-# --- gather
-
-# The worker's transcript: the facts' own `transcript`, else the session line whose cwd is the
-# workspace, else the newest transcript Claude Code keeps for that directory in a known config dir.
-transcript() { # <facts json>
-  local t ws f slug d
-  t=$(fact "$1" transcript); [ -n "$t" ] && [ -f "$t" ] && { printf '%s\n' "$t"; return 0; }
-  ws=$(fact "$1" workspace); [ -n "$ws" ] || return 1
-  for f in "$STATE"/sessions/*; do
-    [ -f "$f" ] || continue
-    t=$(awk -F'\t' -v ws="$ws" '$8 == ws || index($8, ws "/") == 1 { print $9; exit }' "$f")
-    [ -n "$t" ] && [ "$t" != - ] && [ -f "$t" ] && { printf '%s\n' "$t"; return 0; }
-  done
-  slug=$(printf '%s' "$ws" | sed 's|[/.]|-|g')
-  for d in ${HI_RETRO_CONFIG_DIRS:-"${CLAUDE_CONFIG_DIR:-}" "$HOME/.claude" "${XDG_CONFIG_HOME:-$HOME/.config}"/orca/claude-profiles/*/home}; do
-    [ -n "$d" ] && [ -d "$d/projects/$slug" ] || continue
-    t=$(ls -1t "$d/projects/$slug"/*.jsonl 2>/dev/null | head -1)
-    [ -n "$t" ] && { printf '%s\n' "$t"; return 0; }
-  done
-  return 1
+# owner/repo of a repo value as the facts or a finding hold it: owner/repo itself, or an Orca repo
+# selector, which a coordinator may record (autostart records path:<clone>): path:<dir> or a bare
+# /dir is that clone's origin; id:… and name:… are asked of Orca. The prefixes are matched before
+# */*: path:/a/b has a slash too. Nothing (exit 1) for a value naming no GitHub repo.
+repo_slug() { # <value>
+  local v=$1 p
+  case "$v" in
+    '') return 1 ;;
+    path:*) gh_slug "${v#path:}" ;;
+    /*) gh_slug "$v" ;;
+    id:*|name:*)
+      p=$($(bash "$CREW" orca) repo show --repo "$v" --json 2>/dev/null \
+        | jq -r '.result.repo | (.gitRemoteIdentity.canonicalKey // "" | select(startswith("github.com/")) | ltrimstr("github.com/")), .path // empty' 2>/dev/null)
+      case "$p" in
+        '') return 1 ;;
+        /*) gh_slug "$p" ;;
+        *) printf '%s\n' "$p" | head -1 ;;
+      esac ;;
+    *:*|*/*/*|*/) return 1 ;;
+    */*) printf '%s\n' "$v" ;;
+    *) return 1 ;;
+  esac
 }
 
-# The signals of a transcript, TSV: kind, time, tool, what, detail. Kinds: error (a tool call that
-# failed: a denied or failed command), ask (a question to a person), interrupt, stall (a gap of
-# $STALL minutes or more between two entries).
-signals() { # <transcript>
-  jq -rs --argjson stall "$STALL" --argjson n "$LINES" '
+# --- gather
+
+# Every transcript of the worker, oldest first: a worker restarted or resumed (after a usage
+# limit, an account switch) has one per session. The facts' own `transcript`, every session line
+# whose cwd is the workspace, and every transcript Claude Code keeps for that directory in each
+# known config dir (a restart on another account lands in another profile). One per session id
+# (profiles can share a projects dir); ordered by each one's first entry, since an old session
+# touched later has the newer mtime. Exit 1 when there is none.
+transcripts() { # <facts json>
+  local t ws f slug d
+  {
+    t=$(fact "$1" transcript); [ -n "$t" ] && printf '%s\n' "$t"
+    ws=$(fact "$1" workspace)
+    if [ -n "$ws" ]; then
+      for f in "$STATE"/sessions/*; do
+        [ -f "$f" ] || continue
+        awk -F'\t' -v ws="$ws" '($8 == ws || index($8, ws "/") == 1) && $9 != "-" && $9 != "" { print $9 }' "$f"
+      done
+      slug=$(printf '%s' "$ws" | sed 's|[/.]|-|g')
+      for d in ${HI_RETRO_CONFIG_DIRS:-"${CLAUDE_CONFIG_DIR:-}" "$HOME/.claude" "${XDG_CONFIG_HOME:-$HOME/.config}"/orca/claude-profiles/*/home}; do
+        [ -n "$d" ] && [ -d "$d/projects/$slug" ] || continue
+        for t in "$d/projects/$slug"/*.jsonl; do [ -f "$t" ] && printf '%s\n' "$t"; done
+      done
+    fi
+  } | while IFS= read -r t; do
+    [ -f "$t" ] || continue
+    printf '%s\t%s\t%s\n' "$(grep -m1 -o '"timestamp":"[^"]*"' "$t" 2>/dev/null | cut -d'"' -f4)" "$(basename "$t" .jsonl)" "$t"
+  done | awk -F'\t' '!seen[$2]++' | sort -t "$(printf '\t')" -k1,1 | cut -f3- | grep .
+}
+
+# The signals of the transcripts, read as one session in the order given, TSV: transcript (its
+# number in that order, from 1), kind, time, tool, what, detail; at most $LINES lines per kind in
+# all. Kinds: error (a tool call that failed: a denied or failed command), ask (a question to a
+# person), interrupt, limit (a usage-limit stop: Claude Code's own assistant entry with apiError
+# "usage_limit_reached", "You've hit your 5-hour limit · resets …"), stall (a gap of $STALL
+# minutes or more between two entries, the gap from one transcript to the next included: that is
+# how long a stopped worker waited for its restart).
+signals() { # <transcript>...
+  jq -rn --argjson stall "$STALL" --argjson n "$LINES" '
     def short($k): tostring | gsub("[\\s]+"; " ") | .[0:$k];
     def text: if type == "array" then map(.text? // "") | join(" ") else tostring end;
     def epoch: (. // "") | sub("\\.[0-9]+Z$"; "Z") | (try fromdateiso8601 catch null);
-    ([ .[] | select(.type == "assistant") | .message.content[]? | select(type == "object" and .type == "tool_use")
-       | {key: .id, value: {name, what: ((.input.command // .input.file_path // .input.question // .input) | short(160))}} ]
+    ($ARGS.positional | to_entries | map({key: .value, value: (.key + 1)}) | from_entries) as $num
+    | [ inputs | . + {_t: ($num[input_filename] // 0)} ] as $all
+    | ([ $all[] | select(.type == "assistant") | ._t as $t | .message.content[]? | select(type == "object" and .type == "tool_use")
+       | {key: .id, value: {t: $t, name, what: ((.input.command // .input.file_path // .input.question // .input) | short(160))}} ]
      | from_entries) as $use
-    | ([ .[] | select(.type == "user") | .timestamp as $ts | .message.content[]?
+    | ([ $all[] | select(.type == "user") | ._t as $t | .timestamp as $ts | .message.content[]?
          | select(type == "object" and .type == "tool_result" and .is_error == true)
          | ($use[.tool_use_id] // {name: "?", what: ""}) as $u
-         | ["error", ($ts // ""), $u.name, $u.what, (.content | text | short(240))] ] | .[0:$n][]),
+         | [$t, "error", ($ts // ""), $u.name, $u.what, (.content | text | short(240))] ] | .[0:$n][]),
       ([ $use[] | select(.name == "AskUserQuestion" or (.name == "Bash" and (.what | test("orchestration (ask|send .*escalation)"))))
-         | ["ask", "", .name, .what, ""] ] | .[0:$n][]),
-      ([ .[] | select(.type == "user") | .timestamp as $ts | (.message.content | text)
-         | select(test("\\[Request interrupted")) | ["interrupt", ($ts // ""), "", "", short(120)] ] | .[0:$n][]),
-      ([ .[] | select(.timestamp != null) | {ts: .timestamp, e: (.timestamp | epoch)} | select(.e != null) ]
+         | [.t, "ask", "", .name, .what, ""] ] | .[0:$n][]),
+      ([ $all[] | select(.type == "user") | ._t as $t | .timestamp as $ts | (.message.content | text)
+         | select(test("\\[Request interrupted")) | [$t, "interrupt", ($ts // ""), "", "", short(120)] ] | .[0:$n][]),
+      ([ $all[] | select(.type == "assistant" and (.apiError == "usage_limit_reached"
+             or ((.isApiErrorMessage // false) and (.message.content | text | test("hit your .*limit"; "i")))))
+         | [._t, "limit", (.timestamp // ""), "", "", (.message.content | text | short(160))] ] | .[0:$n][]),
+      ([ $all[] | select(.timestamp != null) | {t: ._t, ts: .timestamp, e: (.timestamp | epoch)} | select(.e != null) ]
        | [ range(1; length) as $i | .[$i - 1] as $a | .[$i] as $b
            | select(($b.e - $a.e) >= $stall * 60)
-           | ["stall", $a.ts, "", "", "\((($b.e - $a.e) / 60) | floor) min until \($b.ts)"] ] | .[0:$n][])
-    | @tsv' "$1" 2>/dev/null
+           | [$b.t, "stall", $a.ts, "", "", "\((($b.e - $a.e) / 60) | floor) min until \($b.ts)"] ] | .[0:$n][])
+    | @tsv' "$@" --args "$@" 2>/dev/null
 }
 
-denials() { # <facts json> <session id or empty>
+denials() { # <facts json> <session ids, one per line, or empty>
   local log="${HI_RETRO_DENIALS:-$STATE/denials.jsonl}" ws
   [ -f "$log" ] || { echo "no denial log at $log"; return 0; }
   ws=$(fact "$1" workspace)
   jq -c --arg s "$2" --arg ws "$ws" '
-    select(($s != "" and (.session // "") == $s)
+    select(((.session // "") as $id | $id != "" and ($s | split("\n") | index([$id])) != null)
            or ($ws != "" and ((.cwd // "") == $ws or ((.cwd // "") | startswith($ws + "/")))))' "$log" 2>/dev/null \
     | head -n "$LINES" | grep . || echo none
 }
@@ -139,13 +184,17 @@ cmd_gather() {
     [ -f "$t" ] && echo "$t" || echo 'not recorded: rebuild it with crew.sh spec, or read the worker'"'"'s first prompt in the transcript')"
   printf '## pr\n%s\n\n' "$(t=$(fact "$f" pr); [ -n "$t" ] && echo "$t (read its body, review threads and CI)" || echo none)"
   printf '## ticket\n%s (read it with its comments)\n\n' "$1"
-  if t=$(transcript "$f"); then
-    sid=$(basename "$t" .jsonl)
-    printf '## transcript\n%s\n\n## signals (kind, time, tool, what, detail)\n' "$t"
-    signals "$t" | grep . || echo none
+  if t=$(transcripts "$f"); then
+    sid=$(printf '%s\n' "$t" | while IFS= read -r x; do basename "$x" .jsonl; done)
+    printf '## transcripts (oldest first; more than one: the worker was restarted or resumed)\n'
+    printf '%s\n' "$t" | awk '{ print NR "\t" $0 }'
+    printf '\n## signals (transcript, kind, time, tool, what, detail)\n'
+    # Word splitting on newlines only: a path may hold a space, never a newline.
+    (set -f; IFS='
+'; signals $t) | grep . || echo none
   else
     sid=''
-    printf '## transcript\nnot found\n\n## signals\nnone (no transcript)\n'
+    printf '## transcripts\nnot found\n\n## signals\nnone (no transcript)\n'
   fi
   printf '\n## denials\n'; denials "$f" "$sid"
   printf '\n## choices\n'; bash "$CREW" choices "$1" 2>/dev/null | grep . || echo none
@@ -193,8 +242,14 @@ cmd_file() {
   jq -e 'type == "array"' "$2" >/dev/null 2>&1 || die 'findings: not a JSON array'
   n=$(jq length "$2")
   [ "$n" -le "$MAX" ] || die "findings: $n given, at most $MAX: keep the ones that cost the most"
-  jq -e 'all(.[]; (.kind | IN("tool", "brief", "decision")) and ((.title // "") != "") and ((.body // "") != ""))' "$2" >/dev/null 2>&1 \
-    || die 'findings: each needs kind (tool | brief | decision), title and body'
+  x=$(jq -r 'to_entries[] | (.key + 1) as $i | .value
+      | if type != "object" then "finding \($i): not an object"
+        elif (.kind | IN("tool", "brief", "decision")) | not then
+          "finding \($i): kind \(.kind | if . == null then "missing" else tojson end): give one of tool (a tool fault), brief (a worker-spec gap), decision (for a person)"
+        elif (.title // "") == "" then "finding \($i): title missing"
+        elif (.body // "") == "" then "finding \($i): body missing"
+        else empty end' "$2" 2>/dev/null | head -1)
+  [ -z "$x" ] || die "findings: $x"
   root=$(fact "$f" root); [ -n "$root" ] && [ -d "$root" ] || root=$(pwd -P)
   sink=$(cd "$root" && bash "$CONFIG" get '.crew.retro_sink' 2>/dev/null) || sink=''
   body=$(mktemp "${TMPDIR:-/tmp}/hi-retro.XXXXXX") || die 'no temp file'
@@ -211,9 +266,13 @@ cmd_file() {
       res=$(printf '%s\n' "$out" | grep . | tail -1)
       if [ "$rc" -ne 0 ] || [ -z "$res" ]; then res="failed: crew.retro_sink exit $rc${res:+: $res}"; fi
     else
+      if [ -n "$repo" ]; then repo=$(repo_slug "$repo") || repo=''
+        [ -n "$repo" ] || { res="failed: the finding's repo '$(fact "$x" repo)' names no GitHub owner/repo"; repo=-; }
+      fi
       if [ -z "$repo" ] && [ "$kind" = brief ]; then repo=${HI_RETRO_SPEC_REPO:-$(gh_slug "$HERE/..")}; fi
-      [ -n "$repo" ] || repo=$(gh_slug "$root") || repo=''
-      if [ -z "$repo" ]; then res='failed: no GitHub repo to file in (set crew.retro_sink, or give the finding a repo)'
+      [ -n "$repo" ] || repo=$(repo_slug "$(fact "$f" repo)") || repo=$(gh_slug "$root") || repo=''
+      if [ "$repo" = - ]; then :
+      elif [ -z "$repo" ]; then res='failed: no GitHub repo to file in (set crew.retro_sink, or give the finding a repo)'
       else res=$(gh_file "$repo" "$kind" "$title" "$body"); fi
     fi
     case "$res" in failed:*) fail=1 ;; esac
@@ -242,8 +301,9 @@ cmd_comment() {
   if (cd "$root" && bash "$CONFIG" get '.tracker.kind' >/dev/null 2>&1); then
     printf '%s\n' "$msg" | bash "$HERE/tracker.sh" --root "$root" comment "$key"; rc=$?
   else
-    repo=$(fact "$f" repo); n=${key##*-}
-    case "$repo" in */*) ;; *) die "comment: no tracker configured at $root and the facts name no owner/repo" ;; esac
+    n=${key##*-}
+    repo=$(repo_slug "$(fact "$f" repo)") \
+      || die "comment: no tracker configured at $root and the facts' repo '$(fact "$f" repo)' names no GitHub owner/repo"
     case "$n" in ''|*[!0-9]*) die "comment: '$key' is not <repo>-<number>" ;; esac
     printf '%s\n' "$msg" | gh issue comment "$n" -R "$repo" --body-file -; rc=$?
   fi
