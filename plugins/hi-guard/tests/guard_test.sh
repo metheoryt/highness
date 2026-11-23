@@ -135,15 +135,16 @@ denies "a repo file's pattern, from a subdirectory"    'vault read team-secret' 
 allows "a repo file's pattern, in another repo"        'vault read team-secret'
 allows "a repo file's pattern, outside any repo"       'vault read team-secret' "$SANDBOX"
 denies "the user file's pattern still holds there"     'kubectl --context prod-cluster get pods' "$TEAM"
-denies "a repo file cannot exempt a command"           "$(printf "team.sh add <<'EOF'\nsudo x\nEOF")" "$TEAM"
+# (`| cat`: a body piped on is checked unless its command is exempt, so these prove exemption)
+denies "a repo file cannot exempt a command"           "$(printf "team.sh add <<'EOF' | cat\nsudo x\nEOF")" "$TEAM"
 denies "a repo file cannot exempt sudo itself"         'sudo ls' "$TEAM"
-denies "a repo file's exempt command, elsewhere"       "$(printf "team.sh add <<'EOF'\nsudo x\nEOF")"
+denies "a repo file's exempt command, elsewhere"       "$(printf "team.sh add <<'EOF' | cat\nsudo x\nEOF")"
 HIGHNESS_CONFIG="$SANDBOX/none.json"
 denies "the repo file alone, no user file"             'vault read team-secret' "$TEAM"
 allows "no user file: its pattern is gone"             'kubectl --context prod-cluster get pods' "$TEAM"
 allows "no config at all: no deny patterns"           'kubectl --context prod-cluster get pods'
 denies "no config at all: rule 1 holds"                'sudo ls'
-denies "no config at all: no exempt command"           "$(printf "note.sh add <<'EOF'\nsudo x\nEOF")"
+denies "no config at all: no exempt command"           "$(printf "note.sh add <<'EOF' | cat\nsudo x\nEOF")"
 denies "no config at all: no exempt command (bash)"    "$(printf "bash \$L/note.sh add <<'EOF'\nsudo x\nEOF")"
 HIGHNESS_CONFIG="$SANDBOX/user-only.json"
 printf '{"guard":{"deny_patterns":["user-only-[0-9]+"]}}\n' > "$HIGHNESS_CONFIG"
@@ -161,6 +162,7 @@ HIGHNESS_CONFIG=$CFG
 # guard.exempt_commands: an exempt segment is out of rules 1 and 2, its heredoc is data; every
 # other segment, and its own $(…), stays checked.
 allows "exempt: a quoted heredoc naming sudo"          "$(printf "note.sh add <<'EOF'\nsudo apt install x\nEOF")"
+allows "exempt: its heredoc is data, piped on too"     "$(printf "note.sh add <<'EOF' | cat\nsudo x\nEOF")"
 allows "exempt: by path, through bash"                 "$(printf "bash %s add <<'EOF'\nsudo x\nEOF" "$NOTE")"
 allows "exempt: through sh"                            "$(printf "sh note.sh add <<'EOF'\nsudo x\nEOF")"
 denies "exempt: not through zsh"                       "$(printf "zsh note.sh add <<'EOF'\nsudo x\nEOF")"
@@ -170,7 +172,7 @@ denies "exempt: its \$( ) is checked"                  'note.sh add "$(sudo id)"
 HIGHNESS_CONFIG="$SANDBOX/exempt-path.json"
 printf '{"guard":{"exempt_commands":["/opt/tools/other.sh"]}}\n' > "$HIGHNESS_CONFIG"
 allows "exempt: a configured path counts by basename"  "$(printf "other.sh <<'EOF'\nsudo x\nEOF")"
-denies "exempt: note.sh is no longer exempt"           "$(printf "note.sh <<'EOF'\nsudo x\nEOF")"
+denies "exempt: note.sh is no longer exempt"           "$(printf "note.sh <<'EOF' | cat\nsudo x\nEOF")"
 HIGHNESS_CONFIG=$CFG
 
 # guard.checks: run after rules 1 and 2 allow, in .cwd, with .cwd as $1 and the scanned simple
@@ -376,7 +378,8 @@ denies "echo piped to sudo tee"         "echo x | sudo tee f"
 denies "a quoted cat body piped to sh"  "$(printf "cat <<'EOF' | sh\nsudo x\nEOF")"
 denies "a quoted python body piped on"  "$(printf "python3 - <<'PY' | bash\nprint(1)\nsudo x\nPY")"
 denies "a tee body into >(sh)"          "$(printf "tee f <<'EOF' >(sh)\nsudo x\nEOF")"
-denies "a quoted body to a non-data command" "$(printf "mynote.sh add <<'EOF'\nsudo x\nEOF")"
+allows "a quoted body to a command that runs no code" "$(printf "mynote.sh add <<'EOF'\nsudo x\nEOF")"
+denies "the same body piped on"         "$(printf "mynote.sh add <<'EOF' | sh\nsudo x\nEOF")"
 denies "a quoted cat body inside \$( )"  "$(printf "x=\"\$(cat <<'EOF'\nsudo x\nEOF\n)\"; eval \"\$x\"")"
 denies "a script, then sudo"            "bash x.sh && sudo y"
 denies "bash -s args are checked"       "bash -s 'sudo'"
@@ -396,7 +399,8 @@ denies "an unquoted body with \`sudo …\`"   "$(printf 'cat > b.md <<EOF\n`sudo
 denies "a backslash-newline splitting \$("   "$(printf 'cat > b.md <<EOF\n$\\\n(sudo id)\nEOF')"
 denies "\$(prod) in an unquoted body"       "$(printf 'cat > b.md <<EOF\n$(kubectl --context prod-cluster get pods)\nEOF')"
 denies "an unquoted cat body piped to bash" "$(printf 'cat <<EOF | bash\nsudo x\nEOF')"
-denies "an unquoted body to a non-data command" "$(printf 'mynote.sh add <<EOF\nsudo x\nEOF')"
+allows "an unquoted inert body to a command that runs no code" "$(printf 'mynote.sh add <<EOF\nsudo x\nEOF')"
+denies "an unquoted body to it with \$(sudo …)" "$(printf 'mynote.sh add <<EOF\n$(sudo id)\nEOF')"
 # A deny pattern in a search command's words is a search pattern, not an access.
 allows "grep -E for the prod pattern"       "grep -E 'prod-cluster' log.txt"
 allows "grep -rn, unquoted pattern"         "grep -rn prod-cluster plugins"
@@ -639,8 +643,8 @@ denies "overlay check: owner/repo's A, then owner's D"  'gh pr ready 5' "$TWEB"
 denies "overlay deny: in the team's repo"               'kubectl --context team-prod-east get pods' "$TAPP"
 allows "overlay deny: not in the person's own repo"     'kubectl --context team-prod-east get pods' "$MINE"
 denies "overlay deny: the top level's still holds"      'kubectl --context prod-cluster get pods' "$MINE"
-denies "overlay exempt: ignored in the team's repo"     "$(printf "note.sh add <<'EOF'\nsudo x\nEOF")" "$TAPP"
-denies "overlay exempt: ignored in the person's repo"   "$(printf "note.sh add <<'EOF'\nsudo x\nEOF")" "$MINE"
+denies "overlay exempt: ignored in the team's repo"     "$(printf "note.sh add <<'EOF' | cat\nsudo x\nEOF")" "$TAPP"
+denies "overlay exempt: ignored in the person's repo"   "$(printf "note.sh add <<'EOF' | cat\nsudo x\nEOF")" "$MINE"
 jq --arg d "$CK/d" '.guard.checks = [$d]' "$HIGHNESS_CONFIG" > "$SANDBOX/overlay-top.json"
 HIGHNESS_CONFIG="$SANDBOX/overlay-top.json"
 denies "a top-level check: in the person's own repo"    'ls' "$MINE"
@@ -665,5 +669,72 @@ t0=$(date +%s); HI_GUARD_CHECK_TIMEOUT=1 run 'ls'; t1=$(date +%s)
 assert_eq "a hung check past its limit allows"         "" "$(decision)"
 assert_eq "a hung check is cut off at its limit"       "under 5s" "$([ $((t1 - t0)) -lt 5 ] && echo 'under 5s' || echo "$((t1 - t0))s")"
 HIGHNESS_CONFIG=$CFG
+
+# highness-121: sudo only as a command word. The three reported shapes are data.
+allows "121: a heredoc reply naming \`sudo\`" "$(printf "r 101 7 <<'EOF'\n\`sudo\` is not on the box\nEOF")"
+allows "121: a quoted string"                 'echo "run sudo yourself"'
+allows "121: ssh's remote grep pattern"       "ssh box 'journalctl -n 50 | grep -v sudo | head -40'"
+# Each command position, at the top level, in ssh's remote command, in -c code and in eval.
+for p in 'sudo id' 'true; sudo id' 'true && sudo id' 'false || sudo id' 'echo | sudo id' \
+         '(sudo id)' 'x=$(sudo id)' 'x=`sudo id`' 'FOO=1 BAR=2 sudo id'; do
+  denies "121: top level: $p"  "$p"
+done
+for p in 'sudo id' 'true; sudo id' 'true && sudo id' 'false || sudo id' 'echo | sudo id' '(sudo id)' \
+         'FOO=1 sudo id' 'x=$(sudo id)' 'x=`sudo id`'; do
+  denies "121: ssh: $p"        "ssh box '$p'"
+  denies "121: bash -c: $p"    "bash -c '$p'"
+  denies "121: eval: $p"       "eval '$p'"
+done
+denies "121: ssh, unquoted"                   'ssh box sudo id'
+for p in 'grep -v sudo log' 'echo sudo' 'git log --grep=sudo' 'grep sudo f | wc -l'; do
+  allows "121: top level: $p"  "$p"
+  allows "121: ssh: $p"        "ssh box '$p'"
+  allows "121: bash -c: $p"    "bash -c '$p'"
+  allows "121: eval: $p"       "eval '$p'"
+done
+# ssh's options: OpenSSH reads them after the host too; command options run code.
+denies "121: ssh -p 22 box sudo"              'ssh -p 22 box sudo id'
+denies "121: ssh -tp22 box sudo"              'ssh -tp22 box sudo id'
+denies "121: ssh -i key -l me box sudo"       'ssh -i k -l me box sudo id'
+denies "121: an option after the host"        'ssh box -t sudo id'
+denies "121: ssh -- box sudo"                 'ssh -- box sudo id'
+denies "121: ssh box -- sudo"                 'ssh box -- sudo id'
+denies "121: ssh, a remote shell's -c"        "ssh box \"bash -c 'sudo id'\""
+denies "121: -o ProxyCommand runs sudo"       "ssh -o ProxyCommand='sudo nc %h %p' box ls"
+denies "121: -oRemoteCommand=sudo"            "ssh -oRemoteCommand='sudo id' box"
+denies "121: -o 'RemoteCommand sudo'"         "ssh -o 'RemoteCommand sudo id' box"
+denies "121: -o localcommand (any case)"      "ssh -o localcommand='sudo id' -o PermitLocalCommand=yes box ls"
+allows "121: -o with a value naming sudo"     "ssh -o User=sudo box ls"
+denies "121: an unknown ssh option: the word" "ssh -Z box 'echo sudo'"
+denies "121: a here-string to a remote shell" "ssh box bash <<< 'sudo id'"
+denies "121: a here-string to ssh"            "ssh box <<< 'sudo id'"
+denies "121: a here-string to bash"           "bash <<< 'sudo id'"
+denies "121: a here-string to bash -c"        "bash -c 'eval \"\$(cat)\"' <<< 'sudo id'"
+# A shell's -c argv may be run by its code ("$@"), and fish's code is still searched for the word.
+denies "121: bash -c's argv"                  "bash -c '\"\$@\"' _ sudo id"
+denies "121: a wrapped sh -c's argv"          "docker exec c sh -c '\"\$@\"' _ sudo id"
+allows "121: a wrapped sh -c grep"            "docker exec c sh -c 'grep -v sudo log'"
+denies "121: fish -c naming sudo"             "fish -c 'echo sudo'"
+denies "121: su -c naming sudo"               "su -c 'echo sudo'"
+denies "121: env -S sudo"                     "env -S 'sudo id'"
+allows "121: env -S echo sudo"                "env -S 'echo sudo'"
+# Heredoc bodies are data unless their segment can run them or they are piped on.
+for c in "<<'EOF' bash" "docker exec -i c sh <<'EOF'" "kubectl exec -i p -- bash <<'EOF'" \
+         "xargs -I{} sh -c {} <<'EOF'" "parallel <<'EOF'" "at now <<'EOF'" "source /dev/stdin <<'EOF'" \
+         "\$X <<'EOF'" "r <<'EOF' | sh" "r <<'EOF' >(sh)" "(bash) <<'EOF'" "{ bash; } <<'EOF'" \
+         "git -c alias.x='!sh' x <<'EOF'" 'while read -r c; do eval "$c"; done <<'"'EOF'" \
+         "make -f - <<'EOF'" "crontab - <<'EOF'" "chroot /x <<'EOF'" "unshare -r <<'EOF'" \
+         "nsenter -t 1 -a <<'EOF'" "docker run -i img <<'EOF'" "kubectl exec -i p <<'EOF'"; do
+  denies "121: a body run by: $c" "$(printf '%s\nsudo id\nEOF' "$c")"
+done
+denies "121: a body inside \$( ) is code"     "$(printf "x=\$(r <<'EOF'\nsudo id\nEOF\n)")"
+allows "121: a body to a plain command"       "$(printf "gh api -X POST x -F body=@- <<'EOF'\nwe never run sudo here\nEOF")"
+allows "121: two bodies, both data"           "$(printf "r a <<'A'; r b <<'B'\nsudo x\nA\nsudo y\nB")"
+denies "121: two bodies, the second run"      "$(printf "r a <<'A'; bash <<'B'\nsudo x\nA\nsudo y\nB")"
+# Rules 1b, 2 and 3 still read such a body, as before.
+denies "121: a data body naming the prod pattern" "$(printf "r <<'EOF'\nkubectl --context prod-cluster get pods\nEOF")"
+denies "121: a data body with rbw get"        "$(printf "r <<'EOF'\nrbw get x\nEOF")"
+denies "121: a data body, the fixture's flip" "$(printf "r <<'EOF'\ngh pr ready 5\nEOF")"
+denies "121: a data body, nested -c code"     "$(printf "r <<'EOF'\nbash -c 'gh pr ready 5'\nEOF")"
 
 assert_summary
