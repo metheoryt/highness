@@ -160,6 +160,34 @@ assert_eq "a stale pin → stale" stale "$(printf '%s\n' "$pins" | cut -f3)"
 assert_contains "stale: names the plugin and the gone dir" "$(printf '%s\n' "$pins" | cut -f4)" "hi-crew@highness → $SANDBOX/gone-wt"
 assert_not_contains "stale: not a pin whose dir exists" "$(printf '%s\n' "$pins" | cut -f4)" "$LIVE"
 assert_not_contains "stale: not another marketplace's plugin" "$(printf '%s\n' "$pins" | cut -f4)" "other@"
+assert_eq "a gone pin is stale, not drift" ok "$(row "$out" machine drift)"
+
+# Drift (#128): a live project pin at another version than the user install of the same id.
+L2="$SANDBOX/live-2"; L3="$SANDBOX/live-3"; mkdir -p "$L2" "$L3"
+jq -n --arg gone "$SANDBOX/gone-wt" --arg live "$LIVE" --arg l2 "$L2" --arg l3 "$L3" '{version: 2, plugins: {
+  "hi@highness": [{scope: "user", version: "0.1.22", gitCommitSha: "aaaaaaaaaa"},
+                  {scope: "project", projectPath: $live, version: "0.1.20", gitCommitSha: "bbbbbbbbbb"},
+                  {scope: "project", projectPath: $gone, version: "0.1.19"}],
+  "hi-crew@highness": [{scope: "user", version: "1111111", gitCommitSha: "1111111abc"},
+                       {scope: "local", projectPath: $l2, version: "1111111", gitCommitSha: "2222222def"}],
+  "hi-guard@highness": [{scope: "user", version: "x", gitCommitSha: "c1"},
+                        {scope: "project", projectPath: $l3, version: "x", gitCommitSha: "c1"}],
+  "hi-docs@highness": [{scope: "project", projectPath: $l3, version: "0.0.1"}],
+  "other@elsewhere": [{scope: "user", version: "2"}, {scope: "project", projectPath: $l3, version: "1"}]}}' \
+  > "$P/plugins/installed_plugins.json"
+out=$(cd "$SANDBOX" && FAKE_ACCOUNT='"acc-1"' bash "$S" status)
+drift=$(printf '%s\n' "$out" | awk -F'\t' '$1 == "machine" && $2 ~ /^drift/')
+assert_eq "drift: one row for the shared file" 1 "$(printf '%s\n' "$drift" | grep -c .)"
+assert_eq "drift: the row is named after the file" "drift:$P/plugins/installed_plugins.json" "$(printf '%s\n' "$drift" | cut -f2)"
+assert_eq "drift: state" drift "$(printf '%s\n' "$drift" | cut -f3)"
+d=$(printf '%s\n' "$drift" | cut -f4)
+assert_contains "drift: another version, both sides named" "$d" "hi@highness: $LIVE at 0.1.20 (project) vs 0.1.22 (user)"
+assert_contains "drift: same version, another commit" "$d" "hi-crew@highness: $L2 at 1111111 2222222 (local) vs 1111111 1111111 (user)"
+assert_not_contains "drift: same version and commit is none" "$d" "hi-guard@"
+assert_not_contains "drift: a pin with no user install is skipped" "$d" "hi-docs@"
+assert_not_contains "drift: not another marketplace's plugin" "$d" "other@"
+assert_not_contains "drift: not a gone pin" "$d" "gone-wt"
+assert_eq "the gone pin is still stale" stale "$(printf '%s\n' "$out" | awk -F'\t' '$2 ~ /^pins:/ {print $3}')"
 rm -rf "$P/fake-plugins.json" "$P/plugins" "$P2" "$OBS" "$ORCA_D/claude-observed-config-dirs.json"
 
 # --- hi-crew enabled: its crew.sh adds the orchestration, watch and crew rows ----------------
@@ -191,6 +219,14 @@ out=$(cd "$SANDBOX" && FAKE_PLUGINS="$(plugins hi-crew@highness:user)" bash "$S"
 assert_eq "config: ok" ok "$(row "$out" person config)"
 assert_eq "crew.model null → default" default "$(row "$out" person crew.model)"
 assert_eq "crew.agent set" set "$(row "$out" person crew.agent)"
+assert_eq "session.language: unset" unset "$(row "$out" person session.language)"
+printf '{"session":{"language":"Russian"}}\n' > "$XDG_CONFIG_HOME/highness/config.json"
+out=$(cd "$SANDBOX" && bash "$S" status)
+assert_eq "session.language: set" set "$(row "$out" person session.language)"
+assert_eq "session.language: the value" Russian "$(detail "$out" person session.language)"
+printf '{"session":{"language":null}}\n' > "$XDG_CONFIG_HOME/highness/config.json"
+out=$(cd "$SANDBOX" && bash "$S" status)
+assert_eq "session.language: null → default" default "$(row "$out" person session.language)"
 printf '[1]\n' > "$XDG_CONFIG_HOME/highness/config.json"
 out=$(cd "$SANDBOX" && bash "$S" status)
 assert_eq "config: not an object → invalid" invalid "$(row "$out" person config)"
@@ -223,6 +259,12 @@ mkdir -p "$XDG_CONFIG_HOME/highness"
 printf '{"repos":{"acme":{"crew":{"process":"x"}}}}\n' > "$XDG_CONFIG_HOME/highness/config.json"
 out=$(cd "$R" && bash "$S" status)
 assert_eq "overlay: an owner block → ok" ok "$(row "$out" person overlay)"
+printf '{"repos":{"acme":{"session":{"language":"German"}}}}\n' > "$XDG_CONFIG_HOME/highness/config.json"
+mkdir -p "$R/.claude"; printf '{"session":{"language":"French"}}\n' > "$R/.claude/highness.json"
+out=$(cd "$R" && bash "$S" status)
+assert_eq "session.language: neither an overlay nor the team file counts" unset "$(row "$out" person session.language)"
+rm -f "$R/.claude/highness.json"
+printf '{"repos":{"acme":{"crew":{"process":"x"}}}}\n' > "$XDG_CONFIG_HOME/highness/config.json"
 mkdir -p "$R/.claude"; printf '{}\n' > "$R/.claude/highness.json"
 out=$(cd "$R" && bash "$S" status)
 assert_eq "overlay: the repo's own file → team-file" team-file "$(row "$out" person overlay)"
