@@ -39,6 +39,24 @@
 #                                     (<state dir>/specs/<KEY>.resumed.md, for that dispatch:
 #                                     `resumed_for`). Refuses when the workspace is gone, the
 #                                     PR is merged or closed, or the worker is still live (cmd_resume)
+#   crew.sh adopt <KEY> --pr <url> [--title T] [--workspace P] [--repo SEL] [--brief-file F]
+#                 [--background X]... [--root R]
+#                                     hand an open github.com PR that another session drove to a
+#                                     new worker under this session's Run, in the follow-up phase:
+#                                     its spec is `spec --handover` (below), its workspace the one
+#                                     given, else the PR repo's Orca workspace on the PR branch
+#                                     (never the main checkout), else a new one created on that
+#                                     branch from its remote (--repo: the Orca repo, when the PR's
+#                                     repo has no workspace to infer it from). The facts, pr and
+#                                     head included, are recorded before worker-start, so the watch
+#                                     follows the PR from its first pass; then dispatch and task.
+#                                     --brief-file: the team's per-ticket notes (the merge path,
+#                                     which base the PR targets). --background: a previous
+#                                     session's journal or chat, named in the spec as background
+#                                     only. Title: T, else the tracker's, else the PR's. Refuses,
+#                                     starting nothing: open facts for <KEY> (but those of an adopt
+#                                     whose worker-start failed: run it again), no Run, a PR that
+#                                     is not open or comes from a fork. Prints the receipt
 #   crew.sh choices [<KEY>]           the recorded choices, one JSON object per line, each with
 #                                     as_recommended derived (below)
 #   crew.sh choices --gaps            answers to hi-crew asks with no choice line (sent without
@@ -102,6 +120,18 @@
 #                                     A copy is kept at <state dir>/specs/<KEY>.md (the last spec
 #                                     built for K): record it as the facts' `spec`, so the retro
 #                                     and `reentry` can point at it
+#   crew.sh spec ... --handover --pr URL [--workspace P] [--background X]...
+#                                     the spec for a ticket whose open PR a worker takes over
+#                                     (`adopt` builds it): the template's {{#HANDOVER}} blocks
+#                                     replace its {{#FRESH}} ones (take the ticket, the already-done
+#                                     check, open a draft PR, the ready gate) with "where it stands",
+#                                     read from the PR with gh (state, draft or ready, base, CI,
+#                                     review decision, open review threads), the ticket's status
+#                                     from the tracker and the workspace P against the PR head,
+#                                     and the follow-up phase: answer the threads, keep CI green,
+#                                     merge the base in on a conflict, wait for QA. No second PR;
+#                                     the ticket's status and draft/ready stay as they are. Each
+#                                     X (a journal, a chat) is listed as background only
 #   crew.sh reentry                   SessionStart(compact) hook, payload on stdin: in the session
 #                                     of an open ticket's worker (its cwd in the ticket's
 #                                     `workspace`), one context line naming the ticket and its spec
@@ -118,7 +148,7 @@
 #                                     default feat), {{OWNER}} (crew.owner, the person's own name in
 #                                     branches, from their file). A placeholder with no value, an
 #                                     unknown one, or a result git refuses as a branch name: exit 2
-#   crew.sh workspace --repo SEL --name N --branch B --base REF [--setup-timeout S]
+#   crew.sh workspace --repo SEL --name N --branch B --base REF [--pr N] [--setup-timeout S]
 #                                     create a top-level Orca workspace on branch B (no name prefix;
 #                                     Orca adds a numeric suffix when B is taken, so read the branch
 #                                     back from the workspace), and print its path. The repo's setup
@@ -639,6 +669,7 @@ cmd_reports() {
 
 cmd_spec() {
   local key='' title='' brief_file='' brief='' process marker merge crew root='' prefs copy no_profile=''
+  local handover='' pr='' ws='' bg='' view='' stands='' branch='' base='' mode=FRESH
   while [ $# -gt 0 ]; do
     case "$1" in
       --root) root=${2:-}; shift 2 ;;
@@ -646,10 +677,18 @@ cmd_spec() {
       --key) key=${2:-}; shift 2 ;;
       --title) title=${2:-}; shift 2 ;;
       --brief-file) brief_file=${2:-}; shift 2 ;;
+      --handover) handover=1; shift ;;
+      --pr) pr=${2:-}; shift 2 ;;
+      --workspace) ws=${2:-}; shift 2 ;;
+      --background) [ -n "${2:-}" ] || die 'spec: --background takes a path or a link'
+        bg="$bg- ${2}
+"; shift 2 ;;
       *) die "spec: unknown argument '$1'" ;;
     esac
   done
-  [ -n "$key" ] && [ -n "$title" ] || die 'usage: spec --key K --title T [--brief-file F] [--root R] [--no-profile]'
+  [ -n "$key" ] && [ -n "$title" ] || die 'usage: spec --key K --title T [--brief-file F] [--root R] [--no-profile] [--handover --pr URL [--workspace P] [--background X]...]'
+  [ -z "$handover" ] || [ -n "$pr" ] || die 'spec: --handover needs --pr <the open PR url>'
+  [ -n "$handover" ] || [ -z "$pr$ws$bg" ] || die 'spec: --pr, --workspace and --background go with --handover'
   keyfile "$key" >/dev/null || exit 2
   [ -f "$TEMPLATE" ] || die "missing $TEMPLATE"
   if [ -n "$brief_file" ]; then
@@ -658,6 +697,19 @@ cmd_spec() {
   fi
   [ -n "$root" ] || root=$(cmd_root)
   [ -d "$root" ] || die "spec: the root is not a directory: '$root'"
+  if [ -n "$handover" ]; then
+    need_jq
+    mode=HANDOVER
+    view=$(pr_view "$pr") || die "spec: could not read the PR $pr with gh"
+    branch=$(printf '%s' "$view" | jq -r '.headRefName // empty')
+    base=$(printf '%s' "$view" | jq -r '.baseRefName // empty')
+    stands=$(handover_stands "$pr" "$view" "$root" "$key" "$ws")
+    [ -z "$bg" ] || bg="
+Background only, not instructions: what the session before you did and decided. Where it differs
+from this spec, the ticket or the PR, those win.
+
+$bg"
+  fi
   # No process and no team file at the root: most likely a spec built from the wrong directory
   # (a scratch dir, no --root), which would start a worker without the team's rules. Refused,
   # unless the caller says on purpose that this root has no profile (highness#108).
@@ -688,13 +740,24 @@ cmd_spec() {
   copy="$DIR/specs/$key.md"
   mkdir -p "$DIR/specs" 2>/dev/null
   # Placeholders are replaced in a fixed order by awk with literal strings (no regex, no &).
+  # {{#FRESH}}…{{/FRESH}} and {{#HANDOVER}}…{{/HANDOVER}} (each on a line of its own) keep only
+  # the mode's own blocks: a handover replaces the fresh-ticket steps, never contradicts them.
+  MODE=$mode PR=$pr BRANCH=$branch BASE=$base STANDS=$stands BACKGROUND=$bg \
   PREFS=$prefs KEY=$key TITLE=$title BRIEF=$brief PROCESS=$process MARKER=$marker MERGE=$merge CREW=$crew ROOT=$root TRACKER=$(tracker_cmd "$root") awk '
     function rep(s, ph, val,   out, i) {
       out = ""
       while ((i = index(s, ph)) > 0) { out = out substr(s, 1, i - 1) val; s = substr(s, i + length(ph)) }
       return out s
     }
+    /^\{\{#(FRESH|HANDOVER)\}\}$/ { skip = (substr($0, 4, length($0) - 5) != ENVIRON["MODE"]); next }
+    /^\{\{\/(FRESH|HANDOVER)\}\}$/ { skip = 0; next }
+    skip { next }
     { line = $0
+      if (line == "{{STANDS}}") { print ENVIRON["STANDS"]; next }
+      if (line == "{{BACKGROUND}}") { if (ENVIRON["BACKGROUND"] != "") printf "%s", ENVIRON["BACKGROUND"]; next }
+      line = rep(line, "{{PR}}", ENVIRON["PR"])
+      line = rep(line, "{{BRANCH}}", ENVIRON["BRANCH"])
+      line = rep(line, "{{BASE}}", ENVIRON["BASE"])
       line = rep(line, "{{KEY}}", ENVIRON["KEY"])
       line = rep(line, "{{TITLE}}", ENVIRON["TITLE"])
       line = rep(line, "{{MARKER}}", ENVIRON["MARKER"])
@@ -794,7 +857,7 @@ cmd_branch() {
 
 cmd_workspace() {
   need_jq
-  local repo='' name='' branch='' base='' timeout=540 out path err
+  local repo='' name='' branch='' base='' timeout=540 out path err prn=''
   while [ $# -gt 0 ]; do
     case "$1" in
       --setup-timeout) timeout=${2:-}; shift 2 ;;
@@ -802,14 +865,16 @@ cmd_workspace() {
       --name) name=${2:-}; shift 2 ;;
       --branch) branch=${2:-}; shift 2 ;;
       --base) base=${2:-}; shift 2 ;;
+      --pr) prn=${2:-}; shift 2 ;;
       *) die "workspace: unknown argument '$1'" ;;
     esac
   done
   [ -n "$repo" ] && [ -n "$name" ] && [ -n "$branch" ] && [ -n "$base" ] \
-    || die 'usage: workspace --repo SEL --name N --branch B --base REF [--setup-timeout S]'
+    || die 'usage: workspace --repo SEL --name N --branch B --base REF [--pr N] [--setup-timeout S]'
   case "$timeout" in ''|*[!0-9]*) die "workspace: --setup-timeout takes seconds, not '$timeout'" ;; esac
+  case "$prn" in *[!0-9]*) die "workspace: --pr takes a PR number, not '$prn'" ;; esac
   out=$("$(orca_cmd)" worktree create --repo "$repo" --name "$name" --branch "$branch" --base-branch "$base" \
-    --no-parent --json 2>&1)
+    ${prn:+--pr "$prn"} --no-parent --json 2>&1)
   path=$(printf '%s' "$out" | jq -r 'select(.ok == true) | .result.worktree.path // empty' 2>/dev/null) || path=''
   if [ -z "$path" ]; then
     err=$(first_err "$out"); [ -n "$err" ] || err=$(printf '%s\n' "$out" | head -1)
@@ -967,6 +1032,52 @@ gh_state() { # <pr url> <marker> <bots json array> [<finding patterns json array
         approvals: ([.latestReviews[]? | select(.state == "APPROVED") | .author.login // ""
                      | select(. != "" and (bot(.; "") | not) and (. as $l | $asked | index($l) | not))] | unique),
         rerequested: ($again | unique) }'
+}
+
+# A github.com PR as a handover reads it: one JSON object from gh pr view. Exit 1 when it is not a
+# github.com PR url or gh cannot read it.
+pr_view() { # <pr url>
+  case "$1" in https://github.com/*/*/pull/[0-9]*) ;; *) return 1 ;; esac
+  gh pr view "$1" --json number,title,url,state,isDraft,headRefName,headRefOid,baseRefName,isCrossRepository,reviewDecision,mergeable,statusCheckRollup 2>/dev/null
+}
+
+# "Where it stands" for a handover spec, one bullet per line: the PR (state, draft or ready, base,
+# head), CI, the review decision and the open review threads (a GraphQL read: gh pr view has no
+# threads), the ticket's status from the team's tracker, and the workspace against the PR head.
+# What cannot be read says so; it never fails the spec.
+handover_stands() { # <pr url> <pr view json> <root> <key> [<workspace>]
+  local api o r n threads t ws=${5:-} head cur ahead behind
+  printf '%s' "$2" | jq -r '
+    "- The PR: \(.state | ascii_downcase), \(if .isDraft then "a draft" else "ready for review" end), base `\(.baseRefName)`, head `\(.headRefName)` at \(.headRefOid[0:8])\(if .mergeable == "CONFLICTING" then "; it conflicts with its base" else "" end).",
+    ([.statusCheckRollup[]? | {n: (.name // .context // "?"), c: (.conclusion // .state // "" | ascii_upcase)}] as $c
+     | [$c[] | select(.c | test("^(FAILURE|ERROR|CANCELLED|TIMED_OUT)$")) | .n] as $bad
+     | "- CI: " + (if ($c | length) == 0 then "no checks reported"
+                   elif ($bad | length) > 0 then "failing (\($bad | join(", ")))"
+                   elif all($c[]; .c | test("^(SUCCESS|NEUTRAL|SKIPPED)$")) then "green"
+                   else "pending" end) + "."),
+    "- Review decision: \(.reviewDecision // "" | if . == "" then "none yet" else ascii_downcase | gsub("_"; " ") end)."'
+  api=$(printf '%s\n' "$1" | sed -n 's#^https://github\.com/\([^/]*\)/\([^/]*\)/pull/\([0-9][0-9]*\).*#\1 \2 \3#p')
+  o=${api%% *}; r=${api#* }; r=${r%% *}; n=${api##* }
+  threads=$(gh api graphql -F o="$o" -F r="$r" -F n="$n" -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:100){nodes{isResolved isOutdated path line comments(first:1){nodes{author{login} body}}}}}}}' 2>/dev/null \
+    | jq -r '[.data.repository.pullRequest.reviewThreads.nodes[]? | select(.isResolved | not)] as $o
+      | "- Open review threads: \($o | length)\(if ($o | length) > 0 then ":" else "." end)",
+        ($o[0:15][] | "  - `\(.path)\(if .line then ":\(.line)" else "" end)`\(if .isOutdated then " (outdated)" else "" end), \(.comments.nodes[0].author.login // "?"): \(.comments.nodes[0].body // "" | split("\n")[0] | .[0:120])"),
+        (if ($o | length) > 15 then "  - … and \(($o | length) - 15) more on the PR" else empty end)' 2>/dev/null) || threads=''
+  [ -n "$threads" ] || threads='- Open review threads: could not be read; read them on the PR.'
+  printf '%s\n' "$threads"
+  t=$(bash "$HERE/tracker.sh" --root "$3" read "$4" 2>/dev/null | jq -r '"\(.status // "?")\(if .role then " (\(.role))" else "" end)"' 2>/dev/null) || t=''
+  printf -- '- The ticket: %s.\n' "${t:-status unknown (no tracker answered); read it yourself}"
+  [ -n "$ws" ] || return 0
+  head=$(printf '%s' "$2" | jq -r '.headRefOid')
+  cur=$(git -C "$ws" rev-parse HEAD 2>/dev/null) || cur=''
+  if [ -z "$cur" ]; then printf -- '- This workspace: %s (not a git checkout?).\n' "$ws"
+  elif [ "$cur" = "$head" ]; then printf -- '- This workspace: %s, at the PR head.\n' "$ws"
+  else
+    ahead=$(git -C "$ws" rev-list --count "$head..HEAD" 2>/dev/null) || ahead='?'
+    behind=$(git -C "$ws" rev-list --count "HEAD..$head" 2>/dev/null) || behind='?'
+    printf -- '- This workspace: %s, at %s: %s commit(s) not on the PR, %s on the PR not here. Bring it level with the PR (pull, or push what is yours) before anything else.\n' "$ws" "${cur%"${cur#????????}"}" "$ahead" "$behind"
+  fi
+  [ -z "$(git -C "$ws" status --porcelain 2>/dev/null)" ] || printf -- '  It has uncommitted changes: the session before you left them; read them before you build on them.\n'
 }
 
 # What changed between two PR states, one line each: who is woken (worker | coordinator), TAB,
@@ -1838,8 +1949,13 @@ cmd_resume() {
     printf -- '- The ticket'"'"'s comments since it started: what it posted, and what people answered.\n\n'
     [ -z "$asked" ] || printf 'Its questions to the coordinator that it never acted on:\n\n%s\n\n' "$asked"
     printf 'Then continue from there, under the spec below. That pull request is yours: do not open a\n'
-    printf 'second one, and do not redo committed work. The spec'"'"'s "Already done?" check is about this\n'
-    printf 'ticket landing elsewhere, not about the earlier worker'"'"'s progress here.\n\n---\n\n'
+    if printf '%s' "$facts" | jq -e '.handover == true' >/dev/null 2>&1; then
+      printf 'second one, and do not redo committed work. The "where it stands" in the spec is as it was\n'
+      printf 'when the earlier worker started: read the PR again for what is open now.\n\n---\n\n'
+    else
+      printf 'second one, and do not redo committed work. The spec'"'"'s "Already done?" check is about this\n'
+      printf 'ticket landing elsewhere, not about the earlier worker'"'"'s progress here.\n\n---\n\n'
+    fi
     cat "$spec"
   } >"$sf"
   out=$(cd "$root" && "$(orca_cmd)" orchestration worker-start --spec-file "$sf" --task-title "$key: $title (resumed)" \
@@ -1864,6 +1980,120 @@ cmd_resume() {
   printf '%s\n' "$out"
 }
 
+# adopt <KEY> --pr <url>: hand an open PR that another session drove (outside hi-crew, or a worker
+# whose facts were closed) to a new worker, in the follow-up phase. See the header for the rules.
+# The facts (pr and head included) are recorded before worker-start, so the watch follows the PR
+# from its first pass and a failed start can be run again: open facts from an adopt whose worker
+# never started are taken over, any other open facts refuse.
+cmd_adopt() {
+  need_jq
+  local key='' pr='' title='' ws='' repo='' brief_file='' root='' bgs=() facts view state o r n run handle
+  local branch head row rows sel cur bf sf setup_err wout agent model out rc spec_args
+  [ $# -gt 0 ] && case "$1" in -*) ;; *) key=$1; shift ;; esac
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --pr) pr=${2:-}; shift 2 ;;
+      --title) title=${2:-}; shift 2 ;;
+      --workspace) ws=${2:-}; shift 2 ;;
+      --repo) repo=${2:-}; shift 2 ;;
+      --brief-file) brief_file=${2:-}; shift 2 ;;
+      --background) bgs+=(--background "${2:-}"); shift 2 ;;
+      --root) root=${2:-}; shift 2 ;;
+      *) die "adopt: unknown argument '$1'" ;;
+    esac
+  done
+  [ -n "$key" ] && [ -n "$pr" ] || die 'usage: adopt <KEY> --pr <url> [--title T] [--workspace P] [--repo SEL] [--brief-file F] [--background X]... [--root R]'
+  keyfile "$key" >/dev/null || exit 2
+  [ -z "$brief_file" ] || [ -f "$brief_file" ] || die "adopt: no brief file: $brief_file"
+  if facts=$(cmd_get "$key"); then
+    printf '%s' "$facts" | jq -e '.handover == true and (.dispatch // "") == ""' >/dev/null 2>&1 \
+      || die "adopt: $key has open facts (crew.sh get $key): a worker was started on it; a lost one continues with crew.sh resume $key"
+  fi
+  case "$pr" in https://github.com/*/*/pull/[0-9]*) ;; *) die "adopt: '$pr' is not a github.com pull request url (other forges are not covered yet)" ;; esac
+  run=$(cmd_run) || die 'adopt: this session has no hi-crew Run yet (crew.sh run <run_id>, /hi-crew:start step 4)'
+  handle=${ORCA_TERMINAL_HANDLE:-$(cat "$DIR/handles/$run" 2>/dev/null)}
+  [ -n "$root" ] || root=$(cmd_root)
+  [ -d "$root" ] || die "adopt: the root is not a directory: '$root'"
+  view=$(pr_view "$pr") || die "adopt: could not read $pr with gh"
+  state=$(printf '%s' "$view" | jq -r '.state // "" | ascii_downcase')
+  [ "$state" = open ] || die "adopt: $pr is ${state:-in an unknown state}, not open: nothing to hand over"
+  printf '%s' "$view" | jq -e '.isCrossRepository != true' >/dev/null \
+    || die "adopt: $pr comes from a fork: its branch is pushed elsewhere, which a worker here cannot (not covered)"
+  branch=$(printf '%s' "$view" | jq -r '.headRefName')
+  head=$(printf '%s' "$view" | jq -r '.headRefOid')
+  pr=$(printf '%s' "$view" | jq -r '.url // empty' | grep . || printf '%s' "$pr")
+  n=${pr##*/pull/}; n=${n%%[!0-9]*}
+  o=$(printf '%s\n' "$pr" | sed -n 's#^https://github\.com/\([^/]*\)/\([^/]*\)/pull/.*#\1/\2#p' | tr '[:upper:]' '[:lower:]')
+  [ -n "$title" ] || title=$(bash "$HERE/tracker.sh" --root "$root" read "$key" 2>/dev/null | jq -r '.title // empty' 2>/dev/null)
+  [ -n "$title" ] || title=$(printf '%s' "$view" | jq -r '.title // empty')
+  [ -n "$title" ] || title=$key
+  # The workspace: the one given, else an Orca workspace of the PR's repo on its branch (never the
+  # main checkout), else a new one created on the branch from its remote.
+  if [ -z "$ws" ]; then
+    rows=$("$(orca_cmd)" worktree list --limit 10000 --json 2>/dev/null | jq -c --arg p "github:$o" '
+      [.result.worktrees[]? | select((.projectId // "" | ascii_downcase) == $p and (.isArchived | not))]') || rows='[]'
+    [ -n "$rows" ] || rows='[]'
+    row=$(printf '%s' "$rows" | jq -c --arg b "refs/heads/$branch" '[.[] | select(.branch == $b and (.isMainWorktree | not))] | .[0] // empty')
+    if [ -n "$row" ]; then
+      ws=$(printf '%s' "$row" | jq -r .path)
+      [ -n "$repo" ] || repo="id:$(printf '%s' "$row" | jq -r .repoId)"
+    else
+      row=$(printf '%s' "$rows" | jq -c 'sort_by(.isMainWorktree | not) | .[0] // empty')
+      [ -n "$repo" ] || { [ -n "$row" ] && repo="id:$(printf '%s' "$row" | jq -r .repoId)"; } \
+        || die "adopt: no Orca project for github.com/$o and no workspace on $branch: add the clone (orca repo add --path <clone>) or pass --repo"
+      [ -z "$row" ] || git -C "$(printf '%s' "$row" | jq -r .path)" fetch -q origin "$branch" 2>/dev/null \
+        || printf 'crew: adopt: could not fetch %s; creating from what the clone has\n' "$branch" >&2
+      setup_err=$(mktemp "${TMPDIR:-/tmp}/hi-crew-ws.XXXXXX") || die 'adopt: no temp file'
+      wout=$(cd "$root" && bash "$HERE/crew.sh" workspace --repo "$repo" --name "$key" --branch "$branch" \
+        --base "origin/$branch" --pr "$n" 2>"$setup_err")
+      case $? in
+        0) : >"$setup_err" ;;
+        3) ;;
+        *) cat "$setup_err" >&2; rm -f "$setup_err"; die "adopt: could not create a workspace on $branch" ;;
+      esac
+      ws=$(printf '%s\n' "$wout" | head -1)
+      # Orca suffixes a branch name taken by a local branch: switch to the PR's own branch.
+      cur=$(git -C "$ws" branch --show-current 2>/dev/null) || cur=''
+      if [ "$cur" != "$branch" ]; then
+        git -C "$ws" checkout -q "$branch" 2>/dev/null && git -C "$ws" branch -q -D "$cur" 2>/dev/null
+        cur=$(git -C "$ws" branch --show-current 2>/dev/null) || cur=''
+        [ "$cur" = "$branch" ] || { rm -f "$setup_err"; die "adopt: the new workspace $ws is on '$cur', not the PR's branch $branch; check it out there, then run adopt again with --workspace $ws"; }
+        git -C "$ws" merge-base --is-ancestor HEAD "$head" 2>/dev/null && git -C "$ws" merge -q --ff-only "$head" 2>/dev/null
+      fi
+    fi
+  fi
+  [ -d "$ws" ] || die "adopt: the workspace is not a directory: '$ws'"
+  ws=$(cd "$ws" && pwd -P)
+  cur=$(git -C "$ws" branch --show-current 2>/dev/null) || cur=''
+  [ "$cur" = "$branch" ] || die "adopt: $ws is on '${cur:-no branch}', not the PR's branch $branch"
+  [ -n "$repo" ] || repo="path:$ws"
+  # The spec: the brief (the team's per-ticket notes) and a setup still running, then the handover.
+  bf=$(mktemp "${TMPDIR:-/tmp}/hi-crew-brief.XXXXXX") && sf="$bf.spec" || die 'adopt: no temp file'
+  { [ -z "$brief_file" ] || cat "$brief_file"; [ -z "${setup_err:-}" ] || cat "$setup_err"; } >"$bf"
+  rm -f "${setup_err:-}"
+  spec_args=(--key "$key" --title "$title" --brief-file "$bf" --root "$root" --handover --pr "$pr" --workspace "$ws")
+  [ ${#bgs[@]} -eq 0 ] || spec_args+=("${bgs[@]}")
+  (cmd_spec "${spec_args[@]}") >"$sf" || { rm -f "$bf" "$sf"; die 'adopt: could not build the spec'; }
+  rm -f "$bf"
+  agent=$(cd "$root" && bash "$CONFIG" get '.crew.agent') || agent=claude
+  model=$(cd "$root" && bash "$CONFIG" get '.crew.model') || model=''
+  (cmd_record "$key" "$(jq -nc --arg t "$title" --arg r "$repo" --arg w "$ws" --arg b "$branch" --arg pr "$pr" --arg h "$head" \
+      --arg root "$root" --arg s "$DIR/specs/$key.md" --arg run "$run" --arg a "$agent" --arg m "$model" '
+      {title: $t, repo: $r, workspace: $w, branch: $b, pr: $pr, head: $h, root: $root, spec: $s, run: $run,
+       agent: $a, model: $m, handover: true}')") || { rm -f "$sf"; die 'adopt: could not record the facts; nothing started'; }
+  out=$(cd "$root" && "$(orca_cmd)" orchestration worker-start --spec-file "$sf" --task-title "$key: $title (handover)" \
+    --worktree "path:$ws" --keep-open --agent "$agent" ${model:+--model "$model"} --run "$run" \
+    ${handle:+--from "$handle"} --json 2>&1)
+  rc=$?
+  rm -f "$sf"
+  if [ $rc -ne 0 ] || [ "$(printf '%s' "$out" | jq -r '.ok // false' 2>/dev/null)" != true ]; then
+    die "adopt: worker-start failed; its facts are recorded, so after reading failedStage (orca skills get orchestration --reference references/recovery-and-cleanup.md) run the same adopt again: $out"
+  fi
+  (cmd_record "$key" "$(printf '%s' "$out" | jq -c '{dispatch: .result.dispatchId, task: .result.taskId}')") \
+    || die "adopt: the worker started, but its dispatch was not recorded; record it by hand: $out"
+  printf '%s\n' "$out"
+}
+
 . "$HERE/action.sh"
 
 sub=${1:-}; [ $# -gt 0 ] && shift
@@ -1873,6 +2103,7 @@ case "$sub" in
   action-show) cmd_action_show "$@" ;;
   stranded) cmd_stranded ;;
   resume) cmd_resume "$@" ;;
+  adopt) cmd_adopt "$@" ;;
   record) cmd_record "$@" ;;
   get) cmd_get "$@" ;;
   list) cmd_list ;;

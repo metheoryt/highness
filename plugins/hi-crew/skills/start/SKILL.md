@@ -1,6 +1,6 @@
 ---
 name: start
-description: Start a worker agent on a ticket — in its own Orca workspace, with a spec built from the ticket and the team's process, under the person's hi-crew Run so its questions reach them — and relay what the worker asks or reports. Use when the user says "start <KEY>", "give <KEY> to an agent", "run these tickets in parallel", or when Orca wakes this session with a hi-crew worker's question or report.
+description: Start a worker agent on a ticket — in its own Orca workspace, with a spec built from the ticket and the team's process, under the person's hi-crew Run so its questions reach them — and relay what the worker asks or reports. Use when the user says "start <KEY>", "give <KEY> to an agent", "hand this open PR to a worker", "run these tickets in parallel", or when Orca wakes this session with a hi-crew worker's question or report.
 ---
 
 # hi-crew:start
@@ -80,7 +80,8 @@ Below, `$O` stands for that executable.
 1. **Already running?** `bash "$C" get <KEY>`. Open facts mean a worker exists: show them and stop,
    unless the user asks for a second attempt (then start with `--retry-of <dispatch>`). One start
    per ticket and attempt. A worker lost without reporting (a usage limit, an account switch) is
-   not a second attempt: `bash "$C" resume <KEY>` continues it in its own workspace.
+   not a second attempt: `bash "$C" resume <KEY>` continues it in its own workspace. A ticket
+   that already has an open PR, driven by a session outside hi-crew: hand it over (below) instead.
 2. **Read the ticket** with the team's tracker tool (the process text names it) or what the session
    has: its title, and a brief of three to six lines (what, why, constraints, links). Do not paste
    the whole ticket: the worker reads it itself.
@@ -139,6 +140,36 @@ Below, `$O` stands for that executable.
    questions come here. Then **end your turn**. Never poll; Orca wakes you.
 
 Several tickets: run steps 1–7 for each, then end the turn once.
+
+## Hand over an open PR
+
+A ticket whose PR is already open (in review, waiting on QA), driven so far by another session:
+an older session outside hi-crew, a person, a worker whose facts were closed. Never build its
+spec by hand from the fresh-ticket template, whose take, already-done and draft-PR steps do not
+fit; one command does the whole start:
+
+1. `bash "$C" get <KEY>`: open facts mean hi-crew already has a worker on it (a lost one is
+   `resume`, step 1 above). Close the old session first if it still runs in the PR's workspace: two
+   sessions in one workspace confuse each other and the watch.
+2. This session's Run, as step 4 above.
+3. A brief, only when there is something to add: the team's per-ticket notes (which base the PR
+   targets, the merge path, what QA waits for) and the agenda's next step for it. The PR and the
+   ticket the worker reads itself.
+4. `bash "$C" adopt <KEY> --pr <url> [--brief-file <file>] [--background <journal or chat>]...`
+   It reads the PR (state, draft or ready, base, CI, open review threads) and the ticket's status,
+   writes them into the spec as "where it stands", and replaces the fresh-ticket steps with the
+   follow-up phase: answer review threads, keep CI green, merge the base in on a conflict, wait
+   for QA. No second PR; the ticket's status and draft/ready stay as they are. The workspace is
+   the PR repo's Orca workspace on the PR branch when there is one (pass `--workspace <path>` to
+   pick it yourself), else a new one created on that branch. It records the facts, PR and head
+   included, before the worker starts, so the watch follows the PR from its first pass, then the
+   dispatch and task. `--background` names a previous session's journal or chat as background
+   only. `--title` overrides the tracker's title; `--repo id:<repo-id>` is needed only when no
+   Orca workspace of the PR's repo exists to infer it from.
+   It refuses, starting nothing, a PR that is merged, closed or from a fork, and a key with open
+   facts. If worker-start fails, read `failedStage` as in step 6, then run the same `adopt` again:
+   it takes over the facts it recorded.
+5. Tell the user in one or two lines, as step 8, and end your turn.
 
 ## When Orca wakes you
 
