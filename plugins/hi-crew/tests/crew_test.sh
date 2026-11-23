@@ -588,16 +588,31 @@ bash "$C" events --ack
 s5 '"approvals":["new"],"rerequested":["rev"]'
 check 'approved again after the re-request' "$(bash "$C" events | cut -f5)" 'approved by new'
 bash "$C" events --ack; : >"$SENT"
+# A crew.bots login's plain comment wakes the worker; a changed crew.bot_ignore_patterns recounts
+# silently.
+s5 '"approvals":["new"],"rerequested":["rev"],"bot_comments":1'
+check 'bot comments appearing are no event' "$(bash "$C" events)$(cat "$SENT")" ''
+s5 '"approvals":["new"],"rerequested":["rev"],"bot_comments":2'
+check 'a bot comment wakes the worker' "$(bash "$C" events | cut -f5,6)" "$(printf '1 new comment(s) from review bots\tworker')"
+case "$(cat "$SENT")" in *'send --to dispatch:ctx_new'*'W-5: 1 new comment(s) from review bots'*) ok 'the bot comment goes to the Dispatch' ;; *) no "bot comment send: $(cat "$SENT")" ;; esac
+bash "$C" events --ack; : >"$SENT"
+cp "$WR/.claude/highness.json" "$W/cfg.bak"
+jq '.crew.bot_ignore_patterns = ["all clear"]' "$W/cfg.bak" >"$WR/.claude/highness.json"
+s5 '"approvals":["new"],"rerequested":["rev"],"bot_comments":3'
+check 'new ignore patterns: the recount is no event' "$(bash "$C" events)$(cat "$SENT")" ''
+check 'the note keeps the ignore patterns' "$(jq -c .ip "$W/state/crew/watch/W-5.json")" '["all clear"]'
+mv "$W/cfg.bak" "$WR/.claude/highness.json"
 # A team's own crew.pr_state gets the bots and the finding patterns as JSON, and the marker.
 cp "$WR/.claude/highness.json" "$W/cfg.bak"
 jq '.crew.bots = ["gatekeeper"] | .crew.finding_patterns = ["Outside the diff"]
-    | .crew.pr_state = "jq -nc --argjson b {{BOTS}} --argjson p {{FINDING_PATTERNS}} --arg m {{MARKER}} '"'"'{state: \"open\", b: $b, p: $p, m: $m}'"'"'"' \
+    | .crew.bot_ignore_patterns = ["all clear"]
+    | .crew.pr_state = "jq -nc --argjson b {{BOTS}} --argjson p {{FINDING_PATTERNS}} --argjson i {{BOT_IGNORE_PATTERNS}} --arg m {{MARKER}} '"'"'{state: \"open\", b: $b, p: $p, i: $i, m: $m}'"'"'"' \
   "$W/cfg.bak" >"$WR/.claude/highness.json"
 bash "$C" record W-6 "{\"pr\":\"https://forge/pr/6\",\"run\":\"run_w1\",\"root\":\"$WR\"}"
 bash "$C" watch
-check 'a team pr_state gets {{BOTS}}, {{FINDING_PATTERNS}} and {{MARKER}}' \
-  "$(jq -c '{b, p, m}' "$W/state/crew/watch/W-6.json")" \
-  '{"b":["forgejo-actions","gatekeeper","gitea-actions","github-actions"],"p":["Outside the diff"],"m":"[bot]"}'
+check 'a team pr_state gets {{BOTS}}, {{FINDING_PATTERNS}}, {{BOT_IGNORE_PATTERNS}} and {{MARKER}}' \
+  "$(jq -c '{b, p, i, m}' "$W/state/crew/watch/W-6.json")" \
+  '{"b":["forgejo-actions","gatekeeper","gitea-actions","github-actions"],"p":["Outside the diff"],"i":["all clear"],"m":"[bot]"}'
 mv "$W/cfg.bak" "$WR/.claude/highness.json"
 bash "$C" close W-6 2>/dev/null
 unset FAKE_WORKERS
@@ -709,7 +724,7 @@ JSON
 EOF
 chmod +x "$W/bin/gh"
 GS=$(PATH="$W/bin:$PATH" bash -c 'eval "$(sed -n "/^gh_state()/,/^}/p" "$1")"; gh_state x "(agent)"' _ "$C")
-check 'gh_state' "$GS" '{"state":"open","draft":false,"head":"abc","ci":"failure","people_at":"2026-01-02T00:00:00Z","people":2,"findings":0,"approvals":[],"rerequested":[]}'
+check 'gh_state' "$GS" '{"state":"open","draft":false,"head":"abc","ci":"failure","people_at":"2026-01-02T00:00:00Z","people":2,"findings":0,"bot_comments":0,"approvals":[],"rerequested":[]}'
 # A worker answering a review bot mentions it before the marker: still its own (highness#123).
 cat >"$W/bin/gh" <<'EOF'
 #!/bin/sh
@@ -723,7 +738,7 @@ cat <<'JSON'
 JSON
 EOF
 GS=$(PATH="$W/bin:$PATH" bash -c 'eval "$(sed -n "/^gh_state()/,/^}/p" "$1")"; gh_state x "(agent)"' _ "$C")
-check 'gh_state: a leading @mention before the marker is own' "$GS" '{"state":"open","draft":false,"head":"abc","ci":"","people_at":"2026-01-04T00:00:00Z","people":3,"findings":0,"approvals":[],"rerequested":[]}'
+check 'gh_state: a leading @mention before the marker is own' "$GS" '{"state":"open","draft":false,"head":"abc","ci":"","people_at":"2026-01-04T00:00:00Z","people":3,"findings":0,"bot_comments":0,"approvals":[],"rerequested":[]}'
 # Bots on normal accounts (crew.bots), the forge Actions user, review bots' findings, approvals.
 cat >"$W/bin/gh" <<'EOF'
 #!/bin/sh
@@ -753,11 +768,16 @@ JSON
 EOF
 gs3() { RR=$1 PATH="$W/bin:$PATH" bash -c 'eval "$(sed -n "/^gh_state()/,/^}/p" "$1")"; gh_state https://github.com/o/r/pull/3 "(agent)" "[\"forgejo-actions\",\"gatekeeper\",\"reviewer-x\"]"' _ "$C"; }
 GS=$(gs3 '[]')
-check 'gh_state: bots, findings, approvals' "$GS" '{"state":"open","draft":true,"head":"abc","ci":"","people_at":"2026-01-03T12:00:00Z","people":3,"findings":2,"approvals":["lead","rev"],"rerequested":[]}'
+check 'gh_state: bots, findings, approvals' "$GS" '{"state":"open","draft":true,"head":"abc","ci":"","people_at":"2026-01-03T12:00:00Z","people":3,"findings":2,"bot_comments":1,"approvals":["lead","rev"],"rerequested":[]}'
 # Asked again: lead, who approved (no longer counted), and ops, whose approval GitHub already
 # dropped from latestReviews; a first request (new), a team and a bot are not re-requests.
 GS=$(gs3 '[{"__typename":"User","login":"lead"},{"__typename":"User","login":"ops"},{"__typename":"User","login":"new"},{"__typename":"Team","name":"Devs","slug":"devs"},{"__typename":"User","login":"gatekeeper"}]')
 check 'gh_state: re-requested reviews' "$(printf '%s' "$GS" | jq -c '{approvals, rerequested}')" '{"approvals":["rev"],"rerequested":["lead","ops"]}'
+# A crew.bots login's plain comment counts for the worker (the forge Actions user's does not)
+# unless crew.bot_ignore_patterns matches it; an invalid pattern ignores nothing.
+gsi() { PATH="$W/bin:$PATH" bash -c 'eval "$(sed -n "/^gh_state()/,/^}/p" "$1")"; gh_state https://github.com/o/r/pull/3 "(agent)" "[\"forgejo-actions\",\"gatekeeper\",\"reviewer-x\"]" "[]" "$2"' _ "$C" "$1" | jq -c '{people, findings, bot_comments}'; }
+check 'gh_state: a bot comment, ignored by pattern' "$(gsi '["(","^ok to"]')" '{"people":3,"findings":2,"bot_comments":0}'
+check 'gh_state: a bot comment no pattern matches' "$(gsi '["(","all clear"]')" '{"people":3,"findings":2,"bot_comments":1}'
 GS=$(PATH="$W/bin:$PATH" bash -c 'eval "$(sed -n "/^gh_state()/,/^}/p" "$1")"; gh_state https://github.com/o/r/pull/4 "(agent)" "[]"' _ "$C")
 check 'gh_state: no inline comments, no state' "$GS" ''
 # gh pr view reads comments and reviews through GraphQL: a bot's login has no [bot] and no type.
@@ -789,7 +809,7 @@ cat <<'JSON'
 JSON
 EOF
 GS=$(PATH="$W/bin:$PATH" bash -c 'eval "$(sed -n "/^gh_state()/,/^}/p" "$1")"; gh_state https://github.com/o/r/pull/5 "(agent)" "[]"' _ "$C")
-check 'gh_state: GraphQL bot logins are not people' "$GS" '{"state":"open","draft":false,"head":"abc","ci":"","people_at":"2026-02-02T00:00:00Z","people":2,"findings":1,"approvals":[],"rerequested":[]}'
+check 'gh_state: GraphQL bot logins are not people' "$GS" '{"state":"open","draft":false,"head":"abc","ci":"","people_at":"2026-02-02T00:00:00Z","people":2,"findings":1,"bot_comments":0,"approvals":[],"rerequested":[]}'
 GS=$(FAIL_TYPED=1 PATH="$W/bin:$PATH" bash -c 'eval "$(sed -n "/^gh_state()/,/^}/p" "$1")"; gh_state https://github.com/o/r/pull/5 "(agent)" "[]"' _ "$C")
 check 'gh_state: authors untyped, no state' "$GS" ''
 # A review bot that puts findings only in its review body: a body matching crew.finding_patterns is
