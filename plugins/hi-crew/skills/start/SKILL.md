@@ -177,10 +177,11 @@ Several tickets: run steps 1–7 for each, then end the turn once.
   a review was re-requested from a person (by anyone, a bot included). A CI failure and review
   bots' findings and comments go to the worker itself as a round (and an approval too, when crew.merge is
   `on_green`), and so does a PR the ticket waits on (`waits_on`) merging or closing; they reach
-  you only when no worker Dispatch took them. A waited-on PR that reaches you: tell the user, and
-  offer a round to the worker to rebase and carry on. Then
-  `bash "$C" events --ack`, and handle it as `hi-crew:agenda` does: merged or closed → offer to
-  close the facts; a person's comment, an approval, or a worker event that fell back to you →
+  you only when no worker Dispatch took them. A waited-on PR merging or closing (`a PR it waits on
+  was …`) is not the ticket settling: never close its facts or run its retro for it; tell the
+  user, and offer a round to the worker to rebase and carry on. Then
+  `bash "$C" events --ack`, and handle it as `hi-crew:agenda` does: the ticket's own PR merged or
+  closed → offer to close the facts; a person's comment, an approval, or a worker event that fell back to you →
   read it, show it with your read, and send the worker a round only on the user's decision.
 - **An escalation** (stopped without `worker_done`): tell the user; steer with
   `$O orchestration send --to dispatch:<id>` only on their say.

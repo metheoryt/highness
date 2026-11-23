@@ -77,7 +77,8 @@ this skill" printed above, two levels up.
 3. **Last reports**: `bash "$C" reports` — the latest `worker_done` per dispatch. A report no
    session handled lands here; record what it names (`pr`, `head`).
 4. **What the watch saw**: `bash "$C" events` — PRs merged or closed (a ticket's own, or one it
-   waits on: `waits_on` in its facts), CI failures, review bots'
+   waits on: `waits_on` in its facts, said `a PR it waits on was …`, which does not settle the
+   ticket: its worker rebases and carries on), CI failures, review bots'
    findings, people's new comments and approvals, workers left on a dialog, a tool call open too long (a hung command?), since anyone last looked (TSV: time, key, run, pr, what, woken).
    `woken` is `worker` when the watch sent the worker a round itself: nothing waits on the person
    there unless the worker asks. When it is empty and
