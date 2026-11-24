@@ -301,7 +301,7 @@ _infer() {
   last=${2##*/}
   # <repo>-<n> is the folder spelling of the GitHub Issues key <repo>#<n> (_ticket_slug), and a
   # branch named like the folder carries it: x/app-13-slug is app#13, not a Jira key APP-13
-  # (highness#70). Read first, so a repo name with a dash (backend-api-13) is matched whole.
+  # (highness#70). Read first, so a repo name with a dash (my-app-13) is matched whole.
   r=$(printf '%s' "$REPO" | LC_ALL=C tr '[:upper:]' '[:lower:]')
   l=$(printf '%s' "$last" | LC_ALL=C tr '[:upper:]' '[:lower:]')
   case "$l" in
@@ -1525,6 +1525,13 @@ _landed() {
   [ -n "$base" ] && [ "$base" != "$4" ]
 }
 
+# _squashed_in <sha>: <sha> is off trunk, yet all it holds is in trunk (_in_trunk's later tests).
+_squashed_in() {
+  local t
+  t=$(_trunk) || return 1
+  ! git -C "$MAIN" merge-base --is-ancestor "$1" "$t" 2>/dev/null && _in_trunk "$1"
+}
+
 # _state <row>: dirty pushed memory pr terminal age safe reasons (TSV). Read-only.
 _state() {
   local row="$1" p b h kind key name sel pp dirty=0 pushed=- memory=ok prs pr oid='' term age now ct reasons=''
@@ -1563,10 +1570,12 @@ _state() {
   # (a bounced ticket, an adopted branch, commits pushed after the merge) carries an old PR.
   # Past that head is fine when HEAD still holds it and HEAD is in trunk: `land` merges the trunk
   # into the branch and fast-forwards the trunk to that merge without pushing the branch.
-  # Nor is it stale when everything HEAD holds is in trunk already (_in_trunk): no new work to lose.
+  # Nor when HEAD has commits of its own off trunk and all they hold is in trunk (a squash merged
+  # after the trunk moved on, highness#70). A HEAD already in trunk stays stale: that is a fresh
+  # tree on a reused branch name, new work about to start.
   case "$pr" in
     merged#*|closed#*) [ "$kind" != review ] && [ "$pushed" = yes ] && [ "$h" != "$oid" ] &&
-                       ! _landed_past "$oid" "$h" && ! _in_trunk "$h" && reasons="$reasons;pr-stale" ;;
+                       ! _landed_past "$oid" "$h" && ! _squashed_in "$h" && reasons="$reasons;pr-stale" ;;
   esac
   [ "$memory" = unique ] && reasons="$reasons;memory"
   case "$term" in busy) reasons="$reasons;busy" ;; open) reasons="$reasons;open-window" ;; esac
