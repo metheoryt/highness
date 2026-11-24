@@ -186,6 +186,13 @@ git push -q origin "$RSHA:refs/heads/work/remote-910" && git fetch -q origin
 out=$(bash "$WT" create --kind work --key remote-910 --name 'remote 910' --base main --branch work/remote-910 2>/dev/null); rc=$?
 assert_status "git, remote-only work branch: exit 0" 0 "$rc"
 assert_eq "git, remote-only work branch: at the origin work" "$RSHA" "$(col "$out" 4)"
+# … but a stale tracking ref (deleted on origin, fetched without --prune) is not adopted: refused, says how
+git push -q origin "$RSHA:refs/heads/task/dev/AB-911-stale" && git fetch -q origin
+git --git-dir="$UP" branch -q -D task/dev/AB-911-stale
+out=$(bash "$WT" create --kind ticket --key AB-911 --name 'AB-911 · stale' --base main --branch task/dev/AB-911-stale 2>&1); rc=$?
+assert_status "stale origin ref: refused" 1 "$rc"
+assert_contains "stale origin ref: names the prune" "$out" "git fetch --prune origin"
+assert_eq "stale origin ref: no tree made" "" "$(git worktree list | grep AB-911)"
 
 # a long worktree list (highness#70: 43 trees): `grep -q` quitting at its match SIGPIPEd git under
 # pipefail, so a fresh tree read as "removed while setup ran" and create failed with no record.

@@ -662,11 +662,21 @@ cmd_create() {
   # A ticket's --branch that lives only on origin is that branch, adopted (highness#70): Orca
   # counts the origin branch as taken and cut `<branch>-2`, which create then removed, and git
   # would start a new branch of that name at the base, beside the work already on origin.
-  if [ "$kind" = ticket ] && [ -n "$branch" ] &&
+  # The tracking ref can be stale: a merged PR's branch deleted on origin, fetched without
+  # --prune. Orca counts that as taken too, and an adopt would fetch nothing, so origin is asked
+  # (exit 2 is "no such branch"; any other failure is left to the fetch, which says why).
+  if [ "$kind" != review ] && [ -n "$branch" ] &&
      ! git -C "$MAIN" show-ref --verify --quiet "refs/heads/$branch" &&
      git -C "$MAIN" show-ref --verify --quiet "refs/remotes/origin/$branch"; then
-    say "create: $branch exists only on origin — adopting it"
-    adopt=$branch; branch=''
+    git -C "$MAIN" ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1
+    if [ $? -eq 2 ]; then
+      say "create: origin/$branch is stale (the branch is gone from origin) — run git fetch --prune origin, then create again"
+      return 1
+    fi
+    if [ "$kind" = ticket ]; then
+      say "create: $branch exists only on origin — adopting it"
+      adopt=$branch; branch=''
+    fi
   fi
   if [ "$(cd "$parent" 2>/dev/null && pwd -P)" = "$MAIN" ]; then
     parent=$MAIN
@@ -1490,8 +1500,9 @@ _in_trunk() {
   # every file the branch touched since the fork point reads the same in trunk as at <sha>,
   # nothing on it is lost. A branch that touched no file is left to the tests above (an empty
   # path list would make the second diff compare whole trees, and xargs may run it with none).
-  [ -n "$(git -C "$MAIN" diff --name-only "$mb" "$1" 2>/dev/null)" ] || return 1
-  git -C "$MAIN" diff --name-only -z "$mb" "$1" 2>/dev/null |
+  # --no-renames: a rename lists its source too, so a file the branch moved away is checked gone.
+  [ -n "$(git -C "$MAIN" diff --no-renames --name-only "$mb" "$1" 2>/dev/null)" ] || return 1
+  git -C "$MAIN" diff --no-renames --name-only -z "$mb" "$1" 2>/dev/null |
     xargs -0 git --literal-pathspecs -C "$MAIN" diff --quiet "$t" "$1" -- 2>/dev/null
 }
 
