@@ -126,6 +126,26 @@ bash "$WT" create --kind work --key taken --name taken --base main --branch work
 assert_status "work on an existing branch: exit 1" 1 "$?"
 assert_not_contains "work on an existing branch: Orca never called" "$(logged)" "worktree create"
 
+# a --branch that lives only on origin (highness#70): Orca counts it as taken and cut `<branch>-2`,
+# which create then removed. It is adopted instead: no --branch to Orca, the tree on the origin work.
+git branch -q task/dev/AB-909-remote main
+(git switch -q task/dev/AB-909-remote && git commit -q --allow-empty -m remote-work && git push -q origin HEAD && git switch -q main)
+RSHA=$(git rev-parse task/dev/AB-909-remote); git branch -q -D task/dev/AB-909-remote; reset_log
+out=$(bash "$WT" create --kind ticket --key AB-909 --name 'AB-909 · remote' --base main --branch task/dev/AB-909-remote 2>"$SANDBOX/err"); rc=$?
+assert_status "remote-only branch: exit 0" 0 "$rc"
+assert_eq "remote-only branch: on it, not <branch>-2" task/dev/AB-909-remote "$(col "$out" 3)"
+assert_eq "remote-only branch: at the origin work" "$RSHA" "$(col "$out" 4)"
+assert_not_contains "remote-only branch: no --branch to Orca" "$(logged)" "--branch task/dev/AB-909-remote"
+assert_contains "remote-only branch: says it adopts" "$(cat "$SANDBOX/err")" "exists only on origin — adopting it"
+assert_eq "remote-only branch: no -2 branch left" "" "$(git branch --list 'task/dev/AB-909-remote-2')"
+assert_eq "remote-only branch: tracks origin" origin/task/dev/AB-909-remote \
+  "$(git -C "$(col "$out" 1)" rev-parse --abbrev-ref '@{upstream}' 2>/dev/null)"
+# … and a work workspace on a branch only origin has is refused before Orca is called
+git push -q origin main:refs/heads/work/remote-taken && git fetch -q origin; reset_log
+bash "$WT" create --kind work --key remote-taken --name remote-taken --base main --branch work/remote-taken >/dev/null 2>&1
+assert_status "work on a remote-only branch: exit 1" 1 "$?"
+assert_not_contains "work on a remote-only branch: Orca never called" "$(logged)" "worktree create"
+
 # an Orca below the floor: said once, plain git worktrees meanwhile
 printf '%s\n' '{"ok":true,"result":{"runtime":{"state":"ready","reachable":true,"appVersion":"1.4.200"}}}' > "$FX/status.json"
 out=$(bash "$WT" create --kind work --key oldorca --name oldorca --base main --branch work/oldorca 2>&1 >/dev/null); rc=$?

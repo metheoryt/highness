@@ -88,4 +88,18 @@ assert_eq "orca: backend orca" orca "$(col "$v" 10)"
 s=$(printf '%s\n' "$out" | awk -F'\t' '$1 ~ /scratch$/')
 assert_eq "orca: a path Orca does not list stays git" "git" "$(col "$s" 10)"
 unset FX_ORCA_ONLY
+orca_off
+
+# <repo>-<n> on a branch is the folder spelling of the GitHub Issues key <repo>#<n>, not a Jira key
+# <REPO>-<n> (highness#70). The repo here is `app`.
+git worktree add -q -b x/app-13-slug "$D/i13" main
+git worktree add -q -b x/APP-14 "$D/i14" main
+git worktree add -q -b x/apple-15-y "$D/i15" main
+out=$(bash "$WT" list)
+g=$(printf '%s\n' "$out" | awk -F'\t' '$1 ~ /i13$/')
+assert_eq "repo-n: x/app-13-slug is app#13" "ticket app#13" "$(col "$g" 5) $(col "$g" 6)"
+g=$(printf '%s\n' "$out" | awk -F'\t' '$1 ~ /i14$/')
+assert_eq "repo-n: any case, no slug" "ticket app#14" "$(col "$g" 5) $(col "$g" 6)"
+g=$(printf '%s\n' "$out" | awk -F'\t' '$1 ~ /i15$/')
+assert_eq "repo-n: another word that starts like the repo stays a Jira key" "ticket APPLE-15" "$(col "$g" 5) $(col "$g" 6)"
 assert_summary

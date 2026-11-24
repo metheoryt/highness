@@ -275,4 +275,44 @@ assert_contains "remove <unknown name>: says what it takes" "$out" "path, folder
 out=$(bash "$WT" remove "$SANDBOX/twin" 2>&1); rc=$?
 assert_status "remove <a path>: never matched by its basename" 2 "$rc"
 assert_eq "remove <a path>: nothing removed" "$n" "$(count_wt)"
+
+# already gone (highness#70): a removed workspace is said to be gone, not "not a workspace of this
+# repo", and the remove succeeds: the end state it asks for holds
+G=$(mk AB-501 byhand); git worktree remove --force "$G"
+out=$(bash "$WT" remove-if-safe "$G" 2>&1); rc=$?
+assert_status "already gone: remove-if-safe exit 0" 0 "$rc"
+assert_contains "already gone: says so" "$out" "$G is already gone"
+assert_not_contains "already gone: not 'not a workspace'" "$out" "not a workspace"
+G=$(mk AB-502 rmrf); rm -rf "$G"   # gone from disk, still listed by git until a prune
+out=$(bash "$WT" remove-if-landed "$G" 2>&1); rc=$?
+assert_status "gone, not pruned: remove-if-landed exit 0" 0 "$rc"
+assert_contains "gone, not pruned: says it is gone" "$out" "is already gone"
+assert_not_contains "gone, not pruned: no unsafe lines" "$out" "unsafe"
+out=$(bash "$WT" remove "$G" 2>&1); rc=$?
+assert_status "gone: remove exit 0" 0 "$rc"
+out=$(bash "$WT" remove "$OTHER" 2>&1); rc=$?
+assert_status "an existing directory that is no workspace: still refused" 2 "$rc"
+assert_contains "an existing directory that is no workspace: says so" "$out" "not a workspace of this repo"
+
+# squash-merged with the trunk moved on, the branch deleted (highness#70, sweep): HEAD is neither the
+# PR's final head nor on a remote branch, no trunk commit has its tree, and its two commits were
+# squashed into one; but every file it touched reads the same in trunk, so it is removed
+git checkout -q main && git pull -q --ff-only origin main
+Q=$(mk AB-311 squashmoved)
+(cd "$Q" && echo q1 > q1.txt && git add q1.txt && git commit -qm q1 && echo q2 > q2.txt && git add q2.txt && git commit -qm q2)
+git merge -q --squash task/dev/AB-311-squashmoved && git commit -qm 'squash AB-311'
+echo later > later.txt && git add later.txt && git commit -qm later && git push -q origin main
+pr task/dev/AB-311-squashmoved MERGED 311 "$(git rev-parse HEAD~2)"
+# … and one with a commit made after the squash: that content is in no trunk commit, so it stays an ask
+Q2=$(mk AB-312 changed)
+(cd "$Q2" && echo mine > m.txt && git add m.txt && git commit -qm m1 && echo mine2 >> m.txt && git commit -qam m2)
+git merge -q --squash task/dev/AB-312-changed && git commit -qm 'squash AB-312'
+echo later2 > later2.txt && git add later2.txt && git commit -qm later2 && git push -q origin main
+pr task/dev/AB-312-changed MERGED 312 "$(git rev-parse HEAD~2)"
+(cd "$Q2" && echo mine3 >> m.txt && git commit -qam 'm3, after the merge')
+out=$(bash "$WT" sweep 2>/dev/null)
+assert_contains "squash, trunk moved on: removed" "$out" "removed	$Q	AB-311 · squashmoved"
+assert_not_contains "squash, trunk moved on: not flagged unpushed" "$out" "ask	$Q	"
+assert_contains "squash, file changed since: still an ask" "$out" "ask	$Q2	AB-312 · changed"
+assert_eq "squash, file changed since: still there" yes "$([ -d "$Q2" ] && echo yes || echo no)"
 assert_summary
