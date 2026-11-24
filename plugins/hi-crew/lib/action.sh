@@ -48,7 +48,7 @@ cmd_action() {
   keyfile "$key" >/dev/null || exit 2
   [ -s "$src" ] || die "action: no script, or an empty one: $src"
   facts=$(cmd_get "$key") || die "action: no open facts for $key"
-  ws=$(printf '%s' "$facts" | jq -r '.workspace // empty')
+  ws=$(printf '%s' "$facts" | jq -r "$WS_PATH")
   [ -z "$ws" ] && ws=$(git rev-parse --show-toplevel 2>/dev/null)
   [ -n "$ws" ] && [ -d "$ws" ] || die "action: $key has no workspace recorded"
   head=$(git -C "$ws" rev-parse HEAD 2>/dev/null) || die "action: cannot read HEAD in $ws"
@@ -180,7 +180,7 @@ cmd_stranded() {
   m=$(inbox) || exit $?
   cmd_list | while IFS= read -r t; do
     key=$(printf '%s' "$t" | jq -r .key); d=$(printf '%s' "$t" | jq -r '.dispatch // empty')
-    ws=$(printf '%s' "$t" | jq -r '.workspace // empty')
+    ws=$(printf '%s' "$t" | jq -r "$WS_PATH")
     sess=''; if [ -n "$ws" ] && [ -d "$ws" ]; then sess=$(bash "$SESSION_STATE" get "$ws" 2>/dev/null | cut -f3); fi
     f="$DIR/unsent/$key.jsonl"; kept='[]'
     if [ -f "$f" ]; then

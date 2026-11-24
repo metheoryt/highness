@@ -11,6 +11,10 @@
 #   crew.sh list                      one JSON object per line, every open ticket
 #   crew.sh close <KEY>               move <KEY>'s facts to closed/ (the ticket is settled) and
 #                                     drop the watch's notes on it
+#   crew.sh release <KEY>             remove <KEY>'s workspace, only once its PR shows merged (asked
+#                                     now; open and closed facts alike): through hi's wt.sh
+#                                     remove-if-safe, which refuses a dirty or unpushed tree or a
+#                                     busy agent. Not merged, no PR, or unreadable: refused, exit 3
 #   crew.sh choice <KEY> <json>       append one answered ask to choices.jsonl: the options with
 #                                     their loses:/leans on: lines, what the person took ("option",
 #                                     "own" or "reframed"), their reply verbatim. Kept across close,
@@ -188,6 +192,15 @@
 #                                     A ticket with no `pr` yet gets its PR looked up with gh by the
 #                                     workspace's branch, and recorded when found (the worker records
 #                                     it itself at its draft-PR step: {{CREW}} in the spec)
+#                                     A ticket's Orca workspace follows its PR: the PR linked on it
+#                                     (a github.com PR on a workspace of the same repo, a GitLab
+#                                     MR), and its board column moved through hi's wt.sh board
+#                                     (a column set by hand stays): merged → Done; else the
+#                                     tracker's done → Done, testing → QA, in_review → In review,
+#                                     when the root configures a tracker; else a draft PR → In
+#                                     progress, a ready one → In review. A PR closed unmerged, a
+#                                     tracker that did not answer, moves nothing; with no PR yet
+#                                     only the tracker moves it. No workspace, or no hi plugin: nothing
 #                                     Run by the Orca automation below, from its precheck, which then
 #                                     exits 1 so no agent ever starts
 #   crew.sh watch-install [<cron>]    create or update that automation (default every 10 minutes)
@@ -285,6 +298,12 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG="$HERE/config.sh"
 TEMPLATE="$HERE/../reference/worker-spec.md"
 DIR="${HIGHNESS_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/highness}/crew"
+# hi's wt.sh (the hi plugin beside this one): the board column and a workspace's removal go
+# through it, so its rules hold here too (a hand move on the board wins; nothing unsafe is removed).
+WT_SH="${HI_WT_SH:-$HERE/../../hi/lib/wt.sh}"
+# The facts' `workspace` as a path (jq). /hi-crew:start records what worker-start answered,
+# Orca's worktree id "<repo id>::<path>"; autostart records the bare path. Both read as the path.
+WS_PATH='.workspace // empty | sub("^[^/]*::"; "")'
 
 die() { printf 'crew: %s\n' "$*" >&2; exit 2; }
 need_jq() { command -v jq >/dev/null 2>&1 || die 'jq is required'; }
@@ -347,7 +366,43 @@ cmd_close() {
   # The watch's notes on it (last PR state, the dialog and tool call told), so a ticket opened
   # again under the same key starts from a first look. Named one by one: a glob on "<KEY>.*"
   # would also take a key that extends this one ("A-1" and "A-1.2").
-  rm -f "$DIR/watch/$1.json" "$DIR/watch/$1.prompt" "$DIR/watch/$1.tool" "$DIR/watch/$1.waits"
+  rm -f "$DIR/watch/$1.json" "$DIR/watch/$1.prompt" "$DIR/watch/$1.tool" "$DIR/watch/$1.waits" \
+    "$DIR/watch/$1.linked" "$DIR/watch/$1.board"
+}
+
+# The facts of <KEY>: open, else the newest closed copy. Exit 1 when there are none.
+facts_any() { # <KEY>
+  local f c
+  f=$(keyfile "$1") || exit 2
+  [ -f "$f" ] && { cat "$f"; return 0; }
+  # closed/<KEY>.<UTC stamp>.json: the stamp starts with a digit, so "A-1" does not take "A-1.2".
+  c=$(ls "$DIR/closed/$1".[0-9]*.json 2>/dev/null | sort | tail -1)
+  [ -n "$c" ] && [ -f "$c" ] || return 1
+  cat "$c"
+}
+
+# release <KEY>: remove the ticket's workspace, only once its PR shows merged. The state is asked
+# now (wait_state), not taken from the watch's last look; anything but merged refuses (exit 3),
+# a PR closed unmerged included: its work is in no trunk. Merged, the removal is hi's
+# `wt.sh remove-if-safe`, which still refuses a dirty or unpushed tree, a busy agent, a head past
+# the merged one (its `unsafe` lines, exit 3). Works on open and closed facts alike, so the agenda
+# can offer it before or after `close`. A workspace already gone: said, exit 0.
+cmd_release() {
+  [ $# -eq 1 ] || die 'usage: release <KEY>'
+  need_jq
+  local t ws pr st rc
+  t=$(facts_any "$1") || die "no facts for $1"
+  ws=$(printf '%s' "$t" | jq -r "$WS_PATH")
+  pr=$(printf '%s' "$t" | jq -r '.pr // empty')
+  [ -n "$ws" ] || die "$1 has no workspace recorded"
+  if [ ! -d "$ws" ]; then printf 'crew: %s: its workspace %s is already gone\n' "$1" "$ws" >&2; return 0; fi
+  [ -n "$pr" ] || { printf 'crew: %s has no PR recorded: its workspace stays (removed only once its PR merged)\n' "$1" >&2; return 3; }
+  st=$(wait_state "$t" "$pr" </dev/null) || { printf 'crew: %s: cannot read the state of %s: its workspace stays\n' "$1" "$pr" >&2; return 3; }
+  [ "$st" = merged ] || { printf 'crew: %s: %s is %s, not merged: its workspace stays\n' "$1" "$pr" "$st" >&2; return 3; }
+  [ -f "$WT_SH" ] || die "release needs hi's wt.sh (the hi plugin), not found at $WT_SH"
+  bash "$WT_SH" --repo "$ws" remove-if-safe "$ws" </dev/null; rc=$?
+  [ "$rc" -eq 0 ] && [ -f "$(keyfile "$1")" ] && (cmd_record "$1" "$(jq -cn --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{released_at: $at}')")
+  return "$rc"
 }
 
 # $DIR/run lists every Run hi-crew made, one per line (it once held a single shared Run).
@@ -795,7 +850,7 @@ cmd_reentry() {
   for f in "$DIR"/*.json; do
     [ -f "$f" ] || continue
     row=$(jq -r --arg a "$cwd" --arg b "$real" '
-      (.workspace // "") as $w | select($w != "")
+      (.workspace // "" | sub("^[^/]*::"; "")) as $w | select($w != "")
       | select([$a, $b] | any(. == $w or startswith($w + "/")))
       | (if (.resumed_spec // "") != "" and .resumed_for == .dispatch then .resumed_spec else (.spec // "") end) as $s
       | [.key, (.title // ""), $s, (.pr // "")] | @tsv' "$f" 2>/dev/null) || continue
@@ -1185,7 +1240,7 @@ wait_state() { # <facts json> <pr url>
 # Orca lists), else the recorded `dispatch`. Exit 1 when there is none.
 worker_dispatch() { # <facts json>
   local ws run d found
-  ws=$(printf '%s' "$1" | jq -r '.workspace // empty')
+  ws=$(printf '%s' "$1" | jq -r "$WS_PATH")
   run=$(printf '%s' "$1" | jq -r '.run // empty')
   d=$(printf '%s' "$1" | jq -r '.dispatch // empty')
   if [ -n "$ws" ] && [ -n "$run" ]; then
@@ -1204,7 +1259,7 @@ worker_dispatch() { # <facts json>
 # state. Prints its url; exit 1 when there is none or gh cannot tell.
 find_pr() { # <facts json>
   local ws branch
-  ws=$(printf '%s' "$1" | jq -r '.workspace // empty')
+  ws=$(printf '%s' "$1" | jq -r "$WS_PATH")
   [ -n "$ws" ] && [ -d "$ws" ] || return 1
   branch=$(git -C "$ws" branch --show-current 2>/dev/null) || branch=''
   [ -n "$branch" ] || branch=$(printf '%s' "$1" | jq -r '.branch // empty')
@@ -1228,6 +1283,83 @@ fill() {
 # The tracker adapter (lib/tracker.sh) as one shell command reading its config at <root>: what
 # {{TRACKER}} becomes in agenda.sections, the autostart candidates and crew.process.
 tracker_cmd() { printf 'bash %s --root %s' "$(q "$HERE/tracker.sh")" "$(q "$1")"; }
+
+# The Orca board column a ticket's workspace belongs in (a wt.sh board column), from its PR state
+# and, when the ticket's root configures a tracker, the ticket's role there: a merged PR is done;
+# else the tracker's done, testing (qa) or in_review; else an open PR, draft (active) or ready
+# (in_review). Exit 1 when neither says (a PR closed unmerged or none, no tracker role to go by)
+# or the tracker did not answer: the workspace stays where it is. The tracker is read only while
+# the PR is unmerged, and a key the tracker does not take (a GitHub tracker's keys are <repo>-<n>)
+# reads as no role.
+board_column() { # <facts json> <pr state json>
+  local st root role
+  st=$(printf '%s' "$2" | jq -r '.state // ""')
+  [ "$st" = merged ] && { echo done; return 0; }
+  root=$(facts_root "$1")
+  if (cd "$root" && bash "$CONFIG" get '.tracker.kind') >/dev/null 2>&1; then
+    role=$(bash "${HI_TRACKER_SH:-$HERE/tracker.sh}" --root "$root" read "$(printf '%s' "$1" | jq -r .key)" 2>/dev/null </dev/null)
+    case $? in
+      0) role=$(printf '%s' "$role" | jq -r '.role // empty' 2>/dev/null) || role='' ;;
+      3|4) role='' ;;   # a key this tracker does not take, a config it refuses: go by the PR
+      *) return 1 ;;    # the tracker did not answer: no move this pass, or QA would flap to In review
+    esac
+    case "$role" in
+      done) echo done; return 0 ;;
+      testing) echo qa; return 0 ;;
+      in_review) echo in_review; return 0 ;;
+    esac
+  fi
+  [ "$st" = open ] || return 1
+  if [ "$(printf '%s' "$2" | jq -r '.draft // false')" = true ]; then echo active; else echo in_review; fi
+}
+
+# Link the PR on the workspace in Orca: a github.com PR by its number (only on a workspace of that
+# same repo, since a bare number on another repo's workspace links someone else's PR), a GitLab
+# merge request by its url (Orca checks it against the workspace's project). Exit 0 when it is
+# linked or cannot be (another forge, another repo), 1 when Orca did not answer: try again later.
+ws_link() { # <workspace> <pr url>
+  local O js n repo flag val
+  O=$(orca_cmd)
+  case "$2" in
+    https://github.com/*/pull/[0-9]*)
+      n=$(printf '%s\n' "$2" | sed -n 's#^https://github\.com/\([^/]*/[^/]*\)/pull/\([0-9][0-9]*\).*#\1 \2#p')
+      [ -n "$n" ] || return 0
+      repo=${n% *}; n=${n#* }
+      js=$("$O" worktree show --worktree "path:$1" --json 2>/dev/null </dev/null) || return 1
+      printf '%s' "$js" | jq -e '.ok == true' >/dev/null 2>&1 || return 1
+      printf '%s' "$js" | jq -e --arg p "github:$repo" \
+        '(.result.worktree.projectId // "" | ascii_downcase) == ($p | ascii_downcase)' >/dev/null 2>&1 || return 0
+      [ "$(printf '%s' "$js" | jq -r '.result.worktree.linkedPR // empty')" = "$n" ] && return 0
+      flag=--pr val=$n ;;
+    https://*/-/merge_requests/[0-9]*) flag=--gitlab-mr val=$2 ;;
+    *) return 0 ;;
+  esac
+  "$O" worktree set --worktree "path:$1" "$flag" "$val" --json 2>/dev/null </dev/null | jq -e '.ok == true' >/dev/null 2>&1
+}
+
+# Keep a ticket's Orca workspace in step with its PR, from the watch: the PR linked once, and the
+# board column (board_column) moved through hi's `wt.sh board`, which keeps a column the person
+# set by hand. Each is asked of Orca only when it changed since the last pass (notes
+# watch/<KEY>.linked and watch/<KEY>.board): every Orca call costs seconds. A move Orca or wt.sh
+# could not make is tried again next pass. No workspace, or no hi plugin: nothing.
+ws_sync() { # <facts json> <pr state json>
+  local w="$DIR/watch" key ws pr col out
+  key=$(printf '%s' "$1" | jq -r .key)
+  ws=$(printf '%s' "$1" | jq -r "$WS_PATH")
+  pr=$(printf '%s' "$1" | jq -r '.pr // empty')
+  [ -n "$ws" ] && [ -d "$ws" ] || return 0
+  if [ -n "$pr" ] && [ "$(cat "$w/$key.linked" 2>/dev/null)" != "$pr" ] && ws_link "$ws" "$pr"; then
+    printf '%s\n' "$pr" >"$w/$key.linked"
+  fi
+  col=$(board_column "$1" "$2") || return 0
+  [ "$(cat "$w/$key.board" 2>/dev/null)" = "$col" ] && return 0
+  [ -f "$WT_SH" ] || return 0
+  out=$(bash "$WT_SH" --repo "$ws" board "$ws" "$col" 2>/dev/null </dev/null) || out=''
+  case "$(printf '%s' "$out" | cut -f1)" in
+    moved|same|kept) printf '%s\n' "$col" >"$w/$key.board" ;;
+  esac
+  return 0
+}
 
 # The team's own digest sections (config agenda.sections), so the digest covers more than the
 # workers without hi knowing the team's tracker or forge. Each section is {"name", "command"}; the
@@ -1316,11 +1448,15 @@ cmd_watch() {
     # No PR recorded yet (the worker records it at its draft-PR step): look it up by the branch,
     # and record what is found, so the digest and later passes read it from the facts.
     if [ -z "$pr" ]; then
-      pr=$(find_pr "$t") || continue
+      # No PR yet: the board can still follow the tracker (a ticket done without one).
+      pr=$(find_pr "$t") || { ws_sync "$t" '{}' </dev/null; continue; }
       (cmd_record "$key" "$(jq -cn --arg pr "$pr" '{pr: $pr}')") || continue
       t=$(printf '%s' "$t" | jq -c --arg pr "$pr" '.pr = $pr')
     fi
     now=$(pr_state "$t") && printf '%s' "$now" | jq -e 'type == "object"' >/dev/null 2>&1 || continue
+    # The Orca workspace follows the PR: linked, and in its board column (done once merged), in
+    # this same pass: once the agenda closes the ticket the watch never looks at it again.
+    ws_sync "$t" "$now" </dev/null
     fp=$(patterns_json "$(facts_root "$t")"); [ -n "$fp" ] || fp='[]'
     ip=$(patterns_json "$(facts_root "$t")" bot_ignore_patterns); [ -n "$ip" ] || ip='[]'
     snap="$w/$key.json"
@@ -1359,7 +1495,7 @@ SESSION_STATE="$HERE/session-state.sh"
 # The hook line of the worker of these facts (session-state.sh get); exit 1 when none is believed.
 hook_state() { # <facts json>
   local ws
-  ws=$(printf '%s' "$1" | jq -r '.workspace // empty')
+  ws=$(printf '%s' "$1" | jq -r "$WS_PATH")
   [ -n "$ws" ] && [ -d "$ws" ] || return 1
   bash "$SESSION_STATE" get "$ws"
 }
@@ -1369,7 +1505,7 @@ hook_state() { # <facts json>
 # knows question forms.
 on_prompt() { # <facts json>
   local ws hs
-  ws=$(printf '%s' "$1" | jq -r '.workspace // empty')
+  ws=$(printf '%s' "$1" | jq -r "$WS_PATH")
   [ -n "$ws" ] && [ -d "$ws" ] || return 1
   bash "$PROMPT_MARK" check "$ws" && return 0
   hs=$(hook_state "$1") || return 1
@@ -2018,7 +2154,7 @@ relaunch_line() { # <transcript> <session> <model>
 resume_in_pane() {
   local key=$1 facts=$2 d=$3 handle=$4 asked=$5 ws run pane sid row s pid h dir cd acct line tr model title sf out rc i
   shift 5
-  ws=$(printf '%s' "$facts" | jq -r '.workspace // empty')
+  ws=$(printf '%s' "$facts" | jq -r "$WS_PATH")
   run=$(printf '%s' "$facts" | jq -r '.run // empty')
   pane=$(lost_pane "$d") || return 1
   sid=$(session_of "$ws" "$@") || return 1
@@ -2100,7 +2236,7 @@ cmd_resume() {
   need_jq
   local key=$1 facts ws run spec root pr state d agent model handle title branch sf out rc m asked noted
   facts=$(cmd_get "$key") || die "resume: no open facts for $key"
-  ws=$(printf '%s' "$facts" | jq -r '.workspace // empty')
+  ws=$(printf '%s' "$facts" | jq -r "$WS_PATH")
   run=$(printf '%s' "$facts" | jq -r '.run // empty')
   [ -n "$ws" ] && [ -d "$ws" ] || die "resume: $key's workspace is gone (${ws:-none recorded}); start it afresh with /hi-crew:start"
   [ -n "$run" ] || die "resume: no Run recorded for $key"
@@ -2330,6 +2466,7 @@ case "$sub" in
   get) cmd_get "$@" ;;
   list) cmd_list ;;
   close) cmd_close "$@" ;;
+  release) cmd_release "$@" ;;
   choice) cmd_choice "$@" ;;
   choices) cmd_choices "$@" ;;
   relay) cmd_relay "$@" ;;
