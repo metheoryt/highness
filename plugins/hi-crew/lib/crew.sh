@@ -198,8 +198,9 @@
 #                                     (a column set by hand stays): merged → Done; else the
 #                                     tracker's done → Done, testing → QA, in_review → In review,
 #                                     when the root configures a tracker; else a draft PR → In
-#                                     progress, a ready one → In review. A PR closed unmerged moves
-#                                     nothing. No workspace recorded, or no hi plugin: nothing
+#                                     progress, a ready one → In review. A PR closed unmerged, a
+#                                     tracker that did not answer, moves nothing; with no PR yet
+#                                     only the tracker moves it. No workspace, or no hi plugin: nothing
 #                                     Run by the Orca automation below, from its precheck, which then
 #                                     exits 1 so no agent ever starts
 #   crew.sh watch-install [<cron>]    create or update that automation (default every 10 minutes)
@@ -1286,17 +1287,22 @@ tracker_cmd() { printf 'bash %s --root %s' "$(q "$HERE/tracker.sh")" "$(q "$1")"
 # The Orca board column a ticket's workspace belongs in (a wt.sh board column), from its PR state
 # and, when the ticket's root configures a tracker, the ticket's role there: a merged PR is done;
 # else the tracker's done, testing (qa) or in_review; else an open PR, draft (active) or ready
-# (in_review). Exit 1 when neither says (a PR closed unmerged, no tracker role to go by): the
-# workspace stays where it is. The tracker is read only while the PR is unmerged, and a key the
-# tracker does not know (a GitHub tracker's keys are <repo>-<n>) reads as no role.
+# (in_review). Exit 1 when neither says (a PR closed unmerged or none, no tracker role to go by)
+# or the tracker did not answer: the workspace stays where it is. The tracker is read only while
+# the PR is unmerged, and a key the tracker does not take (a GitHub tracker's keys are <repo>-<n>)
+# reads as no role.
 board_column() { # <facts json> <pr state json>
   local st root role
   st=$(printf '%s' "$2" | jq -r '.state // ""')
   [ "$st" = merged ] && { echo done; return 0; }
   root=$(facts_root "$1")
   if (cd "$root" && bash "$CONFIG" get '.tracker.kind') >/dev/null 2>&1; then
-    role=$(bash "${HI_TRACKER_SH:-$HERE/tracker.sh}" --root "$root" read "$(printf '%s' "$1" | jq -r .key)" 2>/dev/null </dev/null \
-      | jq -r '.role // empty' 2>/dev/null) || role=''
+    role=$(bash "${HI_TRACKER_SH:-$HERE/tracker.sh}" --root "$root" read "$(printf '%s' "$1" | jq -r .key)" 2>/dev/null </dev/null)
+    case $? in
+      0) role=$(printf '%s' "$role" | jq -r '.role // empty' 2>/dev/null) || role='' ;;
+      3|4) role='' ;;   # a key this tracker does not take, a config it refuses: go by the PR
+      *) return 1 ;;    # the tracker did not answer: no move this pass, or QA would flap to In review
+    esac
     case "$role" in
       done) echo done; return 0 ;;
       testing) echo qa; return 0 ;;
@@ -1442,7 +1448,8 @@ cmd_watch() {
     # No PR recorded yet (the worker records it at its draft-PR step): look it up by the branch,
     # and record what is found, so the digest and later passes read it from the facts.
     if [ -z "$pr" ]; then
-      pr=$(find_pr "$t") || continue
+      # No PR yet: the board can still follow the tracker (a ticket done without one).
+      pr=$(find_pr "$t") || { ws_sync "$t" '{}' </dev/null; continue; }
       (cmd_record "$key" "$(jq -cn --arg pr "$pr" '{pr: $pr}')") || continue
       t=$(printf '%s' "$t" | jq -c --arg pr "$pr" '.pr = $pr')
     fi

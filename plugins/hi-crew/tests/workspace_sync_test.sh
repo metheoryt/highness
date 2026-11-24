@@ -39,6 +39,7 @@ esac
 EOF
 cat >"$T/bin/tracker.sh" <<'EOF'
 #!/bin/sh
+[ "${FAKE_TRACKER_RC:-0}" = 0 ] || exit "$FAKE_TRACKER_RC"
 printf '{"role":"%s"}\n' "${FAKE_ROLE:-active}"
 EOF
 chmod +x "$T/bin/orca" "$T/bin/wt.sh" "$T/bin/tracker.sh"
@@ -86,6 +87,17 @@ FAKE_ROLE=done pass
 check 'tracker done: Done' "$(grep '^wt ' "$LOG")" "wt --repo $WS board $WS done"
 FAKE_ROLE=active pass
 check 'no tracker role to go by: from the PR' "$(grep '^wt ' "$LOG")" "wt --repo $WS board $WS active"
+FAKE_ROLE=testing pass
+FAKE_TRACKER_RC=5 pass
+check 'the tracker did not answer: no move (QA does not flap back)' "$(logged ' board ')" 0
+st '{"state":"open","draft":false}'; FAKE_TRACKER_RC=3 pass
+check 'a key the tracker does not take: from the PR' "$(grep '^wt ' "$LOG")" "wt --repo $WS board $WS in_review"
+mkdir -p "$T/ws5"; WS5=$(cd "$T/ws5" && pwd -P)
+bash "$C" record K-5 "{\"workspace\":\"$WS5\",\"root\":\"$ROOT\"}"
+FAKE_ROLE=done pass
+check 'no PR, ticket done in the tracker: Done' "$(grep '^wt ' "$LOG" | grep -c "board $WS5 done")" 1
+check 'no PR: nothing to link' "$(logged "^orca .*$WS5")" 0
+bash "$C" close K-5 2>/dev/null
 printf '{"crew":{"pr_state":"cat {{ROOT}}/state.json"}}' >"$T/root/.claude/highness.json"
 
 # --- link guards: another repo's workspace, already linked, a GitLab MR
@@ -100,6 +112,7 @@ check 'a GitLab MR: linked by its url' "$(grep '^orca ' "$LOG")" \
 bash "$C" close K-2 2>/dev/null
 
 # --- /hi-crew:start records Orca's worktree id, "<repo id>::<path>": read as the path
+st '{"state":"open","draft":true}'; pass  # K-1 settles first: the moves below are K-4's
 bash "$C" record K-4 "{\"pr\":\"https://github.com/acme/app/pull/14\",\"workspace\":\"repo-1::$WS\",\"root\":\"$ROOT\"}"
 st '{"state":"open","draft":true}'; pass
 check 'an id::path workspace: moved by its path' "$(grep '^wt ' "$LOG")" "wt --repo $WS board $WS active"
