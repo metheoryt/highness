@@ -173,6 +173,31 @@ bash "$WT" create --kind ticket --key 'app#16' --name 'app#16 · x' --base main 
 assert_status "gh ticket: a branch with another number is refused" 2 "$?"
 reset_log
 
+# a --branch that lives only on origin is that branch, not a new one at the base (highness#70)
+git switch -q -c tmp-909 main
+git commit -q --allow-empty -m remote-work && git push -q origin HEAD:task/dev/AB-909-remote && git fetch -q origin
+RSHA=$(git rev-parse origin/task/dev/AB-909-remote); git switch -q main; git branch -q -D tmp-909
+out=$(bash "$WT" create --kind ticket --key AB-909 --name 'AB-909 · remote' --base main --branch task/dev/AB-909-remote 2>/dev/null); rc=$?
+assert_status "git, remote-only ticket branch: exit 0" 0 "$rc"
+assert_eq "git, remote-only ticket branch: at the origin work" "$RSHA" "$(col "$out" 4)"
+assert_eq "git, remote-only ticket branch: tracks origin" origin/task/dev/AB-909-remote \
+  "$(git -C "$(col "$out" 1)" rev-parse --abbrev-ref '@{upstream}' 2>/dev/null)"
+git push -q origin "$RSHA:refs/heads/work/remote-910" && git fetch -q origin
+out=$(bash "$WT" create --kind work --key remote-910 --name 'remote 910' --base main --branch work/remote-910 2>/dev/null); rc=$?
+assert_status "git, remote-only work branch: exit 0" 0 "$rc"
+assert_eq "git, remote-only work branch: at the origin work" "$RSHA" "$(col "$out" 4)"
+
+# a long worktree list (highness#70: 43 trees): `grep -q` quitting at its match SIGPIPEd git under
+# pipefail, so a fresh tree read as "removed while setup ran" and create failed with no record.
+# The shim pads `worktree list --porcelain` past any pipe buffer, after the real rows.
+BIG="$SANDBOX/bigwt"; mkdir -p "$BIG"; REAL_GIT=$(command -v git)
+printf '#!/usr/bin/env bash\ncase " $* " in *" worktree list --porcelain "*) "%s" "$@"; yes "padding line" | head -c 400000; exit $? ;; esac\nexec "%s" "$@"\n' \
+  "$REAL_GIT" "$REAL_GIT" > "$BIG/git"; chmod +x "$BIG/git"
+out=$(PATH="$BIG:$PATH" bash "$WT" create --kind work --key biglist --name 'big list' --base main --branch work/biglist 2>&1 >/dev/null); rc=$?
+assert_status "long worktree list: create exit 0" 0 "$rc"
+assert_not_contains "long worktree list: the fresh tree is not read as removed" "$out" "removed while setup ran"
+assert_eq "long worktree list: recorded" "$D/biglist" "$(bash "$WT" rec get --work biglist workspace)"
+
 # the default setup is the plugin's own worktree-setup.sh, run from inside the new tree
 out=$(env -u HI_WT_SETUP bash "$WT" create --kind work --key dflt --name 'default setup' --base main --branch work/dflt 2>&1 >/dev/null)
 assert_contains "default setup: lib/worktree-setup.sh" "$out" "setup: $(cd "$HERE/../lib" && pwd)/worktree-setup.sh"

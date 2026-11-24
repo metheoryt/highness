@@ -36,8 +36,10 @@
 #                                      the abs path of the clone whose origin repo NAME is
 #                                      <repo> (case-insensitive): a GitHub Issues key names
 #                                      its repo, so no origin is asked
-#   umbrella.sh resolve --key <KEY>    <abs-path>TAB<branch> for every origin branch, in every
-#                                      clone, that carries KEY (orca.sh candidates). Zero or
+#   umbrella.sh resolve --key <KEY>    <abs-path>TAB<branch>TAB<where> for every branch, in every
+#                                      clone, that carries KEY: <where> is `origin` (orca.sh
+#                                      candidates; take it with --adopt) or `local`, a branch
+#                                      only the clone has (take it with --branch). Zero or
 #                                      several rows are a question for the user, never a guess.
 #
 # Exit codes: 0 ok; 1 not in an umbrella, or the PR's repo is not cloned here; 2 usage
@@ -144,22 +146,43 @@ umb_resolve_issue() {
   printf '%s\n' "$hit"
 }
 
+# _umb_local <clone> <KEY>: the clone's local branches that carry KEY (orca.sh's whole-token rule
+# on the last path segment; a <repo>#<n> key rides the branch as <n>), one per line.
+_umb_local() {
+  local k=$2 b last
+  case "$k" in *'#'*) k=${k##*#} ;; esac
+  git -C "$1" for-each-ref --format='%(refname:short)' refs/heads 2>/dev/null | while IFS= read -r b; do
+    last=${b##*/}
+    case "$last" in "$k"|"$k"-*|"$k"_*) printf '%s\n' "$b" ;; esac
+  done
+}
+
 umb_resolve_key() {
-  local key="${1:-}" rows row p out rc=0 b hits=0
+  local key="${1:-}" rows row p out loc rc=0 b hits=0
   [ -n "$key" ] || { umb_say 'resolve --key needs a value'; return 2; }
   rows=$(umb_repos) || return 1
   while IFS= read -r row; do
     [ -n "$row" ] || continue
     p=$(printf '%s\n' "$row" | cut -f1)
+    # A ticket branch not pushed yet lives only in the clone (highness#70): asked first, so a clone
+    # whose origin cannot be asked still answers with what it holds.
+    loc=$(_umb_local "$p" "$key")
     if ! out=$(bash "$_UMB_HERE/orca.sh" candidates --repo "$p" --key "$key" </dev/null); then
       umb_say "could not ask $(printf '%s\n' "$row" | cut -f2)'s origin — its answer is unknown"
-      rc=4; continue
+      rc=4; out=''
     fi
     while IFS= read -r b; do
       [ -n "$b" ] || continue
-      printf '%s\t%s\n' "$p" "$b"; hits=$((hits + 1))
+      printf '%s\t%s\torigin\n' "$p" "$b"; hits=$((hits + 1))
     done <<EOF
 $out
+EOF
+    while IFS= read -r b; do
+      [ -n "$b" ] || continue
+      printf '%s\n' "$out" | grep -Fxq -- "$b" && continue
+      printf '%s\t%s\tlocal\n' "$p" "$b"; hits=$((hits + 1))
+    done <<EOF
+$loc
 EOF
   done <<EOF
 $rows

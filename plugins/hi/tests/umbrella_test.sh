@@ -72,8 +72,19 @@ assert_status "resolve: no flag → exit 2" 2 "$rc"
 git -C "$UMB/alpha" push -q origin main:refs/heads/feat/dev/AB-7-retry main:refs/heads/feat/dev/AB-70-other
 git -C "$UMB/beta" push -q origin main:refs/heads/feat/dev/AB-7-retry
 assert_eq "key: one row per clone that carries it, whole-token match" \
-  "$(printf '%s\tfeat/dev/AB-7-retry\n%s\tfeat/dev/AB-7-retry' "$UMB/alpha" "$UMB/beta")" \
+  "$(printf '%s\tfeat/dev/AB-7-retry\torigin\n%s\tfeat/dev/AB-7-retry\torigin' "$UMB/alpha" "$UMB/beta")" \
   "$(bash "$U" resolve --key AB-7)"
+# a ticket branch not pushed yet lives only in its clone (highness#70); one also on origin is listed once
+git -C "$UMB/beta" branch -q fix/AB-8-local main
+git -C "$UMB/alpha" fetch -q origin feat/dev/AB-7-retry:feat/dev/AB-7-retry
+assert_eq "key: a local-only branch is found, marked local" \
+  "$(printf '%s\tfix/AB-8-local\tlocal' "$UMB/beta")" "$(bash "$U" resolve --key AB-8)"
+assert_eq "key: a branch both local and on origin is one origin row" \
+  "$(printf '%s\tfeat/dev/AB-7-retry\torigin\n%s\tfeat/dev/AB-7-retry\torigin' "$UMB/alpha" "$UMB/beta")" \
+  "$(bash "$U" resolve --key AB-7)"
+git -C "$UMB/beta" branch -q fix/8-gh main
+assert_eq "key: a <repo>#<n> key matches its local branch by number" \
+  "$(printf '%s\tfix/8-gh\tlocal' "$UMB/beta")" "$(bash "$U" resolve --key 'beta#8')"
 out=$(bash "$U" resolve --key AB-9 2>"$SANDBOX/err"); rc=$?
 assert_status "key: no hit anywhere → exit 3" 3 "$rc"
 assert_eq "key: no hit → no rows" "" "$out"
@@ -81,7 +92,10 @@ assert_contains "key: no hit is said, with the way out" "$(cat "$SANDBOX/err")" 
 git -C "$UMB/beta" remote set-url origin "$SANDBOX/up/nowhere.git"   # unreachable
 out=$(bash "$U" resolve --key AB-7 2>"$SANDBOX/err"); rc=$?
 assert_status "key: an unreachable origin → exit 4" 4 "$rc"
-assert_eq "key: the clones that answered still print" "$(printf '%s\tfeat/dev/AB-7-retry' "$UMB/alpha")" "$out"
+assert_eq "key: the clones that answered still print" "$(printf '%s\tfeat/dev/AB-7-retry\torigin' "$UMB/alpha")" "$out"
+out=$(bash "$U" resolve --key AB-8 2>/dev/null); rc=$?
+assert_status "key: an unreachable origin with a local hit → still exit 4" 4 "$rc"
+assert_eq "key: the unreachable clone's local branch still prints" "$(printf '%s\tfix/AB-8-local\tlocal' "$UMB/beta")" "$out"
 assert_contains "key: the unreachable one is named" "$(cat "$SANDBOX/err")" "nowhere"
 
 # --- a workspace of the umbrella: root is the workspace, the clones are the main checkout's ---

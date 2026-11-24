@@ -42,7 +42,9 @@ case "$1 $2" in
       [ -n "${FX_CREATE_LANDS:-}" ] && git -C "$FX_REPO" worktree add -q -b "$br" "$FX_ORCA_ROOT/$name" "$base" >/dev/null 2>&1
       cat "$FX/create.json"; exit "$rc"
     fi
-    git -C "$FX_REPO" show-ref --verify --quiet "refs/heads/$br" && br="$br-2"
+    # A branch only on origin is taken too (measured on Orca 1.4.272, highness#70).
+    { git -C "$FX_REPO" show-ref --verify --quiet "refs/heads/$br" ||
+      git -C "$FX_REPO" show-ref --verify --quiet "refs/remotes/origin/$br"; } && br="$br-2"
     p="$FX_ORCA_ROOT/$name"
     git -C "$FX_REPO" worktree add -q -b "$br" "$p" "$base" >/dev/null 2>&1 ||
       { echo '{"ok":false,"error":{"code":"git_failed"}}'; exit 1; }

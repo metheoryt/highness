@@ -16,7 +16,9 @@
 #   * Never run a bare `orca` on Linux (the GNOME screen reader): the binary comes from
 #     `orca.sh resolve`.
 #   * Orca `worktree create` answering runtime_unavailable is listed before any retry: a
-#     blind retry duplicates the worktree.
+#     blind retry duplicates the worktree. Orca's own replay, `--retry-launch <operationId>`,
+#     is for a create that launches an agent (`--agent`; without it Orca 1.4.272 answers
+#     invalid_argument), and wt.sh creates bare trees, so the list stays (highness#70).
 #   * Orca removal passes --run-hooks, or the repo's archive hook (test-DB teardown) is
 #     skipped. Success is judged by the filesystem, never by `ok`.
 #
@@ -290,13 +292,25 @@ EOF
 
 # _infer <path> <branch>: kind and key for a workspace no record names. Prints kind<TAB>key.
 _infer() {
-  local folder=${1##*/} last k
+  local folder=${1##*/} last k r l n
   case "$folder" in
     review-[0-9]*|*-review-[0-9]*)
       k=${folder##*review-}
       case "$k" in *[!0-9]*) ;; *) printf 'review\t%s\n' "$k"; return ;; esac ;;
   esac
   last=${2##*/}
+  # <repo>-<n> is the folder spelling of the GitHub Issues key <repo>#<n> (_ticket_slug), and a
+  # branch named like the folder carries it: x/app-13-slug is app#13, not a Jira key APP-13
+  # (highness#70). Read first, so a repo name with a dash (backend-api-13) is matched whole.
+  r=$(printf '%s' "$REPO" | LC_ALL=C tr '[:upper:]' '[:lower:]')
+  l=$(printf '%s' "$last" | LC_ALL=C tr '[:upper:]' '[:lower:]')
+  case "$l" in
+    "$r"-[0-9]*)
+      n=${l#"$r"-}; n=${n%%[!0-9]*}
+      case "${l#"$r"-"$n"}" in
+        ''|-*|_*) _valid_id ticket "$r#$n" && { printf 'ticket\t%s\n' "$r#$n"; return; } ;;
+      esac ;;
+  esac
   k=$(printf '%s' "$last" | sed -n 's/^\([A-Za-z][A-Za-z0-9]*-[0-9][0-9]*\).*/\1/p' | LC_ALL=C tr '[:lower:]' '[:upper:]')
   if [ -n "$k" ]; then printf 'ticket\t%s\n' "$k"; return; fi
   # A <repo>#<n> key rides the branch as a bare number (<n>-<slug>), and a number alone says
@@ -447,6 +461,9 @@ _create_git() {
     fi
   elif git -C "$MAIN" show-ref --verify --quiet "refs/heads/$branch"; then
     out=$(git -C "$MAIN" worktree add "$WT" "$branch" 2>&1)
+  elif git -C "$MAIN" show-ref --verify --quiet "refs/remotes/origin/$branch"; then
+    # Only on origin: track it, never start a second branch of that name at the base.
+    out=$(git -C "$MAIN" worktree add --track -b "$branch" "$WT" "origin/$branch" 2>&1)
   else
     out=$(git -C "$MAIN" worktree add -b "$branch" "$WT" "$base" 2>&1)
   fi || { say "git worktree add failed: $out"; WT=''; return 1; }
@@ -487,9 +504,11 @@ _create_orca() {
   target=$base; [ "$kind" = review ] && target=$detach
   # A branch that does not exist yet is named at creation. An existing one is switched to
   # after (_land_orca): Orca reuses it only when it sits at the base, and otherwise cuts
-  # `<name>-2` beside it (measured on Orca 1.4.252).
+  # `<name>-2` beside it (measured on Orca 1.4.252). A branch only on origin counts as taken
+  # too (Orca 1.4.272): cmd_create turns a ticket's into --adopt; a work one is refused here.
   case "$kind" in ticket|work)
-    [ -z "$adopt" ] && ! git -C "$MAIN" show-ref --verify --quiet "refs/heads/$branch" && named=$branch ;;
+    [ -z "$adopt" ] && ! git -C "$MAIN" show-ref --verify --quiet "refs/heads/$branch" &&
+      ! git -C "$MAIN" show-ref --verify --quiet "refs/remotes/origin/$branch" && named=$branch ;;
   esac
   if [ "$kind" = work ] && [ -z "$named" ]; then
     say "create: $branch already exists; pick another --branch"; return 1
@@ -639,6 +658,15 @@ cmd_create() {
   if [ -n "$base" ] && [ "$(_trunk)" = "origin/$base" ] &&
      git -C "$MAIN" show-ref --verify --quiet "refs/remotes/origin/$base"; then
     base="origin/$base"
+  fi
+  # A ticket's --branch that lives only on origin is that branch, adopted (highness#70): Orca
+  # counts the origin branch as taken and cut `<branch>-2`, which create then removed, and git
+  # would start a new branch of that name at the base, beside the work already on origin.
+  if [ "$kind" = ticket ] && [ -n "$branch" ] &&
+     ! git -C "$MAIN" show-ref --verify --quiet "refs/heads/$branch" &&
+     git -C "$MAIN" show-ref --verify --quiet "refs/remotes/origin/$branch"; then
+    say "create: $branch exists only on origin — adopting it"
+    adopt=$branch; branch=''
   fi
   if [ "$(cd "$parent" 2>/dev/null && pwd -P)" = "$MAIN" ]; then
     parent=$MAIN
@@ -1449,14 +1477,22 @@ _in_trunk() {
   mb=$(git -C "$MAIN" merge-base "$1" "$t" 2>/dev/null) || return 1
   tree=$(git -C "$MAIN" rev-parse --verify --quiet "$1^{tree}") || return 1
   [ "$tree" != "$(git -C "$MAIN" rev-parse "$mb^{tree}")" ] || return 1
-  git -C "$MAIN" log --format=%T "$mb..$t" 2>/dev/null | grep -Fxq "$tree" && return 0
+  git -C "$MAIN" log --format=%T "$mb..$t" 2>/dev/null | grep -Fx "$tree" >/dev/null && return 0   # no -q: see _is_wt
   # Rebased onto trunk before it landed: new shas, so neither test above holds, yet
   # `git cherry` finds a patch-equivalent trunk commit for every one of them (all `-`). The
   # tree test above comes first: empty commits all share one patch id, so a branch of them
   # would match any empty trunk commit.
   local ch
   ch=$(git -C "$MAIN" cherry "$t" "$1" 2>/dev/null) || return 1
-  [ -n "$ch" ] && ! printf '%s\n' "$ch" | grep -qv '^- '
+  [ -n "$ch" ] && ! printf '%s\n' "$ch" | grep -qv '^- ' && return 0
+  # Squash-merged with the trunk moved on, then the branch deleted (highness#70): no trunk commit
+  # carries the tree, and several commits squashed into one have no patch-equivalent. Yet when
+  # every file the branch touched since the fork point reads the same in trunk as at <sha>,
+  # nothing on it is lost. A branch that touched no file is left to the tests above (an empty
+  # path list would make the second diff compare whole trees, and xargs may run it with none).
+  [ -n "$(git -C "$MAIN" diff --name-only "$mb" "$1" 2>/dev/null)" ] || return 1
+  git -C "$MAIN" diff --name-only -z "$mb" "$1" 2>/dev/null |
+    xargs -0 git --literal-pathspecs -C "$MAIN" diff --quiet "$t" "$1" -- 2>/dev/null
 }
 
 # _landed <kind> <key> <branch> <head> [<path>]: exit 0 when the work landed in trunk with no PR (a personal
@@ -1516,9 +1552,10 @@ _state() {
   # (a bounced ticket, an adopted branch, commits pushed after the merge) carries an old PR.
   # Past that head is fine when HEAD still holds it and HEAD is in trunk: `land` merges the trunk
   # into the branch and fast-forwards the trunk to that merge without pushing the branch.
+  # Nor is it stale when everything HEAD holds is in trunk already (_in_trunk): no new work to lose.
   case "$pr" in
     merged#*|closed#*) [ "$kind" != review ] && [ "$pushed" = yes ] && [ "$h" != "$oid" ] &&
-                       ! _landed_past "$oid" "$h" && reasons="$reasons;pr-stale" ;;
+                       ! _landed_past "$oid" "$h" && ! _in_trunk "$h" && reasons="$reasons;pr-stale" ;;
   esac
   [ "$memory" = unique ] && reasons="$reasons;memory"
   case "$term" in busy) reasons="$reasons;busy" ;; open) reasons="$reasons;open-window" ;; esac
@@ -1560,15 +1597,26 @@ _reason_text() {
   esac
 }
 
-# _guard_target <path>: sets TROW, or exit 2. Only a workspace of THIS repo, never the main
-# checkout (the row list excludes it), never the workspace the caller stands in.
+# _guard_target <path>: sets TROW, or exit 2; exit 0 with TROW empty when <path> is already
+# gone. Only a workspace of THIS repo, never the main checkout (the row list excludes it), never
+# the workspace the caller stands in.
 _guard_target() {
   local p="${1:-}" pp
   [ -n "$p" ] || { say 'refusing an empty path'; return 2; }
+  # A tree whose directory is gone is still listed until a prune: drop it first, so a path
+  # removed by hand or by Orca reads as gone, not as a workspace to remove.
+  git -C "$MAIN" worktree prune >/dev/null 2>&1
   case "$p" in
     */*) TROW=$(_find --path "$p" 2>/dev/null) || TROW='' ;;
     *)   TROW=$(_find_name "$p") || return 2 ;;
   esac
+  # A path that no longer exists was removed already (by another caller, a sweep, Orca's UI):
+  # say so, not "not a workspace of this repo", which reads as a wrong path (highness#70).
+  # The end state a remove asks for holds, so its caller gets 0 (TROW stays empty: nothing to do).
+  if [ -z "$TROW" ] && [ "${p#*/}" != "$p" ] && [ ! -e "$p" ]; then
+    say "$p is already gone (no such directory, and git no longer lists it as a worktree) — nothing to remove"
+    return 0
+  fi
   [ -n "$TROW" ] || {
     say "$p is not a workspace of this repo (the main checkout, another repo, or not a worktree; give its path, folder or name) — nothing removed"
     return 2; }
@@ -1599,7 +1647,10 @@ _close_terms() {
   done
 }
 
-_is_wt() { git -C "$MAIN" worktree list --porcelain | grep -Fxq "worktree $1"; }
+# grep reads to the end (no -q): under pipefail, `grep -q` quitting at its match kills git with
+# SIGPIPE once the list outgrows a pipe write, and a live tree then reads as gone (highness#70:
+# create called a fresh tree "removed while setup ran" in a repo with 43 worktrees).
+_is_wt() { git -C "$MAIN" worktree list --porcelain 2>/dev/null | grep -Fx "worktree $1" >/dev/null; }
 
 # _gone <path> <secs>: prune until <path> is neither a directory nor a worktree, or <secs> pass.
 _gone() {
@@ -1682,12 +1733,14 @@ _merged_at() {
 cmd_remove() {
   local TROW
   _guard_target "${1:-}" || return 2
+  [ -n "$TROW" ] || return 0   # already gone
   _do_remove
 }
 
 cmd_remove_if_safe() {
   local TROW st reasons
   _guard_target "${1:-}" || return 2
+  [ -n "$TROW" ] || return 0   # already gone
   st=$(_state "$TROW"); reasons=$(_col "$st" 8)
   _remove_unless "$reasons" "$st"
 }
@@ -1699,6 +1752,7 @@ cmd_remove_if_safe() {
 cmd_remove_if_landed() {
   local TROW st reasons
   _guard_target "${1:-}" || return 2
+  [ -n "$TROW" ] || return 0   # already gone
   st=$(_state "$TROW"); reasons=$(_col "$st" 8)
   [ "$(_col "$TROW" 5)" = ticket ] || reasons="${reasons:+$reasons;}not-ticket"
   case "$(_col "$st" 4)" in merged#*|landed) ;; *) reasons="${reasons:+$reasons;}not-landed" ;; esac
