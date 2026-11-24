@@ -5,6 +5,8 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 C="$HERE/../lib/crew.sh"
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 export HIGHNESS_STATE="$T/state" HIGHNESS_CONFIG="$T/user.json"
+# No hi wt.sh: the watch's board moves are workspace_sync_test.sh's, never the real Orca's.
+export HI_WT_SH="$T/no-wt.sh"
 unset ORCA_CLI_COMMAND
 fail=0
 ok() { echo "  ok   $1"; }

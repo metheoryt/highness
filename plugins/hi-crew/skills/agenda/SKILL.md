@@ -181,7 +181,12 @@ and say in one line that Orca now wakes this session, not the other one, for tha
   With nothing to carry, the `resume` line alone reopens it.
 - **A section item**: its `next` says what to do; do it with the team's own tools (the item's
   `url`, the skill the team's process names). Starting a ticket on a worker is `/hi-crew:start`.
-- **Merged or closed**: run the retro (`reference/retro.md`), then `bash "$C" close <KEY>`; offer
-  to release the workspace.
+- **Merged or closed**: run the retro (`reference/retro.md`), then `bash "$C" close <KEY>`. For a
+  merged PR, offer the release in one line: "<KEY> <title>: merged — remove the workspace?"; on a
+  yes, `bash "$C" release <KEY>`, the only way to remove a ticket's workspace here. It asks the PR
+  state again and removes only a merged one, through hi's `wt.sh remove-if-safe`. When it
+  answers `unsafe` lines, show them; they are why the workspace stays. Do not offer removal for a
+  PR closed unmerged, and never remove a ticket's workspace another way (`wt.sh remove`, `orca
+  worktree rm`). The watch has already moved the workspace to Done on the board and linked its PR.
 
 End your turn when the topics are done; Orca wakes this session when a worker reports.
