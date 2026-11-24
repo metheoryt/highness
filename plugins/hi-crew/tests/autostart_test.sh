@@ -6,6 +6,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 C="$HERE/../lib/crew.sh"
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 export HIGHNESS_STATE="$T/state" HIGHNESS_CONFIG="$T/user.json" HI_ACCOUNT="$T/acct" HI_ORCA_PROFILES="$T/profiles"
+export HI_WT_SH="$T/no-wt.sh"  # the watch's board moves never reach the real Orca through wt.sh
 # The plan usage: a live answer under every line unless a test says otherwise (lib/budget.sh).
 export HI_BUDGET_REFRESH=0 HI_BUDGET_RESPONSE="$T/live.json"
 live() { # <5h %> <7d %> → the usage endpoint's answer, 5h resetting in 4 h, 7d in 6 days

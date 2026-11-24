@@ -99,6 +99,13 @@ check 'a GitLab MR: linked by its url' "$(grep '^orca ' "$LOG")" \
   "orca worktree set --worktree path:$WS --gitlab-mr https://gitlab.example/g/app/-/merge_requests/4 --json"
 bash "$C" close K-2 2>/dev/null
 
+# --- /hi-crew:start records Orca's worktree id, "<repo id>::<path>": read as the path
+bash "$C" record K-4 "{\"pr\":\"https://github.com/acme/app/pull/14\",\"workspace\":\"repo-1::$WS\",\"root\":\"$ROOT\"}"
+st '{"state":"open","draft":true}'; pass
+check 'an id::path workspace: moved by its path' "$(grep '^wt ' "$LOG")" "wt --repo $WS board $WS active"
+check 'an id::path workspace: linked by its path' "$(grep '^orca ' "$LOG")" "orca worktree set --worktree path:$WS --pr 14 --json"
+bash "$C" close K-4 2>/dev/null
+
 # --- no workspace: nothing asked of Orca or wt.sh
 bash "$C" record K-3 "{\"pr\":\"https://github.com/acme/app/pull/13\",\"root\":\"$ROOT\"}"
 pass

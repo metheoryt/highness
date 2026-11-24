@@ -300,6 +300,9 @@ DIR="${HIGHNESS_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/highness}/crew"
 # hi's wt.sh (the hi plugin beside this one): the board column and a workspace's removal go
 # through it, so its rules hold here too (a hand move on the board wins; nothing unsafe is removed).
 WT_SH="${HI_WT_SH:-$HERE/../../hi/lib/wt.sh}"
+# The facts' `workspace` as a path (jq). /hi-crew:start records what worker-start answered,
+# Orca's worktree id "<repo id>::<path>"; autostart records the bare path. Both read as the path.
+WS_PATH='.workspace // empty | sub("^[^/]*::"; "")'
 
 die() { printf 'crew: %s\n' "$*" >&2; exit 2; }
 need_jq() { command -v jq >/dev/null 2>&1 || die 'jq is required'; }
@@ -388,7 +391,7 @@ cmd_release() {
   need_jq
   local t ws pr st rc
   t=$(facts_any "$1") || die "no facts for $1"
-  ws=$(printf '%s' "$t" | jq -r '.workspace // empty')
+  ws=$(printf '%s' "$t" | jq -r "$WS_PATH")
   pr=$(printf '%s' "$t" | jq -r '.pr // empty')
   [ -n "$ws" ] || die "$1 has no workspace recorded"
   if [ ! -d "$ws" ]; then printf 'crew: %s: its workspace %s is already gone\n' "$1" "$ws" >&2; return 0; fi
@@ -846,7 +849,7 @@ cmd_reentry() {
   for f in "$DIR"/*.json; do
     [ -f "$f" ] || continue
     row=$(jq -r --arg a "$cwd" --arg b "$real" '
-      (.workspace // "") as $w | select($w != "")
+      (.workspace // "" | sub("^[^/]*::"; "")) as $w | select($w != "")
       | select([$a, $b] | any(. == $w or startswith($w + "/")))
       | (if (.resumed_spec // "") != "" and .resumed_for == .dispatch then .resumed_spec else (.spec // "") end) as $s
       | [.key, (.title // ""), $s, (.pr // "")] | @tsv' "$f" 2>/dev/null) || continue
@@ -1236,7 +1239,7 @@ wait_state() { # <facts json> <pr url>
 # Orca lists), else the recorded `dispatch`. Exit 1 when there is none.
 worker_dispatch() { # <facts json>
   local ws run d found
-  ws=$(printf '%s' "$1" | jq -r '.workspace // empty')
+  ws=$(printf '%s' "$1" | jq -r "$WS_PATH")
   run=$(printf '%s' "$1" | jq -r '.run // empty')
   d=$(printf '%s' "$1" | jq -r '.dispatch // empty')
   if [ -n "$ws" ] && [ -n "$run" ]; then
@@ -1255,7 +1258,7 @@ worker_dispatch() { # <facts json>
 # state. Prints its url; exit 1 when there is none or gh cannot tell.
 find_pr() { # <facts json>
   local ws branch
-  ws=$(printf '%s' "$1" | jq -r '.workspace // empty')
+  ws=$(printf '%s' "$1" | jq -r "$WS_PATH")
   [ -n "$ws" ] && [ -d "$ws" ] || return 1
   branch=$(git -C "$ws" branch --show-current 2>/dev/null) || branch=''
   [ -n "$branch" ] || branch=$(printf '%s' "$1" | jq -r '.branch // empty')
@@ -1336,7 +1339,7 @@ ws_link() { # <workspace> <pr url>
 ws_sync() { # <facts json> <pr state json>
   local w="$DIR/watch" key ws pr col out
   key=$(printf '%s' "$1" | jq -r .key)
-  ws=$(printf '%s' "$1" | jq -r '.workspace // empty')
+  ws=$(printf '%s' "$1" | jq -r "$WS_PATH")
   pr=$(printf '%s' "$1" | jq -r '.pr // empty')
   [ -n "$ws" ] && [ -d "$ws" ] || return 0
   if [ -n "$pr" ] && [ "$(cat "$w/$key.linked" 2>/dev/null)" != "$pr" ] && ws_link "$ws" "$pr"; then
@@ -1485,7 +1488,7 @@ SESSION_STATE="$HERE/session-state.sh"
 # The hook line of the worker of these facts (session-state.sh get); exit 1 when none is believed.
 hook_state() { # <facts json>
   local ws
-  ws=$(printf '%s' "$1" | jq -r '.workspace // empty')
+  ws=$(printf '%s' "$1" | jq -r "$WS_PATH")
   [ -n "$ws" ] && [ -d "$ws" ] || return 1
   bash "$SESSION_STATE" get "$ws"
 }
@@ -1495,7 +1498,7 @@ hook_state() { # <facts json>
 # knows question forms.
 on_prompt() { # <facts json>
   local ws hs
-  ws=$(printf '%s' "$1" | jq -r '.workspace // empty')
+  ws=$(printf '%s' "$1" | jq -r "$WS_PATH")
   [ -n "$ws" ] && [ -d "$ws" ] || return 1
   bash "$PROMPT_MARK" check "$ws" && return 0
   hs=$(hook_state "$1") || return 1
@@ -2144,7 +2147,7 @@ relaunch_line() { # <transcript> <session> <model>
 resume_in_pane() {
   local key=$1 facts=$2 d=$3 handle=$4 asked=$5 ws run pane sid row s pid h dir cd acct line tr model title sf out rc i
   shift 5
-  ws=$(printf '%s' "$facts" | jq -r '.workspace // empty')
+  ws=$(printf '%s' "$facts" | jq -r "$WS_PATH")
   run=$(printf '%s' "$facts" | jq -r '.run // empty')
   pane=$(lost_pane "$d") || return 1
   sid=$(session_of "$ws" "$@") || return 1
@@ -2226,7 +2229,7 @@ cmd_resume() {
   need_jq
   local key=$1 facts ws run spec root pr state d agent model handle title branch sf out rc m asked noted
   facts=$(cmd_get "$key") || die "resume: no open facts for $key"
-  ws=$(printf '%s' "$facts" | jq -r '.workspace // empty')
+  ws=$(printf '%s' "$facts" | jq -r "$WS_PATH")
   run=$(printf '%s' "$facts" | jq -r '.run // empty')
   [ -n "$ws" ] && [ -d "$ws" ] || die "resume: $key's workspace is gone (${ws:-none recorded}); start it afresh with /hi-crew:start"
   [ -n "$run" ] || die "resume: no Run recorded for $key"
