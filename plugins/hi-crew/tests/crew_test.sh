@@ -52,7 +52,8 @@ if [ "$2" = worker-show ]; then
 fi
 if [ "$2" = reply ]; then
   [ -z "${FAKE_REPLY_FAIL:-}" ] || { echo '{"ok":false,"error":{"code":"dispatch_inactive"}}'; exit 1; }
-  printf '%s|%s\n' "$4" "$6" >>"$FAKE_SENT"; echo '{"ok":true,"result":{}}'; exit 0
+  if [ "$5" = --body-file ]; then body=$(cat "$6"); else body=$6; fi
+  printf '%s|%s\n' "$4" "$body" >>"$FAKE_SENT"; echo '{"ok":true,"result":{}}'; exit 0
 fi
 if [ "$1" = terminal ]; then
   case " ${FAKE_TERMS:-} " in
@@ -291,6 +292,23 @@ FAKE_REPLY_FAIL=1 bash "$C" relay ABC-2 --id msg_q2 --again --action "$a" "$T/r-
 check 'relay --action, send failed: the action ran, the outcome is kept, not delivered' \
   "$(cat "$T/ran") $(tail -1 "$HIGHNESS_STATE/crew/unsent/ABC-2.jsonl" | jq -r '.action + " " + (.body | split("\n")[0] | .[0:14])') $(jq -r .delivered "$HIGHNESS_STATE/crew/actions/ABC-2/$a.json")" \
   "ran $a hi-crew ran ac false"
+# An action whose output is one line over every argv limit (128 KiB per argument on Linux, about
+# 1 MiB in all on macOS): the outcome and the reply carrying it reach jq and Orca through files and
+# pipes, never as an argument, so relay delivers it whole.
+big=1500000 longest='def longest(s): s | split("\n") | map(length) | max; longest'
+printf 'head -c %s /dev/zero | tr '"'"'\\0'"'"' x; echo\n' "$big" >"$T/big.sh"; a=$(bash "$C" action ABC-2 "$T/big.sh"); : >"$FAKE_SENT"
+out=$(LC_ALL=C bash "$C" relay ABC-2 --id msg_q2 --again --action "$a" "$T/r-min" 2>&1); rc=$?
+check 'relay --action, output over the argv limit: relayed' "$rc $(printf '%s' "$out" | grep -c 'Argument list too long')" '0 0'
+check 'relay --action, output over the argv limit: the worker gets it whole' "$(awk '{ if (length($0) > m) m = length($0) } END { print m + 0 }' "$FAKE_SENT")" "$big"
+check 'relay --action, output over the argv limit: recorded whole, delivered' \
+  "$(tail -1 "$HIGHNESS_STATE/crew/choices.jsonl" | jq -r "$longest(.sent)") $(jq -r '"\(.tail | length) \(.delivered)"' "$HIGHNESS_STATE/crew/actions/ABC-2/$a.json")" \
+  "$big $big true"
+a=$(bash "$C" action ABC-2 "$T/big.sh")
+out=$(LC_ALL=C FAKE_REPLY_FAIL=1 bash "$C" relay ABC-2 --id msg_q2 --again --action "$a" "$T/r-min" 2>&1)
+check 'relay --action, output over the argv limit, send failed: kept whole' \
+  "$(printf '%s' "$out" | grep -c 'Argument list too long') $(tail -1 "$HIGHNESS_STATE/crew/unsent/ABC-2.jsonl" | jq -r "$longest(.body)")" "0 $big"
+check 'relay --action, output over the argv limit: stranded shows the kept reply' \
+  "$(bash "$C" stranded 2>&1 | jq -r "select(.what == \"unsent\") | $longest(.body)" 2>&1 | sort -n | tail -1)" "$big"
 unset HI_GUARD
 
 # --- stranded: answers no worker will act on

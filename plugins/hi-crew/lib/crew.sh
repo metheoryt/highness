@@ -338,10 +338,12 @@ cmd_record() {
   mkdir -p "$DIR"
   now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   tmp="$f.tmp.$$"
+  # The object goes to jq through a pipe (as every value of unbounded size in this file does),
+  # never as an argument: one argument over 128 KiB fails with "Argument list too long".
   if [ -f "$f" ]; then
-    jq --argjson add "$2" --arg now "$now" '. + $add + {updated_at: $now}' "$f" >"$tmp"
+    jq --slurpfile add <(printf '%s' "$2") --arg now "$now" '. + $add[0] + {updated_at: $now}' "$f" >"$tmp"
   else
-    jq -n --argjson add "$2" --arg key "$1" --arg now "$now" '{key: $key, created_at: $now} + $add + {updated_at: $now}' >"$tmp"
+    jq -n --slurpfile add <(printf '%s' "$2") --arg key "$1" --arg now "$now" '{key: $key, created_at: $now} + $add[0] + {updated_at: $now}' >"$tmp"
   fi && mv "$tmp" "$f" || { rm -f "$tmp"; die "record: could not write $f"; }
 }
 
@@ -425,8 +427,8 @@ cmd_choice() {
   keyfile "$1" >/dev/null || exit 2
   printf '%s' "$2" | jq -e 'type == "object"' >/dev/null 2>&1 || die 'choice: the second argument must be a JSON object'
   mkdir -p "$DIR"
-  jq -nc --argjson add "$2" --arg key "$1" --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    '{key: $key, at: $now} + $add' >>"$DIR/choices.jsonl" || die "choice: could not write $DIR/choices.jsonl"
+  jq -nc --slurpfile add <(printf '%s' "$2") --arg key "$1" --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '{key: $key, at: $now} + $add[0]' >>"$DIR/choices.jsonl" || die "choice: could not write $DIR/choices.jsonl"
 }
 
 # relayed_last <KEY> <jq filter> <value>: the filter's output ($v is <value>) for the last of
@@ -529,9 +531,12 @@ cmd_relay() {
 The person's reply, for context (the step above is done; do not run it yourself):
 $body"
   fi
-  recs=$(jq -nc --argjson r "$reply" --argjson a "$ask" --arg key "$key" --arg sent "$body" --arg aid "$aid" \
-      --arg prev "$prev" --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
-    ($a.payload // "{}" | fromjson? // {}) as $p
+  # The reply, the ask and the body (an action's whole output) go to jq and Orca through pipes,
+  # never as arguments: see cmd_record.
+  recs=$(jq -nc --slurpfile r <(printf '%s' "$reply") --slurpfile a <(printf '%s' "$ask") --arg key "$key" \
+      --rawfile sent <(printf '%s' "$body") --arg aid "$aid" --arg prev "$prev" --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
+    $r[0] as $r | $a[0] as $a
+    | ($a.payload // "{}" | fromjson? // {}) as $p
     | {key: $key, at: $now, ask: $a.id, run: $a.run_id, dispatch: $a.dispatch, asked_at: $a.created_at,
        ask_body: ($a.body // $p.question // ""), sent: $sent}
       + (if $aid != "" then {action: $aid} else {} end)
@@ -543,10 +548,11 @@ $body"
     | {key: $key, at: $now, question: null, recommended: null}
       + (if (($p.options // []) | length) > 0 then {options: $p.options} else {} end)
       + . + $base') || die 'relay: could not build the choice lines'
-  out=$("$(orca_cmd)" orchestration reply --id "$id" --body "$body" --json 2>&1)
+  out=$(printf '%s' "$body" | "$(orca_cmd)" orchestration reply --id "$id" --body-file - --json 2>&1)
   if ! printf '%s' "$out" | jq -e '.ok == true' >/dev/null 2>&1; then
-    keep_unsent "$key" "$(jq -nc --arg key "$key" --argjson a "$ask" --arg body "$body" --arg err "$out" --arg aid "$aid" \
-      --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{key: $key, at: $now, ask: $a.id, dispatch: $a.dispatch,
+    keep_unsent "$key" "$(jq -nc --arg key "$key" --slurpfile a <(printf '%s' "$ask") --rawfile body <(printf '%s' "$body") \
+      --rawfile err <(printf '%s' "$out") --arg aid "$aid" \
+      --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '$a[0] as $a | {key: $key, at: $now, ask: $a.id, dispatch: $a.dispatch,
         question: (($a.body // $a.subject // "") | split("\n")[0]), body: $body, error: $err}
         + (if $aid != "" then {action: $aid} else {} end)')"
     printf '%s\n' "$recs" | jq -c '. + {undelivered: true}' >>"$DIR/choices.jsonl"
@@ -577,8 +583,10 @@ choice_gaps() {
   keys=$(cat "$DIR"/*.json "$DIR"/closed/*.json 2>/dev/null | jq -sc 'map(select(.dispatch) | {(.dispatch): .key}) | add // {}')
   # Every Run hi-crew made, not only the open tickets' ones: a closed ticket's gap still counts.
   m=$(inbox "$(jq -Rsc 'split("\n") | map(select(. != ""))' "$DIR/run")") || return 1
-  printf '%s' "$m" | jq -r --argjson keys "$keys" --argjson seen "$seen" '
-    . as $m
+  # Both lists grow with every ask ever answered: through pipes, never as arguments.
+  printf '%s' "$m" | jq -r --slurpfile keys <(printf '%s' "$keys") --slurpfile seen <(printf '%s' "$seen") '
+    $keys[0] as $keys | $seen[0] as $seen
+    | . as $m
     | $m[] | select(.type == "question" or .type == "decision_gate")
     | . as $q
     | ([ $m[] | select(.thread_id == $q.id and .id != $q.id) | .created_at ] | min) as $ans
@@ -654,7 +662,8 @@ inbox() { # [<runs json array>] (default: the open tickets' Runs)
   [ -n "$runs" ] || runs=$(cmd_runs | jq -Rsc 'split("\n") | map(select(. != ""))')
   [ "$runs" != '[]' ] || { echo '[]'; return; }
   "$(orca_cmd)" orchestration inbox --limit 500 --json --full 2>/dev/null \
-    | jq -c --argjson runs "$runs" '(.result.messages // []) | map(select(.run_id as $r | $runs | index($r)))
+    | jq -c --slurpfile runs <(printf '%s' "$runs") '$runs[0] as $runs
+        | (.result.messages // []) | map(select(.run_id as $r | $runs | index($r)))
         | map(. + {dispatch: ((.payload // "{}" | fromjson? // {}) .dispatchId // "")})'
 }
 
@@ -664,8 +673,9 @@ cmd_asks() {
   # The Dispatches `resume` replaced: their escalation (the worker lost) is handled.
   resumed=$(cmd_list | jq -sc 'map(.resumed // []) | add // []') || resumed='[]'
   # Each row: id, type, run, dispatch, created_at, stopReason, terminal handle, first line.
-  rows=$(printf '%s' "$m" | jq -r --argjson resumed "$resumed" '
-    . as $m
+  rows=$(printf '%s' "$m" | jq -r --slurpfile resumed <(printf '%s' "$resumed") '
+    $resumed[0] as $resumed
+    | . as $m
     | [ $m[] | select(.thread_id != null and .thread_id != .id) | .thread_id ] as $answered
     | $m[]
     | select(.type == "question" or .type == "decision_gate" or .type == "escalation")
@@ -1053,8 +1063,11 @@ gh_state() { # <pr url> <marker> <bots json array> [<finding patterns json array
     done
     typed=$(printf '%s' "$typed" | jq -sc '[add // [] | .[] | .user | select(.type == "Bot") | .login // "" | sub("\\[bot\\]$"; "")] | unique') || return 1
   fi
+  # Every inline comment's whole body: through a pipe, never as an argument (see cmd_record).
   printf '%s' "$view" | jq -c --arg m "$2" --argjson bots "${3:-[]}" --argjson pats "${4:-[]}" \
-      --argjson ignore "${5:-[]}" --argjson summons "${6:-[]}" --arg me "$me" --argjson inline "$inline" --argjson typed "$typed" '
+      --argjson ignore "${5:-[]}" --argjson summons "${6:-[]}" --arg me "$me" \
+      --slurpfile inline <(printf '%s' "$inline") --slurpfile typed <(printf '%s' "$typed") '
+    $inline[0] as $inline | $typed[0] as $typed |
     # Not a person: a [bot] login, a forge Bot account (by type, or by login when the source
     # has no type), or a login on the bots list.
     def bot($l; $t): ($l | test("\\[bot\\]$")) or $t == "Bot" or any($bots[], $typed[]; . == $l);
@@ -1161,7 +1174,9 @@ handover_stands() { # <pr url> <pr view json> <root> <key> [<workspace>]
 # approval when it merges its own PR); the coordinator what needs a person. A field the earlier
 # state lacks is no event, so a state command that does not report it never fires one.
 changes() { # <before> <after> <approval goes to: worker | coordinator>
-  jq -rn --argjson a "$1" --argjson b "$2" --arg ap "${3:-coordinator}" '
+  # A team's crew.pr_state command may print more than the summary: through pipes, not arguments.
+  jq -rn --slurpfile a <(printf '%s' "$1") --slurpfile b <(printf '%s' "$2") --arg ap "${3:-coordinator}" '
+    $a[0] as $a | $b[0] as $b |
     if ($b.state // "") != ($a.state // "") and (($b.state // "") | test("^(merged|closed)$"))
       then "coordinator\tPR \($b.state)" else empty end,
     # A failure on a new head is a new failure, even when the poll missed the pending between.
@@ -1418,8 +1433,8 @@ cmd_sections() {
     line=$(ROOT=$(q "$root") TRACKER=$(tracker_cmd "$root") MARKER=$(q "$(cd "$root" && bash "$CONFIG" get '.crew.marker' 2>/dev/null || echo '(agent)')") fill <<<"$cmd")
     out=$(cd "$root" && sh -c "$line" 2>&1); rc=$?
     if [ "$rc" -ne 0 ]; then
-      jq -cn --arg s "$name" --arg e "$(printf '%s' "$out" | tail -1)" --argjson rc "$rc" \
-        '{section: $s, error: "exit \($rc): \($e)"}'
+      printf '%s' "$out" | tail -1 | jq -Rsc --arg s "$name" --argjson rc "$rc" \
+        'rtrimstr("\n") as $e | {section: $s, error: "exit \($rc): \($e)"}'
       continue
     fi
     out=$(printf '%s\n' "$out" | jq -Rc --arg s "$name" 'fromjson? | select(type == "object") | {section: $s} + .')
@@ -1496,8 +1511,9 @@ cmd_watch() {
       # its people count is taken from now, so the switch neither fires nor swallows a comment.
       # A changed crew.finding_patterns recounts the findings already there: taken from now too.
       # So does a changed crew.bot_ignore_patterns with the bots' comments.
-      changes "$(jq -c --argjson b "$now" --argjson fp "$fp" --argjson ip "$ip" '
-          (if .v == 2 then . else . + ($b | {people, people_at} | with_entries(select(.value != null))) end)
+      changes "$(jq -c --slurpfile b <(printf '%s' "$now") --argjson fp "$fp" --argjson ip "$ip" '
+          $b[0] as $b
+          | (if .v == 2 then . else . + ($b | {people, people_at} | with_entries(select(.value != null))) end)
           | if (.fp // []) == $fp then . else . + ($b | {findings} | with_entries(select(.value != null))) end
           | if (.ip // []) == $ip then . else . + ($b | {bot_comments} | with_entries(select(.value != null))) end' "$snap")" \
           "$now" "$ap" | while IFS="$(printf '\t')" read -r to what; do
@@ -2119,11 +2135,11 @@ proc_env() { # <pid> <NAME>
   fi
 }
 
-# Live Claude sessions, one per line: pid<TAB>session<TAB>terminal handle (empty outside Orca)
-# <TAB>config dir (physical). Claude Code keeps sessions/<pid>.json in its config dir while the
-# process runs.
+# Live Claude sessions, one per line: pid<TAB>session<TAB>terminal handle (`-` outside Orca: an
+# empty field would vanish in `IFS=<TAB> read`, tab being IFS whitespace)<TAB>config dir
+# (physical). Claude Code keeps sessions/<pid>.json in its config dir while the process runs.
 live_sessions() {
-  local dir f row pid seen=''
+  local dir f row pid h seen=''
   while IFS= read -r dir; do
     [ -n "$dir" ] && [ -d "$dir/sessions" ] || continue
     dir=$(cd -P "$dir" 2>/dev/null && pwd -P) || continue
@@ -2134,7 +2150,8 @@ live_sessions() {
       row=$(jq -r 'select((.sessionId | type) == "string") | [.pid, .sessionId] | @tsv' "$f" 2>/dev/null) || continue
       pid=${row%%"$TAB"*}
       [ -n "$row" ] && proc_alive "$pid" || continue
-      printf '%s\t%s\t%s\n' "$row" "$(proc_env "$pid" ORCA_TERMINAL_HANDLE)" "$dir"
+      h=$(proc_env "$pid" ORCA_TERMINAL_HANDLE)
+      printf '%s\t%s\t%s\n' "$row" "${h:--}" "$dir"
     done
   done <<EOF
 $(claude_dirs)
@@ -2175,24 +2192,32 @@ relaunch_line() { # <transcript> <session> <model>
 
 # resume_in_pane <key> <facts> <lost dispatch> <coordinator handle> <asked> <dispatch>…: give the
 # lost worker's own session a new Dispatch in its own pane, relaunching it there first when it no
-# longer runs. Prints the receipt and records the facts; exit 0. Exit 1, having changed nothing:
-# no open pane, no session found, the session runs elsewhere, or another one runs in the pane;
-# the caller falls back to a new worker. Dies when it relaunched the session but could not see it
+# longer runs. When that pane is closed (highness#67): in the Orca pane the session runs in now,
+# if it runs in one (an Orca restart reopens a session in a new pane), else in a new terminal of
+# its workspace, the session relaunched there. Prints the receipt and records the facts; exit 0.
+# Exit 1, having changed nothing: no session found, the session runs in another pane than its
+# open lost one, another session runs in that pane, or no new terminal could be opened; the
+# caller falls back to a new worker. Dies when it relaunched the session but could not see it
 # start: a dialog may be open there, and a second worker must not start beside it.
 resume_in_pane() {
-  local key=$1 facts=$2 d=$3 handle=$4 asked=$5 ws run pane sid row s pid h dir cd acct line tr model title sf out rc i
+  local key=$1 facts=$2 d=$3 handle=$4 asked=$5 ws run pane sid row s pid h dir cd acct line tr model title sf out rc i where
   shift 5
   ws=$(printf '%s' "$facts" | jq -r "$WS_PATH")
   run=$(printf '%s' "$facts" | jq -r '.run // empty')
-  pane=$(lost_pane "$d") || return 1
+  pane=$(lost_pane "$d") || pane=''
+  where='in its own pane'
   sid=$(session_of "$ws" "$@") || return 1
   pid='' cd=''
   while IFS="$TAB" read -r row s h dir; do
     [ -n "$row" ] || continue
     if [ "$s" = "$sid" ]; then
-      [ "$h" = "$pane" ] || return 1   # it runs, but in another pane
+      if [ -z "$pane" ] && [ "$h" != - ]; then
+        pane=$h where='in the pane it runs in now'   # its own pane is closed: Orca reopened it
+      elif [ -z "$pane" ] || [ "$h" != "$pane" ]; then
+        return 1                        # it runs, but in another pane, or outside Orca
+      fi
       pid=$row cd=$dir
-    elif [ "$h" = "$pane" ]; then
+    elif [ -n "$pane" ] && [ "$h" = "$pane" ]; then
       return 1                          # another session runs in that pane
     fi
   done <<EOF
@@ -2210,7 +2235,18 @@ EOF
     tr=$(transcript_of "$ws" "$sid") || return 1
     model=$(printf '%s' "$facts" | jq -r '.model // empty')
     line=$(relaunch_line "$tr" "$sid" "$model")
-    "$(orca_cmd)" terminal send --terminal "$pane" --text "$line" --enter --json >/dev/null 2>&1 </dev/null || return 1
+    if [ -n "$pane" ]; then
+      "$(orca_cmd)" terminal send --terminal "$pane" --text "$line" --enter --json >/dev/null 2>&1 </dev/null || return 1
+    else
+      # No pane of its own left: a new terminal in its workspace, on the account workers run on.
+      acct=$(as_account 2>/dev/null) || acct=''
+      [ -n "$acct" ] && line="CLAUDE_CONFIG_DIR=$(q "$acct") $line"
+      pane=$("$(orca_cmd)" terminal create --worktree "path:$ws" --keep-open --title "$key (resumed)" \
+        --command "$line" --json 2>/dev/null </dev/null \
+        | jq -r 'select(.ok == true) | .result.terminal.handle // .result.handle // empty' 2>/dev/null) || pane=''
+      [ -n "$pane" ] || return 1
+      where='in a new terminal of its workspace'
+    fi
     i=0
     until live_sessions | awk -F'\t' -v s="$sid" -v h="$pane" '$2 == s && $3 == h { f = 1 } END { exit !f }'; do
       i=$((i + 1))
@@ -2247,12 +2283,14 @@ EOF
      resumed: (($f.resumed // []) + (if $d != "" then [$d] else [] end))}')") \
     || die "resume: the worker has a new Dispatch, but its facts were not recorded; record its dispatch and task by hand: $out"
   printf '%s\n' "$out"
+  printf 'crew: resume: %s got a new Dispatch %s, its chat kept\n' "$key" "$where" >&2
   return 0
 }
 
 # resume <KEY>: get a worker going again on <KEY> after the last one was lost without reporting
-# (a usage limit, an account switch, a closed session). First in its own pane, keeping its chat
-# (resume_in_pane). When that cannot be done, a new worker in its recorded workspace and Run.
+# (a usage limit, an account switch, a closed session). First its own session, keeping its chat:
+# in its own pane, the one it runs in now, or a new terminal of its workspace (resume_in_pane).
+# When that cannot be done, a new worker in its recorded workspace and Run.
 # Orca's own retry does not fit there: --retry-of needs --task, and a Task's spec cannot carry
 # the note below. So it is a new Task: the spec copy (the facts' `spec`) under a note that says
 # the work so far is in the workspace. Either way the new dispatch and task are recorded and the
@@ -2310,10 +2348,9 @@ cmd_resume() {
   # up by: the lost one, then the facts' latest and the ones earlier resumes replaced.
   if resume_in_pane "$key" "$facts" "$d" "$handle" "$asked" "$d" \
       $(printf '%s' "$facts" | jq -r '(.dispatch // empty), ((.resumed // []) | reverse | .[])'); then
-    printf 'crew: resume: %s got a new Dispatch in its own pane, its chat kept\n' "$key" >&2
     return 0
   fi
-  printf 'crew: resume: %s: no open pane with its session; starting a new worker in its workspace\n' "$key" >&2
+  printf 'crew: resume: %s: its session could not be resumed in a pane; starting a new worker in its workspace\n' "$key" >&2
   sf=$(mktemp "${TMPDIR:-/tmp}/hi-crew-resume.XXXXXX") || die 'resume: no temp file'
   {
     printf '## Resuming %s: read this first\n\n' "$key"

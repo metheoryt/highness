@@ -235,7 +235,10 @@ fit; one command does the whole start:
   terminal is gone (`asks` lists it then).
 - **The user wants another round** (a person's new review comments, a change of mind): send it to
   the same worker, `$O orchestration send --to dispatch:<last dispatch> --subject … --body …`. It
-  arrives as a follow-up Task in the same workspace and chat; record the new dispatch id.
+  arrives as a follow-up Task in the same workspace and chat; record the new dispatch id. Never a
+  new `worker-start` for a round: that is a second worker on the whole spec. The body is only
+  the delta: what the person decided, what to change, how to reply. The worker has its spec and
+  its chat, so do not restate them (same branch, same PR, no force-push, the review loop).
 
 When the ticket is settled (PR merged or closed), run the short retro in this session first
 (`reference/retro.md`, `lib/retro.sh`), then `bash "$C" close <KEY>` and offer to release the

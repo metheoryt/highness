@@ -139,9 +139,10 @@ and say in one line that Orca now wakes this session, not the other one, for tha
   gone ... without sending worker_done" (Orca's "Worker lost without reporting": a usage limit,
   an account switch, a closed session). Find its ticket by the dispatch in the facts
   (`bash "$C" list`), and offer "resume it?". On a yes, `bash "$C" resume <KEY>`. When the worker's
-  Orca pane is still open and its Claude session is found, that session gets a new Dispatch there,
-  relaunched in the pane first if it no longer runs: it keeps its chat (stderr says "in its own
-  pane"). Otherwise a new worker in the recorded workspace and Run, on the spec copy under a note
+  Claude session is found, that session gets a new Dispatch and keeps its chat: in its own Orca
+  pane while that is open (relaunched there first if it no longer runs), else in the Orca pane it
+  runs in now, else relaunched in a new terminal of its workspace (stderr says which). Otherwise
+  a new worker in the recorded workspace and Run, on the spec copy under a note
   to continue from the branch and its PR (no second PR). Either way it records the new dispatch,
   which retires the escalation. If it says it relaunched the session but did not see it start,
   look at that pane (a dialog?) before anything else, then run `resume` again. It refuses when the workspace is gone or the PR is merged or closed:
@@ -149,7 +150,8 @@ and say in one line that Orca now wakes this session, not the other one, for tha
   `--retry-of` for this: it needs the old Task, whose spec cannot carry the note.
 - **A person's comment on a PR**: show it with your read; on the user's decision, send the worker a
   round: `$O orchestration send --to dispatch:<dispatch> --subject … --body …`, saying what to
-  change and how to reply. Record the new dispatch id from the receipt.
+  change and how to reply, and only that: the worker has its spec and chat (`hi-crew:start`,
+  "another round"). Record the new dispatch id from the receipt.
 - **Ready to merge**: that is the person's own step; give the link.
 - **A thread**: its open items say what is left. The journal is a model's notes: check a PR or
   ticket state before acting on it. Continue it here when this session can (same repo).
