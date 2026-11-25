@@ -60,6 +60,15 @@ case "$1 $2" in
     fi
     echo '{"ok":true}' ;;
   "terminal wait") echo '{"ok":true}' ;;
+  "terminal create") # a new pane, term_new, only with FAKE_CREATE; FAKE_START: the session runs there
+    printf '%s\n' "$*" >>"$FAKE_LOG.create"
+    [ -n "${FAKE_CREATE:-}" ] || { echo '{"ok":false,"error":{"code":"no_worktree"}}'; exit 1; }
+    if [ -n "${FAKE_START:-}" ]; then
+      mkdir -p "$FAKE_PROC/4343" "$FAKE_CFG/sessions"
+      printf 'ORCA_TERMINAL_HANDLE=term_new\0' >"$FAKE_PROC/4343/environ"
+      echo '{"pid":4343,"sessionId":"sid1"}' >"$FAKE_CFG/sessions/4343.json"
+    fi
+    echo '{"ok":true,"result":{"terminal":{"handle":"term_new"}}}' ;;
   "orchestration worker-list") # newest first: a started ctx_new, then ctx_old
     new=''; [ -s "$FAKE_LOG" ] && new=$(printf '{"dispatchId":"ctx_new","liveness":"exited","workspace":"repo1::%s"},' "$FAKE_WS")
     printf '{"ok":true,"result":{"workers":[%s{"dispatchId":"ctx_old","liveness":"exited","workspace":"repo1::%s"}]}}\n' "$new" "$FAKE_WS" ;;
@@ -224,7 +233,7 @@ running() { # <pid> <session> <pane> [<config dir>]: a live claude of that sessi
   jq -nc --argjson p "$1" --arg s "$2" '{pid: $p, sessionId: $s}' >"$cfg/sessions/$1.json"
 }
 inpane() { # <env...>: resume AB-1 on fresh facts; sets out, rc
-  fresh; transcripts; rm -f "$FAKE_LOG.send"
+  fresh; transcripts; rm -f "$FAKE_LOG.send" "$FAKE_LOG.create"
   out=$(env FAKE_PANE=term_pane ORCA_CLAUDE_AGENT_VIEW_PLUGIN_DIR="$T/av" "$@" bash "$C" resume AB-1 2>&1); rc=$?
 }
 fellback() { # <name>: a new worker in the workspace, nothing typed into the pane
@@ -280,10 +289,49 @@ fellback 'session runs in another pane'
 fresh; transcripts; rm -f "$FAKE_LOG.send"; running 5151 sid9 term_pane
 FAKE_PANE=term_pane bash "$C" resume AB-1 >/dev/null 2>&1
 fellback 'another session runs in the pane'
+# Its pane gone and no new terminal to be had (Orca refused the create): a new worker.
 inpane FAKE_START=1 FAKE_PANE_GONE=1
-fellback 'pane gone'
+fellback 'pane gone, no new terminal'
+has 'pane gone, no new terminal: it asked for one' "$(cat "$FAKE_LOG.create" 2>/dev/null)" "--worktree path:$T/ws"
 inpane FAKE_START=1 FAKE_PANE_GONE=closed
-fellback 'pane closed (Orca still answers for it, disconnected)'
+fellback 'pane closed (Orca still answers for it, disconnected), no new terminal'
+
+# --- highness#67: its pane closed, the session is resumed in a new terminal of its workspace,
+# on the account workers run on, instead of a new worker that starts over on the whole spec.
+inpane FAKE_START=1 FAKE_PANE_GONE=closed FAKE_CREATE=1
+check 'new terminal: exit 0' "$rc" 0
+check 'new terminal: in its workspace, kept open, its own session relaunched on the workers'"'"' account' \
+  "$(cat "$FAKE_LOG.create" 2>/dev/null)" \
+  "terminal create --worktree path:$T/ws --keep-open --title AB-1 (resumed) --command CLAUDE_CONFIG_DIR='$T/cfg' claude --resume sid1 --plugin-dir '$T/av' --dangerously-skip-permissions --model 'opus' --json"
+[ -s "$FAKE_LOG.send" ] && no 'new terminal: typed nothing into a pane' || ok 'new terminal: typed nothing into a pane'
+args=$(cat "$FAKE_LOG" 2>/dev/null)
+has 'new terminal: the new Dispatch goes into it' "$args" '--terminal term_new --run run_aaa111 --from term_coord'
+case "$args" in *--worktree*|*--agent*) no 'new terminal: no new agent launch';; *) ok 'new terminal: no new agent launch';; esac
+case "$(cat "$FAKE_LOG.spec" 2>/dev/null)" in *'THE SPEC BODY'*) no 'new terminal: the spec is not sent again';; *) ok 'new terminal: the spec is not sent again';; esac
+has 'new terminal: says which way it went' "$out" 'in a new terminal of its workspace, its chat kept'
+check 'new terminal: records the new dispatch, the pane and the session' \
+  "$(bash "$C" get AB-1 | jq -r '[.dispatch, (.resumed | join(",")), .resumed_in, .session] | join("|")')" 'ctx_new|ctx_old|term_new|sid1'
+
+# Opened, but the session never seen running there: stop, start nothing beside it.
+inpane FAKE_PANE_GONE=closed FAKE_CREATE=1 HI_RESUME_START_WAIT=1
+[ "$rc" != 0 ] && ok 'new terminal, unconfirmed: exit non-zero' || no 'new terminal, unconfirmed: exit non-zero'
+has 'new terminal, unconfirmed: says look at the pane' "$out" "pane term_new"
+[ -s "$FAKE_LOG" ] && no 'new terminal, unconfirmed: started nothing' || ok 'new terminal, unconfirmed: started nothing'
+
+# Its pane gone, but the session runs in another Orca pane (Orca's restart reopened it there, or
+# the unconfirmed start above came up late): the Dispatch goes there, nothing opened or typed.
+fresh; transcripts; rm -f "$FAKE_LOG.send" "$FAKE_LOG.create"; running 4242 sid1 term_moved
+out=$(FAKE_PANE=term_pane FAKE_PANE_GONE=1 FAKE_CREATE=1 bash "$C" resume AB-1 2>&1); rc=$?
+check 'runs in a new pane: exit 0' "$rc" 0
+has 'runs in a new pane: the Dispatch goes there' "$(cat "$FAKE_LOG" 2>/dev/null)" '--terminal term_moved'
+[ -s "$FAKE_LOG.create" ] || [ -s "$FAKE_LOG.send" ] && no 'runs in a new pane: opened and typed nothing' || ok 'runs in a new pane: opened and typed nothing'
+has 'runs in a new pane: says which way it went' "$out" 'in the pane it runs in now'
+
+# Its pane gone and the session runs outside Orca (no terminal handle): a new worker, nothing typed.
+fresh; transcripts; rm -f "$FAKE_LOG.send" "$FAKE_LOG.create"; running 4242 sid1 ''
+FAKE_PANE=term_pane FAKE_PANE_GONE=1 FAKE_CREATE=1 bash "$C" resume AB-1 >/dev/null 2>&1
+fellback 'runs outside Orca'
+[ -s "$FAKE_LOG.create" ] && no 'runs outside Orca: opened nothing' || ok 'runs outside Orca: opened nothing'
 fresh; transcripts; rm -f "$FAKE_LOG.send" "$P/sid1.jsonl"
 out=$(FAKE_PANE=term_pane FAKE_START=1 bash "$C" resume AB-1 2>&1)
 fellback 'no session found (a tool result naming the Dispatch is not its prompt)'
