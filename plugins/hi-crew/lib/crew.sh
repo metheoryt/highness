@@ -262,9 +262,10 @@
 #    "findings": <count of review bots' findings>, "bot_comments": <count of crew.bots' plain comments
 #    not ignored>, "approvals": [<logins of people who approve>],
 #    "rerequested": [<logins of people asked to review again>]}
-# with {{PR}}, {{ROOT}}, {{MARKER}}, {{BOTS}}, {{FINDING_PATTERNS}} and {{BOT_IGNORE_PATTERNS}}
-# replaced by the shell-quoted PR url, root, crew.marker, the JSON array of logins that are not
-# people and the JSON arrays of crew.finding_patterns and crew.bot_ignore_patterns. findings,
+# with {{PR}}, {{ROOT}}, {{MARKER}}, {{BOTS}}, {{FINDING_PATTERNS}}, {{BOT_IGNORE_PATTERNS}} and
+# {{BOT_SUMMONS}} replaced by the shell-quoted PR url, root, crew.marker, the JSON array of logins
+# that are not people, the JSON arrays of crew.finding_patterns and crew.bot_ignore_patterns, and
+# the JSON array of bot summons patterns (the defaults and crew.bot_summons). findings,
 # bot_comments, approvals and rerequested are optional: a state
 # without them never fires their events. An approval counts while its reviewer is not asked to
 # review again; a login leaving `approvals` is "no longer counts", and a new one in `rerequested`
@@ -276,7 +277,9 @@
 # and it is not the workers' own: it does not start with the marker, or with the marker extended
 # inside its brackets ("(agent, ...) ..."), after any leading @mentions ("@bot (agent) ..." is
 # the worker's, "> (agent)" quoted by a person is not); an approval's text counts as the approval, not as a
-# comment. A finding is a not-a-person's inline review comment, its review requesting changes, or
+# comment. Nor is a bot summons a person's: a comment that is only a command to a review bot
+# ("@coderabbitai review", "@codex review"; the defaults plus crew.bot_summons, regexes matched
+# against the whole comment), which the worker cannot mark because the bot then ignores it. A finding is a not-a-person's inline review comment, its review requesting changes, or
 # its review whose body matches one of crew.finding_patterns (a list of regexes, empty by default):
 # a review bot that puts some findings only in the review body ("outside the diff" sections) is
 # named by the marker those sections carry, which its summary-only reviews lack. An invalid
@@ -1030,7 +1033,7 @@ q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 # Bot accounts among the authors of comments and reviews are read through REST too (user.type),
 # by login without the [bot] suffix. When a REST call fails the whole state fails, so a missing
 # list never reads as findings gone and then back, or a bot's comment as a person's.
-gh_state() { # <pr url> <marker> <bots json array> [<finding patterns json array>] [<bot ignore patterns json array>]
+gh_state() { # <pr url> <marker> <bots json array> [<finding patterns json array>] [<bot ignore patterns json array>] [<summons json array>]
   local view api n inline typed page
   view=$(gh pr view "$1" --json state,isDraft,headRefOid,statusCheckRollup,comments,reviews,latestReviews,reviewRequests 2>/dev/null) || return 1
   api=$(printf '%s\n' "$1" | sed -n 's#^https://github\.com/\([^/]*\)/\([^/]*\)/pull/\([0-9][0-9]*\).*#repos/\1/\2 \3#p')
@@ -1047,7 +1050,7 @@ gh_state() { # <pr url> <marker> <bots json array> [<finding patterns json array
     typed=$(printf '%s' "$typed" | jq -sc '[add // [] | .[] | .user | select(.type == "Bot") | .login // "" | sub("\\[bot\\]$"; "")] | unique') || return 1
   fi
   printf '%s' "$view" | jq -c --arg m "$2" --argjson bots "${3:-[]}" --argjson pats "${4:-[]}" \
-      --argjson ignore "${5:-[]}" --argjson inline "$inline" --argjson typed "$typed" '
+      --argjson ignore "${5:-[]}" --argjson summons "${6:-[]}" --argjson inline "$inline" --argjson typed "$typed" '
     # Not a person: a [bot] login, a forge Bot account (by type, or by login when the source
     # has no type), or a login on the bots list.
     def bot($l; $t): ($l | test("\\[bot\\]$")) or $t == "Bot" or any($bots[], $typed[]; . == $l);
@@ -1060,8 +1063,15 @@ gh_state() { # <pr url> <marker> <bots json array> [<finding patterns json array
      + [$inline[]? | {who: (.user.login // ""), type: (.user.type // ""), at: (.updated_at // .created_at // ""), body,
                       inline: true}]
      | map(. + {bot: bot(.who; .type // "")})) as $all
-    # A person: what they wrote, apart from an approval (its own event) and the workers own words.
-    | [$all[] | select((.bot | not) and (own | not) and (.body // "") != "" and .state != "APPROVED")] as $people
+    # A bot summons: the whole comment is a command to a review bot ("@coderabbitai review"),
+    # which a worker cannot mark (the bot then ignores the command). An invalid pattern matches
+    # nothing; a person who writes anything more than the command is still a person.
+    | def summons: (.body // "" | gsub("^\\s+|\\s+$"; "")) as $b
+                   | any($summons[]; . as $p | try ($b | test("^(?:" + $p + ")$"; "i")) catch false);
+    # A person: what they wrote, apart from an approval (its own event), the workers own words and
+    # a bot summons.
+      [$all[] | select((.bot | not) and (own | not) and (summons | not) and (.body // "") != ""
+                       and .state != "APPROVED")] as $people
     # A review bot finding: its inline comment, its review that requests changes, or its review
     # whose body matches a finding pattern (an invalid one matches nothing). Its plain comments (a
     # CI summary rewritten on every push) and a review with none of these find nothing.
@@ -1195,6 +1205,17 @@ bots_json() { # <root>
     | jq -Rsc 'split("\n") | map(select(. != "")) | unique'
 }
 
+# What a whole comment that only summons a review bot looks like, as regexes (jq syntax, matched
+# against the whole trimmed comment, case-insensitive): CodeRabbit's commands (it runs one only
+# when it is alone on its line, so it cannot carry the marker) and Codex's bare review request.
+# crew.bot_summons adds a team's own.
+SUMMONS_DEFAULT='@coderabbit(ai)?[ \t]+(full[ \t]+review|review|pause|resume|resolve|summary|help|configuration)([ \t]+--[^ \t]+)*
+@codex[ \t]+review'
+summons_json() { # <root>
+  { printf '%s\n' "$SUMMONS_DEFAULT"; (cd "$1" && bash "$CONFIG" list '.crew.bot_summons') 2>/dev/null; } \
+    | jq -Rsc 'split("\n") | map(select(. != "")) | unique'
+}
+
 # crew.finding_patterns (or the key given) from every config source at <root>, as a sorted JSON
 # array of regexes.
 patterns_json() { # <root> [<key>]
@@ -1203,7 +1224,7 @@ patterns_json() { # <root> [<key>]
 }
 
 pr_state() { # <facts json>
-  local pr root cmd marker line bots pats ign
+  local pr root cmd marker line bots pats ign sum
   pr=$(printf '%s' "$1" | jq -r '.pr // empty')
   root=$(facts_root "$1")
   cmd=$(cd "$root" && bash "$CONFIG" get '.crew.pr_state') || cmd=''
@@ -1211,11 +1232,12 @@ pr_state() { # <facts json>
   bots=$(bots_json "$root")
   pats=$(patterns_json "$root")
   ign=$(patterns_json "$root" bot_ignore_patterns)
+  sum=$(summons_json "$root")
   if [ -z "$cmd" ]; then
-    case "$pr" in https://github.com/*) gh_state "$pr" "$marker" "$bots" "$pats" "$ign"; return ;; *) return 1 ;; esac
+    case "$pr" in https://github.com/*) gh_state "$pr" "$marker" "$bots" "$pats" "$ign" "$sum"; return ;; *) return 1 ;; esac
   fi
   line=$(PR=$(q "$pr") ROOT=$(q "$root") MARKER=$(q "$marker") BOTS=$(q "$bots") FINDING_PATTERNS=$(q "$pats") \
-    BOT_IGNORE_PATTERNS=$(q "$ign") fill <<<"$cmd")
+    BOT_IGNORE_PATTERNS=$(q "$ign") BOT_SUMMONS=$(q "$sum") fill <<<"$cmd")
   (cd "$root" && sh -c "$line") 2>/dev/null
 }
 
@@ -1277,7 +1299,7 @@ fill() {
       while ((i = index(s, ph)) > 0) { out = out substr(s, 1, i - 1) val; s = substr(s, i + length(ph)) }
       return out s
     }
-    { print rep(rep(rep(rep(rep(rep(rep($0, "{{PR}}", ENVIRON["PR"]), "{{ROOT}}", ENVIRON["ROOT"]), "{{MARKER}}", ENVIRON["MARKER"]), "{{TRACKER}}", ENVIRON["TRACKER"]), "{{BOTS}}", ENVIRON["BOTS"]), "{{FINDING_PATTERNS}}", ENVIRON["FINDING_PATTERNS"]), "{{BOT_IGNORE_PATTERNS}}", ENVIRON["BOT_IGNORE_PATTERNS"]) }'
+    { print rep(rep(rep(rep(rep(rep(rep(rep($0, "{{PR}}", ENVIRON["PR"]), "{{ROOT}}", ENVIRON["ROOT"]), "{{MARKER}}", ENVIRON["MARKER"]), "{{TRACKER}}", ENVIRON["TRACKER"]), "{{BOTS}}", ENVIRON["BOTS"]), "{{FINDING_PATTERNS}}", ENVIRON["FINDING_PATTERNS"]), "{{BOT_IGNORE_PATTERNS}}", ENVIRON["BOT_IGNORE_PATTERNS"]), "{{BOT_SUMMONS}}", ENVIRON["BOT_SUMMONS"]) }'
 }
 
 # The tracker adapter (lib/tracker.sh) as one shell command reading its config at <root>: what
