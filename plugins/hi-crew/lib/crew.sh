@@ -277,9 +277,10 @@
 # and it is not the workers' own: it does not start with the marker, or with the marker extended
 # inside its brackets ("(agent, ...) ..."), after any leading @mentions ("@bot (agent) ..." is
 # the worker's, "> (agent)" quoted by a person is not); an approval's text counts as the approval, not as a
-# comment. Nor is a bot summons a person's: a comment that is only a command to a review bot
-# ("@coderabbitai review", "@codex review"; the defaults plus crew.bot_summons, regexes matched
-# against the whole comment), which the worker cannot mark because the bot then ignores it. A finding is a not-a-person's inline review comment, its review requesting changes, or
+# comment. Nor is the workers' bot summons a person's: a comment by the login gh is signed in as
+# that is only a command to a review bot ("@coderabbitai review", "@codex review"; the defaults
+# plus crew.bot_summons, regexes matched against the whole comment), which the worker cannot mark
+# because the bot then ignores it. Another login's summons is a person's. A finding is a not-a-person's inline review comment, its review requesting changes, or
 # its review whose body matches one of crew.finding_patterns (a list of regexes, empty by default):
 # a review bot that puts some findings only in the review body ("outside the diff" sections) is
 # named by the marker those sections carry, which its summary-only reviews lack. An invalid
@@ -1034,8 +1035,10 @@ q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 # by login without the [bot] suffix. When a REST call fails the whole state fails, so a missing
 # list never reads as findings gone and then back, or a bot's comment as a person's.
 gh_state() { # <pr url> <marker> <bots json array> [<finding patterns json array>] [<bot ignore patterns json array>] [<summons json array>]
-  local view api n inline typed page
+  local view api n inline typed page me
   view=$(gh pr view "$1" --json state,isDraft,headRefOid,statusCheckRollup,comments,reviews,latestReviews,reviewRequests 2>/dev/null) || return 1
+  # The login the workers post under: only its summons are theirs. Unknown, every summons counts.
+  me=$(gh api user -q .login 2>/dev/null) || me=''
   api=$(printf '%s\n' "$1" | sed -n 's#^https://github\.com/\([^/]*\)/\([^/]*\)/pull/\([0-9][0-9]*\).*#repos/\1/\2 \3#p')
   inline='[]' typed='[]'
   if [ -n "$api" ]; then
@@ -1050,7 +1053,7 @@ gh_state() { # <pr url> <marker> <bots json array> [<finding patterns json array
     typed=$(printf '%s' "$typed" | jq -sc '[add // [] | .[] | .user | select(.type == "Bot") | .login // "" | sub("\\[bot\\]$"; "")] | unique') || return 1
   fi
   printf '%s' "$view" | jq -c --arg m "$2" --argjson bots "${3:-[]}" --argjson pats "${4:-[]}" \
-      --argjson ignore "${5:-[]}" --argjson summons "${6:-[]}" --argjson inline "$inline" --argjson typed "$typed" '
+      --argjson ignore "${5:-[]}" --argjson summons "${6:-[]}" --arg me "$me" --argjson inline "$inline" --argjson typed "$typed" '
     # Not a person: a [bot] login, a forge Bot account (by type, or by login when the source
     # has no type), or a login on the bots list.
     def bot($l; $t): ($l | test("\\[bot\\]$")) or $t == "Bot" or any($bots[], $typed[]; . == $l);
@@ -1063,11 +1066,13 @@ gh_state() { # <pr url> <marker> <bots json array> [<finding patterns json array
      + [$inline[]? | {who: (.user.login // ""), type: (.user.type // ""), at: (.updated_at // .created_at // ""), body,
                       inline: true}]
      | map(. + {bot: bot(.who; .type // "")})) as $all
-    # A bot summons: the whole comment is a command to a review bot ("@coderabbitai review"),
-    # which a worker cannot mark (the bot then ignores the command). An invalid pattern matches
-    # nothing; a person who writes anything more than the command is still a person.
+    # A workers bot summons: a comment by the login gh posts under that is only a command to a
+    # review bot ("@coderabbitai review"), which a worker cannot mark (the bot then ignores the
+    # command). An invalid pattern matches nothing; anything more than the command, or a summons
+    # by another login, is a comment from people.
     | def summons: (.body // "" | gsub("^\\s+|\\s+$"; "")) as $b
-                   | any($summons[]; . as $p | try ($b | test("^(?:" + $p + ")$"; "i")) catch false);
+                   | $me != "" and .who == $me
+                     and any($summons[]; . as $p | try ($b | test("^(?:" + $p + ")$"; "i")) catch false);
     # A person: what they wrote, apart from an approval (its own event), the workers own words and
     # a bot summons.
       [$all[] | select((.bot | not) and (own | not) and (summons | not) and (.body // "") != ""
