@@ -688,13 +688,14 @@ mv "$W/cfg.bak" "$WR/.claude/highness.json"
 cp "$WR/.claude/highness.json" "$W/cfg.bak"
 jq '.crew.bots = ["gatekeeper"] | .crew.finding_patterns = ["Outside the diff"]
     | .crew.bot_ignore_patterns = ["all clear"]
-    | .crew.pr_state = "jq -nc --argjson b {{BOTS}} --argjson p {{FINDING_PATTERNS}} --argjson i {{BOT_IGNORE_PATTERNS}} --arg m {{MARKER}} '"'"'{state: \"open\", b: $b, p: $p, i: $i, m: $m}'"'"'"' \
+    | .crew.bot_summons = ["@teambot recheck"]
+    | .crew.pr_state = "jq -nc --argjson b {{BOTS}} --argjson p {{FINDING_PATTERNS}} --argjson i {{BOT_IGNORE_PATTERNS}} --argjson s {{BOT_SUMMONS}} --arg m {{MARKER}} '"'"'{state: \"open\", b: $b, p: $p, i: $i, s: any($s[]; . == \"@teambot recheck\"), n: ($s | length), m: $m}'"'"'"' \
   "$W/cfg.bak" >"$WR/.claude/highness.json"
 bash "$C" record W-6 "{\"pr\":\"https://forge/pr/6\",\"run\":\"run_w1\",\"root\":\"$WR\"}"
 bash "$C" watch
-check 'a team pr_state gets {{BOTS}}, {{FINDING_PATTERNS}}, {{BOT_IGNORE_PATTERNS}} and {{MARKER}}' \
-  "$(jq -c '{b, p, i, m}' "$W/state/crew/watch/W-6.json")" \
-  '{"b":["forgejo-actions","gatekeeper","gitea-actions","github-actions"],"p":["Outside the diff"],"i":["all clear"],"m":"[bot]"}'
+check 'a team pr_state gets {{BOTS}}, {{FINDING_PATTERNS}}, {{BOT_IGNORE_PATTERNS}}, {{BOT_SUMMONS}} and {{MARKER}}' \
+  "$(jq -c '{b, p, i, s, n, m}' "$W/state/crew/watch/W-6.json")" \
+  '{"b":["forgejo-actions","gatekeeper","gitea-actions","github-actions"],"p":["Outside the diff"],"i":["all clear"],"s":true,"n":3,"m":"[bot]"}'
 mv "$W/cfg.bak" "$WR/.claude/highness.json"
 bash "$C" close W-6 2>/dev/null
 unset FAKE_WORKERS
@@ -846,6 +847,32 @@ JSON
 EOF
 GS=$(PATH="$W/bin:$PATH" bash -c 'eval "$(sed -n "/^gh_state()/,/^}/p" "$1")"; gh_state x "(agent)"' _ "$C")
 check 'gh_state: a leading @mention before the marker is own' "$GS" '{"state":"open","draft":false,"head":"abc","ci":"","people_at":"2026-01-04T00:00:00Z","people":3,"findings":0,"bot_comments":0,"approvals":[],"rerequested":[]}'
+# A bot summons cannot carry the marker (CodeRabbit ignores a command with other text on its
+# line): the gh login's comment that is only one is no one's; one with anything more, or another
+# login's, is a person's (highness#150).
+cat >"$W/bin/gh" <<'EOF'
+#!/bin/sh
+if [ "$1 $2" = 'api user' ]; then [ -n "${NO_ME:-}" ] && exit 1; echo me; exit 0; fi
+cat <<'JSON'
+{"state":"OPEN","isDraft":false,"headRefOid":"abc","statusCheckRollup":[],
+ "comments":[{"author":{"login":"me"},"body":"@coderabbitai review","updatedAt":"2026-01-05T00:00:00Z"},
+             {"author":{"login":"me"},"body":"  @CodeRabbitAI Full Review\n","updatedAt":"2026-01-06T00:00:00Z"},
+             {"author":{"login":"me"},"body":"@codex review","updatedAt":"2026-01-07T00:00:00Z"},
+             {"author":{"login":"me"},"body":"@coderabbit review --with-config","updatedAt":"2026-01-08T00:00:00Z"},
+             {"author":{"login":"me"},"body":"@teambot recheck","updatedAt":"2026-01-09T00:00:00Z"},
+             {"author":{"login":"rev"},"body":"@coderabbitai review please","updatedAt":"2026-01-02T00:00:00Z"},
+             {"author":{"login":"rev"},"body":"@codex review\nand @me: why the rename?","updatedAt":"2026-01-03T00:00:00Z"},
+             {"author":{"login":"rev"},"body":"@coderabbitai is this right?","updatedAt":"2026-01-04T00:00:00Z"},
+             {"author":{"login":"rev"},"body":"@coderabbitai review","updatedAt":"2026-01-01T00:00:00Z"}]}
+JSON
+EOF
+gss() { PATH="$W/bin:$PATH" bash -c 'eval "$(sed -n "/^gh_state()/,/^}/p" "$1")"; gh_state x "(agent)" "[]" "[]" "[]" "$2"' _ "$C" "$1" | jq -c '{people, people_at}'; }
+SUM=$(bash -c 'eval "$(sed -n "/^SUMMONS_DEFAULT=/,/^}/p" "$1")"; CONFIG=/nonexistent summons_json /' _ "$C")
+check 'gh_state: the gh login'"'"'s bot summons is no one'"'"'s; a person'"'"'s, or one mentioning a bot, counts' "$(gss "$SUM")" '{"people":5,"people_at":"2026-01-09T00:00:00Z"}'
+check 'gh_state: crew.bot_summons adds a team'"'"'s bot; an invalid pattern matches nothing' \
+  "$(gss "$(printf '%s' "$SUM" | jq -c '. + ["(", "@teambot recheck"]')")" '{"people":4,"people_at":"2026-01-04T00:00:00Z"}'
+check 'gh_state: no summons patterns, every summons counts' "$(gss '[]')" '{"people":9,"people_at":"2026-01-09T00:00:00Z"}'
+check 'gh_state: gh login unknown, every summons counts' "$(NO_ME=1 gss "$SUM")" '{"people":9,"people_at":"2026-01-09T00:00:00Z"}'
 # Bots on normal accounts (crew.bots), the forge Actions user, review bots' findings, approvals.
 cat >"$W/bin/gh" <<'EOF'
 #!/bin/sh
