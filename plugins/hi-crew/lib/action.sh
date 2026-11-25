@@ -36,9 +36,9 @@ act_meta() { # <KEY> <id>
   printf '%s/%s.json\n' "$(act_dir "$1")" "$2"
 }
 
-act_set() { # <meta file> <json to merge>
+act_set() { # <meta file> <json to merge>; it can carry a run's output: through a pipe, not argv
   local tmp="$1.tmp.$$"
-  jq --argjson add "$2" '. + $add' "$1" >"$tmp" && mv "$tmp" "$1" || { rm -f "$tmp"; return 1; }
+  jq --slurpfile add <(printf '%s' "$2") '. + $add[0]' "$1" >"$tmp" && mv "$tmp" "$1" || { rm -f "$tmp"; return 1; }
 }
 
 cmd_action() {
@@ -101,7 +101,7 @@ act_guard() { # <script> <workspace>; prints the reason and exit 1 on a deny
   local g out
   g=${HI_GUARD:-$(act_guard_path)} || return 0
   [ -n "$g" ] && [ -f "$g" ] || return 0
-  out=$(jq -n --arg c "$(cat "$1")" --arg cwd "$2" '{tool_name: "Bash", tool_input: {command: $c}, cwd: $cwd}' \
+  out=$(jq -n --rawfile c "$1" --arg cwd "$2" '{tool_name: "Bash", tool_input: {command: ($c | sub("\n+$"; ""))}, cwd: $cwd}' \
     | (cd "$2" && HI_GUARD_PROBE=1 bash "$g" pretool) 2>/dev/null) || return 0
   printf '%s' "$out" | jq -e '.hookSpecificOutput.permissionDecision == "deny"' >/dev/null 2>&1 || return 0
   printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecisionReason // "hi-guard denied it"'
@@ -146,7 +146,7 @@ act_run() { # <KEY> <id>
   out="$m.out"
   (cd "$ws" && bash -e "$s" </dev/null >"$out" 2>&1); rc=$?
   tail=$(tail -n 20 "$out" 2>/dev/null)
-  act_set "$m" "$(jq -nc --argjson rc "$rc" --arg t "$tail" --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  act_set "$m" "$(jq -nc --argjson rc "$rc" --rawfile t <(printf '%s' "$tail") --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     '{status: (if $rc == 0 then "applied" else "failed" end), rc: $rc, ran_at: $now, tail: $t}')"
   if [ "$rc" -eq 0 ]; then
     printf 'hi-crew ran action %s once, in this workspace, on the person'"'"'s yes: it succeeded (exit 0). Do not run it again.\n' "$id"
@@ -191,9 +191,11 @@ cmd_stranded() {
     fi
     [ -n "$d" ] || continue
     dispatch_live "$d" && continue
-    printf '%s' "$m" | jq -c --arg d "$d" --arg key "$key" --arg ws "$ws" --arg s "$sess" --argjson kept "$kept" '
+    # Only the kept replies' ids, through a pipe: their bodies can be any size.
+    printf '%s' "$m" | jq -c --arg d "$d" --arg key "$key" --arg ws "$ws" --arg s "$sess" \
+        --slurpfile k <(printf '%s' "$kept" | jq -c 'map(.ask)') '
       . as $m
-      | ($kept | map(.ask)) as $k
+      | $k[0] as $k
       | $m[] | select((.type == "question" or .type == "decision_gate") and .dispatch == $d)
       | select(.id as $id | $k | index($id) | not)
       | . as $q

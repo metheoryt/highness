@@ -61,7 +61,7 @@ t_read() {
   yt_key "$1"; load_auth
   http GET "api/issues/$1" '' -G --data-urlencode "fields=$ISSUE_FIELDS,description,comments(text,created,author(login,fullName))"
   check
-  printf '%s' "$RESP" | yt_norm | jq -c --argjson raw "$RESP" '
+  printf '%s' "$RESP" | yt_norm | jq -c --slurpfile raw <(printf '%s' "$RESP") '$raw[0] as $raw |
     def ms2iso: if type == "number" then (. / 1000 | floor | todate) else . end;
     . + {assignee: ([$raw.customFields[]? | select(.name == "Assignee") | .value.fullName // .value.login][0] // null),
          description: ($raw.description // ""),
