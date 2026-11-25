@@ -280,7 +280,8 @@
 # comment. Nor is the workers' bot summons a person's: a comment by the login gh is signed in as
 # that is only a command to a review bot ("@coderabbitai review", "@codex review"; the defaults
 # plus crew.bot_summons, regexes matched against the whole comment), which the worker cannot mark
-# because the bot then ignores it. Another login's summons is a person's. A finding is a not-a-person's inline review comment, its review requesting changes, or
+# because the bot then ignores it. Another login's summons is a person's.
+# A finding is a not-a-person's inline review comment, its review requesting changes, or
 # its review whose body matches one of crew.finding_patterns (a list of regexes, empty by default):
 # a review bot that puts some findings only in the review body ("outside the diff" sections) is
 # named by the marker those sections carry, which its summary-only reviews lack. An invalid
