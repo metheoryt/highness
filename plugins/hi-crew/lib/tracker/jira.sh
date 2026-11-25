@@ -89,7 +89,7 @@ t_candidates() {
 t_read() {
   jira_key "$1"; load_auth
   http GET "rest/api/2/issue/$1?fields=summary,status,labels,assignee,description,comment,created,updated"; check
-  printf '%s' "$RESP" | jq -c '{key, fields}' | jira_norm | jq -c --argjson raw "$RESP" '
+  printf '%s' "$RESP" | jq -c '{key, fields}' | jira_norm | jq -c --slurpfile raw <(printf '%s' "$RESP") '$raw[0] as $raw |
     . + {assignee: ($raw.fields.assignee.displayName // null),
          description: ($raw.fields.description // ""),
          comments: [($raw.fields.comment.comments // [])[]

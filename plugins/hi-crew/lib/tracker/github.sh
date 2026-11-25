@@ -66,7 +66,7 @@ t_read() {
   gh_json issue view "$n" -R "$REPO" --json number,title,body,state,labels,assignees,comments,url,updatedAt,createdAt \
     | jq -c '.' | {
       raw=$(cat)
-      printf '%s' "$raw" | gh_norm | jq -c --argjson raw "$raw" '
+      printf '%s' "$raw" | gh_norm | jq -c --slurpfile raw <(printf '%s' "$raw") '$raw[0] as $raw |
         . + {assignee: ([$raw.assignees[]?.login] | join(", ") | if . == "" then null else . end),
              description: ($raw.body // ""),
              comments: [($raw.comments // [])[] | {author: (.author.login // ""), created: .createdAt, body: (.body // "")}]}'
