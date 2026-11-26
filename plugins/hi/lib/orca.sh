@@ -441,15 +441,19 @@ terminals() {
 # state: done or idle is idle, any other state (working, a prompt, a new one) is busy. A bare
 # shell has no agentIdentity and no ps row: never listed. Exit 1: no Orca or no terminal list.
 agents() {
-  local want="${1:-}" real tl ps
+  local want="${1:-}" real tl psf rc
   [ -n "$want" ] || { echo 'orca.sh agents: <worktree-path> is required' >&2; return 2; }
   real=$(cd "$want" 2>/dev/null && pwd -P) || real=$want
   have_orca || return 1
   tl=$(orca_json terminal list) || return 1
-  ps=$(orca_json worktree ps --limit 10000 2>/dev/null) || ps='{}'
-  printf '%s' "$tl" | jq -r --arg a "$want" --arg b "$real" --argjson ps "$ps" "$JQ_POSIX"'
+  # worktree ps goes to jq through a file: as an argument (--argjson) a box with many
+  # workspaces passes the kernel's limit on one ("Argument list too long").
+  psf=$(mktemp "${TMPDIR:-/tmp}/hi-orca-ps.XXXXXX") || return 1
+  orca_json worktree ps --limit 10000 >"$psf" 2>/dev/null || echo '{}' >"$psf"
+  printf '%s' "$tl" | jq -r --arg a "$want" --arg b "$real" --slurpfile psa "$psf" "$JQ_POSIX"'
     def here: (. // "" | posix) as $p | $p != "" and ($p == $a or $p == $b);
-    [ ($ps.result.worktrees // [])[] | select(.path | here) | (.agents // [])[] ] as $ag
+    $psa[0] as $ps
+    | [ ($ps.result.worktrees // [])[] | select(.path | here) | (.agents // [])[] ] as $ag
     | ( (.result.terminals // [])[]
         | select((.connected // false) and (.writable // false) and ((.agentIdentity // "") != ""))
         | select(.worktreePath | here)
@@ -460,6 +464,9 @@ agents() {
         | [(.paneKey | sub(":.*$"; "")), "chat",
            (if (.state // "") == "done" or (.state // "") == "idle" then "idle" else "busy" end)] )
     | @tsv'
+  rc=$?
+  rm -f "$psf"
+  return "$rc"
 }
 
 # orphaned: one POSIX worktree path per line where Orca holds a terminal that came back from a
