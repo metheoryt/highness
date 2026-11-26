@@ -64,4 +64,15 @@ has reference/voice.md 'one fix, not a menu' 'Name one fix, never a menu.'
 has reference/voice.md 'person voice wins' 'wins where the two differ'
 has reference/session.md 'only the chosen review is written' 'Nothing reaches GitHub unasked'
 
+S=skills/brief/SKILL.md
+has $S 'brief posts nothing' 'This skill posts nothing'
+has $S 'not a bug hunt' 'Never a bug'
+has $S 'view before the question' 'your own view and recommendation'
+has $S 'context from zero' 'Context from zero'
+has $S 'bold needs two citations' 'Without two citations, no'
+has $S 'outside item keeps the lens wide' 'does not narrow'
+has $S 'every item logged' 'every item without an outcome is logged'
+has $S 'lens never written by the agent' 'Never write the lens yourself.'
+has $S 'source through the script' 'bash "$B" source'
+
 exit $rc
