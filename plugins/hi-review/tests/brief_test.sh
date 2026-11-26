@@ -79,6 +79,10 @@ check 'team lens' "$(bash "$B" lens)" "# source: team
 mine"
 check 'someone else s lens' "$(bash "$B" lens --login bob)" "# source: team
 of bob"
+jq -n '{review: {brief: {lens: "echo NEED_TOKEN >&2; exit 1"}}}' >.claude/highness.json
+bash "$B" lens >/dev/null 2>"$T/err"; check 'failing lens command: exit 1' "$?" 1
+has 'a failing lens command is said' "$(cat "$T/err")" "the team's command failed: NEED_TOKEN"
+jq -n '{review: {brief: {lens: "[ -z {{LOGIN}} ] && echo mine || echo of {{LOGIN}}"}}}' >.claude/highness.json
 printf 'design first\n' >"$HOME/lens.md"
 echo '{"review": {"lens": "~/lens.md"}}' >"$HIGHNESS_CONFIG"
 has 'personal lens from a file' "$(bash "$B" lens)" "# source: personal

@@ -130,7 +130,7 @@ cmd_source() {
 # --- lens -------------------------------------------------------------------------------------
 
 cmd_lens() {
-  local login='' r cmd out own found=1
+  local login='' r cmd out own err found=1
   while [ $# -gt 0 ]; do
     case "$1" in
       --login) login="${2:-}"; shift 2 ;;
@@ -140,7 +140,11 @@ cmd_lens() {
   r=$(root)
   cmd=$(cd "$r" && bash "$CONFIG" get .review.brief.lens 2>/dev/null) || cmd=''
   if [ -n "$cmd" ]; then
-    out=$(cd "$r" && sh -c "$(LOGIN=$(q "$login") ROOT=$(q "$r") fill LOGIN ROOT <<<"$cmd")" 2>/dev/null) || out=''
+    err=$(mktemp) || return 2
+    # A failing command is said, not taken for "no lens": the brief would quietly run without one.
+    out=$(cd "$r" && sh -c "$(LOGIN=$(q "$login") ROOT=$(q "$r") fill LOGIN ROOT <<<"$cmd")" 2>"$err") \
+      || { say "lens: the team's command failed: $(tail -1 "$err")"; out=''; }
+    rm -f "$err"
     if [ -n "$(printf '%s' "$out" | tr -d '[:space:]')" ]; then
       printf '# source: team\n%s\n' "$out"; found=0
     fi
