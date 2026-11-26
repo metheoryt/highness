@@ -1,6 +1,6 @@
 ---
 name: review
-description: Review a GitHub pull request and submit it as one review — from the current session with no workspace (quick mode), or as a hi-crew worker in its own review workspace whose diff is cut into slices for several reviewer subagents and whose verdict question comes back to this session (deep mode). A read-only reviewer subagent drafts the findings, a second reviewer pass tries to break each one before any card is shown, one question picks the verdict, and the review is posted with that verdict in a single call. Use when the user wants to review a PR, names a PR number or URL to review, or asks for a quick or a deep review. Args: <PR number or URL> [quick|deep].
+description: Review a GitHub pull request and submit it as one review — from the current session with no workspace (quick mode), or as a hi-crew worker in its own review workspace whose diff is cut into slices for several reviewer subagents and whose verdict question comes back to this session (deep mode). A read-only reviewer subagent drafts the findings, a second reviewer pass tries to break each one before any card is shown, one question picks the verdict, and the review is posted with that verdict in a single call. For a repo without a review bot; where one already runs (crew.bots, review.bots, or a bot's review on the PR), it points at /hi-review:brief. Use when the user wants to review a PR, names a PR number or URL to review, or asks for a quick or a deep review. Args: <PR number or URL> [quick|deep].
 ---
 
 # /hi-review:review
@@ -28,7 +28,14 @@ this skill" printed above, two levels up. Every call runs from a checkout of the
    `run /hi-review:review from a checkout of <owner/repo>` and stop. `<o>/<r>` below is that value.
 3. `gh pr view <n> --json number,title,body,author,headRefName,baseRefName,headRefOid,state,closingIssuesReferences`
    and `ME=$(gh api user --jq .login)`. Merged or closed → say so and stop.
-4. **The mode.** Quick (this session, no workspace) and deep serve; quick is the default.
+4. **Brief or review.** `bash "$R" bots <o>/<r> <n>` prints the repo's known review bots: the
+   team's (`crew.bots`, `review.bots`) and any bot that submitted a review on the PR. A login
+   printed (exit 0, or 3 with logins) → a bot already hunts the bugs here, and a review would
+   repeat its job under the person's name. Ask once: **Brief** (`/hi-review:brief`: 2–4 items only
+   the person can judge, and it can post their review too) / **Review anyway**. Brief → run the
+   `hi-review:brief` skill (Skill tool) on this PR and stop here. Nothing printed with exit 3 →
+   one line that the PR's reviews could not be read, and go on.
+5. **The mode.** Quick (this session, no workspace) and deep serve; quick is the default.
    - The author is `ME`, or `own` is in the args → say `own mode (checking your own PR) is not
      built yet` and stop. GitHub refuses an approve or a request for changes on one's own PR, and
      own mode posts nothing; a quick review would end in a post that cannot be made.
@@ -38,7 +45,7 @@ this skill" printed above, two levels up. Every call runs from a checkout of the
      subagents, and its verdict question comes back to this session.
    - `delta` in the args → say `delta is not built yet; quick reviews in this session` and ask
      once whether to run quick instead (Run quick / Stop).
-5. Read in full, with the Read tool, one call per file: `${CLAUDE_PLUGIN_ROOT}/reference/voice.md`
+6. Read in full, with the Read tool, one call per file: `${CLAUDE_PLUGIN_ROOT}/reference/voice.md`
    and `${CLAUDE_PLUGIN_ROOT}/reference/cards.md`. Then the person's own voice:
    `V=$(bash "$CFG" get --user .review.voice)` — set → Read that file too (a leading `~/` is the
    home directory), and keep its path as `VOICE` for the reviewer; unset → the default voice alone.

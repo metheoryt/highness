@@ -25,6 +25,11 @@
 #   review.sh post <owner/repo> <n> <payload file>
 #                                              one POST that creates AND submits the review;
 #                                              prints {id, state, html_url}
+#   review.sh bots <owner/repo> <n>            the repo's known review bots, one login per line:
+#                                              the team's (crew.bots, review.bots) and every bot
+#                                              that submitted a review on the PR; exit 1 none,
+#                                              3 the PR's reviews could not be read (the team's
+#                                              are printed all the same)
 #
 # Deep mode (reference/deep.md):
 #   review.sh slices <base> <head> [--max-lines N] [--max-files M]
@@ -282,6 +287,31 @@ cmd_post() {
     say "post: the review was not posted; the payload is still in $f"; return 3; }
 }
 
+# bots: is there a review bot on this repo, so that /hi-review:brief fits better than a review that
+# repeats the bot's job? A login the team lists (crew.bots, review.bots, through config.sh so a
+# person's repos.<owner> overlay counts), or a bot (a Bot account, a [bot] login, a listed one) that
+# submitted a review on the PR. Reviews only, never comments: CI bots comment on every PR. The
+# forge Actions users are never review bots.
+cmd_bots() {
+  local or="${1:-}" n="${2:-}" listed all rc=0 seen
+  case "$or" in */*) ;; *) say 'usage: bots <owner/repo> <n>'; return 2 ;; esac
+  case "$n" in ''|*[!0-9]*) say 'usage: bots <owner/repo> <n>'; return 2 ;; esac
+  listed=$({ bash "$HERE/config.sh" list .crew.bots 2>/dev/null; bash "$HERE/config.sh" list .review.bots 2>/dev/null; } |
+    jq -Rsc 'split("\n") | map(select(. != ""))') || listed='[]'
+  [ -n "$listed" ] || listed='[]'
+  all=$("$GH" api --paginate "repos/$or/pulls/$n/reviews" 2>/dev/null) || {
+    say "bots: reading the reviews of $or#$n failed"; all='[]'; rc=3; }
+  seen=$(printf '%s\n' "$all" | jq -rs --argjson listed "$listed" '
+    def actions: ascii_downcase | sub("\\[bot\\]$"; "") | IN("github-actions", "forgejo-actions", "gitea-actions");
+    ($listed + [add // [] | .[] | select(.state != "PENDING") | .user // {} | select(.login != null)
+                | select(.type == "Bot" or (.login | endswith("[bot]")) or (.login as $l | $listed | index($l) != null))
+                | .login])
+    | map(select(actions | not)) | unique | .[]') || { say 'bots: the reviews did not parse'; return 3; }
+  [ -n "$seen" ] && printf '%s\n' "$seen"
+  [ "$rc" -eq 0 ] || return "$rc"
+  [ -n "$seen" ] || return 1
+}
+
 # slices: a deep review's diff cut into parts one reviewer subagent can hold. Files stay in git's
 # path order, so a directory's files sit together; a slice closes when the next file would take
 # it past --max-lines changed lines (default 600) or --max-files files (default 20). A file larger
@@ -424,6 +454,7 @@ case "$sub" in
   delete-pending) cmd_delete_pending "$@" ;;
   restore-pending) cmd_restore_pending "$@" ;;
   post)           cmd_post "$@" ;;
+  bots)           cmd_bots "$@" ;;
   slices)         cmd_slices "$@" ;;
   key)            cmd_key "$@" ;;
   task)           cmd_task "$@" ;;
