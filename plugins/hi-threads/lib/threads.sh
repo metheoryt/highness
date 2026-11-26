@@ -14,12 +14,14 @@
 #   backfilled/<session>  the session's history was replayed
 #   replayed/<session>  where a replay stopped when the model failed; the next one goes on there
 #   events.jsonl        one line per status change: at, id, from, to, session
-#   log                 the jobs' stderr
+#   log                 the jobs' stderr and notes, one line per distinct message (see _log_in)
+#   swept               touched by the last sweep
 #
 # Config (highness config.sh): threads.enabled (default true), threads.model (default sonnet),
 # threads.comment.lang (en or ru), and threads.comment.commands, read from the user file only
 # (see _comments); threads.check.pr, threads.check.ticket and threads.check.stale_days for the
-# live check (threads-read.sh, th_check).
+# live check (threads-read.sh, th_check); threads.sweep.hours and threads.sweep.imported_days for
+# the sweep (th_sweep), read from the user file only: the journal is the machine's, every project.
 #
 #   threads.sh hook-stop                Stop hook: payload on stdin; starts the job, prints nothing
 #   threads.sh hook-start               SessionStart hook: the project's top open threads as context
@@ -37,6 +39,9 @@
 #   threads.sh check [--all | --project <dir>] [--ttl S] [--wait]
 #                                       close the threads whose PRs merged and tickets closed
 #                                       (threads-read.sh; also after every processed turn)
+#   threads.sh sweep                    the whole journal: close what landed, age out imported
+#                                       threads (th_sweep; also after a turn, once a day)
+#   threads.sh log-in                   fold the lines on stdin into the log
 #   threads.sh project [<dir>]          the project a directory belongs to
 #   threads.sh relay <cwd> <session> <brief>   give a thread's own session the brief (threads-read.sh)
 set -uo pipefail
@@ -45,7 +50,60 @@ CHUNK_MAX=${HI_THREADS_CHUNK_MAX:-60000}
 . "$HERE/threads-read.sh"   # th_project, _repo, th_list, th_check, th_agenda, th_relay, _lock
 
 _cfg() { bash "$HERE/config.sh" get "$1" 2>/dev/null; }
-_log() { mkdir -p "$TH_DIR" && printf '%s %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*" >>"$TH_DIR/log"; }
+# A setting of the machine's one journal, not of the repo a session happens to run in.
+_cfg_user() { bash "$HERE/config.sh" get --user "$1" 2>/dev/null; }
+_log() { printf '%s\n' "$*" | _log_in; }
+
+# The log holds one line per distinct message: "<last seen> <message>", or
+# "<last seen> (x<count> since <first seen>) <message>" once it repeats, newest last. A job that
+# fails the same way every turn (a hook warning on stderr, a usage limit) then costs one line, and
+# a new error stays visible. Lines on stdin are messages seen now; a log written before this
+# format is folded on the first write. Under the `log` lock; when it is busy the lines are
+# appended as they are, and the next write folds them.
+_log_in() {
+  local new now t0
+  mkdir -p "$TH_DIR"
+  new=$(mktemp); now=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+  grep -v '^[[:space:]]*$' >"$new"
+  [ -s "$new" ] || { rm -f "$new"; return 0; }
+  if ! _lock log 25; then
+    sed "s/^/$now /" "$new" >>"$TH_DIR/log"; rm -f "$new"; return 0
+  fi
+  touch "$TH_DIR/log"
+  # a line with no time takes the one before it; lines before any take the log's first time
+  t0=$(grep -m1 -o '^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z' "$TH_DIR/log")
+  awk -v now="$now" -v newf="$new" -v prev="${t0:-$now}" '
+    function seen(t, f, n, m) {
+      if (!(m in cnt)) { cnt[m] = 0; first[m] = f; last[m] = t }
+      if (f < first[m]) first[m] = f
+      if (t > last[m]) last[m] = t
+      cnt[m] += n; ord[m] = ++k
+    }
+    function fold(line, t,   m, i, hdr, a) {
+      m = line
+      if (line ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z /) {
+        t = substr(line, 1, 20); m = substr(line, 22); prev = t
+        if (m ~ /^\(x[0-9]+ since [^)]*\) /) {
+          i = index(m, ")"); hdr = substr(m, 2, i - 2); m = substr(m, i + 2)
+          split(hdr, a, " "); seen(t, a[3], substr(a[1], 2) + 0, m); return
+        }
+      }
+      if (m != "") seen(t, t, 1, m)
+    }
+    FILENAME != newf { fold($0, prev); next }
+    { fold($0, now) }
+    END {
+      for (m in ord) at[ord[m]] = m
+      for (i = 1; i <= k; i++) {
+        if (!(i in at)) continue
+        m = at[i]
+        if (cnt[m] > 1) printf "%s (x%d since %s) %s\n", last[m], cnt[m], first[m], m
+        else printf "%s %s\n", last[m], m
+      }
+    }' "$TH_DIR/log" "$new" >"$TH_DIR/log.new" && mv "$TH_DIR/log.new" "$TH_DIR/log"
+  rm -f "$new" "$TH_DIR/log.new"
+  _unlock log
+}
 
 # Complete lines of <transcript> from byte <from> into <out>; prints the new cursor.
 _chunk() { # <transcript> <from> <out>
@@ -67,11 +125,13 @@ th_digest() { # <transcript> [<from>]
 
 # The model's reply on stdout: a JSON object with `ops`. Input file on $1.
 _model() {
-  local model out
+  local model out err
   model=${HI_THREADS_MODEL:-$(_cfg .threads.model)}; model=${model:-sonnet}
+  err=$(mktemp)
   out=$(cd "$TH_DIR" && HI_THREADS_INNER=1 claude -p --model "$model" --no-session-persistence \
         --tools '' --strict-mcp-config --settings '{"disableAllHooks":true}' \
-        --system-prompt "$(cat "$HERE/prompt.md")" <"$1" 2>>"$TH_DIR/log")
+        --system-prompt "$(cat "$HERE/prompt.md")" <"$1" 2>"$err")
+  _log_in <"$err"; rm -f "$err"
   # The reply is the ops object, at times with a sentence or a code fence around it: take the
   # last {"ops": ...} that parses, from its brace to the last closing brace.
   if ! printf '%s' "$out" | jq -Rsc '. as $t | [match("\\{\\s*\"ops\"\\s*:"; "g").offset]
@@ -95,15 +155,19 @@ _context() { # <project> <session>
 }
 
 _apply() { # <ops-json> <session> <cwd> <project>
-  local repo now iso closed
+  local repo now iso closed replay=false
   repo=$(_repo "$3"); now=$(date +%s); iso=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+  [ -z "${HI_THREADS_REPLAY:-}" ] || replay=true
   _lock journal || { _log "apply: journal lock busy, dropped ops for $2"; return 1; }
   [ -f "$LEDGER" ] || echo '{"threads":[]}' >"$LEDGER"
+  # `imported`: the thread was made by a replay of an old session (backfill) and no live turn
+  # touched it since; the sweep ages such threads out (th_sweep).
   jq --argjson ops "$1" --arg s "$2" --arg cwd "$3" --arg p "$4" --arg repo "$repo" \
-     --argjson now "$now" --arg iso "$iso" '
+     --argjson now "$now" --arg iso "$iso" --argjson replay "$replay" '
     def fields: with_entries(select(.key | IN("title","status","next","open_items","waits_on","ticket","pr")))
                 | with_entries(select(.value != null and .value != ""));
     def touch($o): .updated = $iso | .updated_epoch = $now | .last_session = $s | .last_cwd = $cwd
+      | if $replay then . else .imported = false end
       | .sessions = ((.sessions // []) + [$s] | unique)
       | .repos = ((.repos // []) + (if $repo == "" then [] else [$repo] end) | unique)
       | .history = ((.history // []) + [{at: $iso, session: $s, note: ($o.note // "")}] | .[-20:]);
@@ -112,7 +176,7 @@ _apply() { # <ops-json> <session> <cwd> <project>
       | if $o.op == "create" then
           .threads += [({id: ("t" + ($now | tostring) + "-" + ($e.key | tostring)), project: $p,
                          created: $iso, status: "active", open_items: [], waits_on: "none",
-                         ticket: "", pr: "", next: "", title: ""} + ($o | fields) | touch($o))]
+                         ticket: "", pr: "", next: "", title: "", imported: $replay} + ($o | fields) | touch($o))]
         elif ($o.op == "update" or $o.op == "close") and ($o.id | type) == "string" then
           .threads |= map(if .id == $o.id then
                             (. + ($o | fields)
@@ -121,7 +185,8 @@ _apply() { # <ops-json> <session> <cwd> <project>
                                then .waits_on = "none" | .next = "" | .open_items = [] else . end
                              | touch($o))
                           else . end)
-        else . end)' "$LEDGER" >"$LEDGER.new" 2>>"$TH_DIR/log" || { rm -f "$LEDGER.new"; _unlock journal; return 1; }
+        else . end)' "$LEDGER" >"$LEDGER.new" 2>"$LEDGER.err" || { _log_in <"$LEDGER.err"; rm -f "$LEDGER.new" "$LEDGER.err"; _unlock journal; return 1; }
+  rm -f "$LEDGER.err"
   # one event per status change, for whatever acts on a thread going quiet or closing
   jq -c -n --slurpfile a "$LEDGER" --slurpfile b "$LEDGER.new" --arg s "$2" --arg iso "$iso" '
     ($a[0].threads | map({key: .id, value: .status}) | from_entries) as $old
@@ -186,8 +251,9 @@ _comments() { # <ids of the threads this apply closed>
            then "\n\n\($w.left):\n" + (.open_items | map("- " + .) | join("\n")) else "" end)
         + (if (.next // "") != "" and .status == "paused" then "\n\n\($w.next): \(.next)" else "" end)' | _scrub)
     if printf '%s\n' "$text" | (cd "$TH_DIR" && HI_THREAD_TICKET=$key HI_THREAD_PROJECT=$(printf '%s' "$th" | jq -r .project) \
-         sh -c "$cmd") >>"$TH_DIR/log" 2>&1; then _mark_commented "$id"
-    else _log "comment: command failed for $key"; fi
+         sh -c "$cmd") >"$TH_DIR/comment.out" 2>&1; then _mark_commented "$id"
+    else echo "comment: command failed for $key" >>"$TH_DIR/comment.out"; fi
+    _log_in <"$TH_DIR/comment.out"; rm -f "$TH_DIR/comment.out"
   done
   _unlock comments
 }
@@ -244,6 +310,62 @@ th_process() { # <transcript> <session> <cwd>
   _unlock "s-$sid"
   # Close what landed elsewhere (a PR merged, a ticket closed), so the next session's list is true.
   th_check --project "$proj" --ttl "${HI_THREADS_CHECK_TTL:-600}" >/dev/null
+  # Once in threads.sweep.hours (default 24; 0 turns it off), the whole journal.
+  local hours; hours=$(_cfg_user .threads.sweep.hours); case "$hours" in ''|*[!0-9]*) hours=24 ;; esac
+  if [ "$hours" -gt 0 ] && { [ ! -f "$TH_DIR/swept" ] ||
+       [ -n "$(find "$TH_DIR/swept" -maxdepth 0 -mmin +$((hours * 60 - 1)) 2>/dev/null)" ]; }; then
+    th_sweep >/dev/null
+  fi
+}
+
+# th_sweep: the whole journal, every project, brought in line with what happened.
+#   1. The live check over all of it (th_check --all): a thread whose PRs all merged or closed and
+#      whose tickets are all resolved is closed. Only an answer the team's command gave counts: a
+#      command that fails, is rate-limited, times out or prints no state leaves the link unknown,
+#      and a thread with an unknown link stays open.
+#   2. The age-out: a thread imported from an old session (backfill) that no live turn touched for
+#      threads.sweep.imported_days days (default 14; 0 turns it off) is dropped, never deleted:
+#      status dropped, aged_out the time, the reason in its history, an event from session
+#      "sweep". It posts no ticket comment. A journal from before the `imported` field counts a
+#      thread imported when none of its sessions was ever read live (no origin/<session>) and
+#      each was replayed (backfilled/ or replayed/).
+# One sweep at a time. Prints the ids it closed or dropped.
+th_sweep() {
+  local days now iso cut legacy ids
+  [ -f "$LEDGER" ] || return 0
+  _lock sweep 1 || return 0
+  touch "$TH_DIR/swept"
+  th_check --all --ttl "${HI_THREADS_CHECK_TTL:-600}" --wait
+  days=$(_cfg_user .threads.sweep.imported_days); case "$days" in ''|*[!0-9]*) days=14 ;; esac
+  if [ "$days" -gt 0 ] && _lock journal; then
+    now=$(date +%s); iso=$(date -u '+%Y-%m-%dT%H:%M:%SZ'); cut=$((now - days * 86400))
+    # sessions only ever replayed: replayed, and never met by the live hook
+    legacy=$( { ls "$TH_DIR/backfilled" "$TH_DIR/replayed" 2>/dev/null | grep -v ':$' | sort -u
+                ls "$TH_DIR/origin" 2>/dev/null | sed 's/^/-/'; } | jq -R -s -c '
+              split("\n") | map(select(. != "")) as $l
+              | ($l | map(select(startswith("-")) | .[1:])) as $live
+              | [$l[] | select(startswith("-") | not) | select(IN($live[]) | not)]')
+    jq --argjson cut "$cut" --argjson days "$days" --arg iso "$iso" --argjson replayed "$legacy" '
+      def imported: if has("imported") then .imported == true
+                    else (.sessions // []) as $s | ($s | length) > 0 and all($s[]; IN($replayed[])) end;
+      .threads |= map(
+        if (.status | IN("done", "dropped") | not) and imported and (.updated_epoch // 0) < $cut then
+          .status = "dropped" | .waits_on = "none" | .next = "" | .open_items = [] | .aged_out = $iso
+          | .history = ((.history // []) + [{at: $iso, session: "sweep", sent: true,
+              note: "aged out: imported from an old session, untouched for \($days) days"}] | .[-20:])
+        else . end)' "$LEDGER" >"$LEDGER.sweep" 2>/dev/null || rm -f "$LEDGER.sweep"
+    if [ -s "$LEDGER.sweep" ]; then
+      ids=$(jq -c -n --slurpfile a "$LEDGER" --slurpfile b "$LEDGER.sweep" --arg iso "$iso" '
+        ($a[0].threads | map({key: .id, value: .status}) | from_entries) as $old
+        | $b[0].threads[] | select(.status == "dropped" and ($old[.id] // "") != "dropped")
+        | {at: $iso, id, from: ($old[.id] // "new"), to: "dropped", session: "sweep"}')
+      [ -z "$ids" ] || printf '%s\n' "$ids" >>"$TH_DIR/events.jsonl"
+      mv "$LEDGER.sweep" "$LEDGER"
+      [ -z "$ids" ] || printf '%s\n' "$ids" | jq -r .id
+    fi
+    _unlock journal
+  fi
+  _unlock sweep
 }
 
 # Byte offsets where a person's prompt starts: the turn boundaries.
@@ -259,7 +381,7 @@ _turns() { # <transcript>
 th_replay() { # <transcript> <session> <cwd> [<end byte>]
   local tr=$1 sid=$2 cwd=$3 end=${4:-} proj b prev chunk dig t rc=0
   proj=$(th_project "$cwd"); mkdir -p "$TH_DIR/replayed"
-  export HI_THREADS_NO_COMMENT=1
+  export HI_THREADS_NO_COMMENT=1 HI_THREADS_REPLAY=1
   _lock "s-$sid" 600 || { _log "replay: $sid is locked by a live job"; return 1; }
   prev=$(cat "$TH_DIR/replayed/$sid" 2>/dev/null); prev=${prev:-0}
   [ -n "$end" ] || end=$(wc -c <"$tr" | tr -d ' ')
@@ -330,7 +452,8 @@ th_hook_stop() {
     *sdk-cli*) return 0 ;;
   esac
   mkdir -p "$TH_DIR"
-  (cd "$cwd" && nohup bash "$HERE/threads.sh" process "$tr" "$sid" "$cwd" </dev/null >>"$TH_DIR/log" 2>&1 &)
+  (cd "$cwd" && { nohup bash "$HERE/threads.sh" process "$tr" "$sid" "$cwd" </dev/null 2>&1 |
+                  nohup bash "$HERE/threads.sh" log-in; } >/dev/null 2>&1 &)
   return 0
 }
 
@@ -361,7 +484,9 @@ case "$cmd" in
   list) th_list "$@" ;;
   agenda) th_agenda ;;
   check) th_check "$@" ;;
+  sweep) th_sweep ;;
+  log-in) _log_in ;;
   project) th_project "${1:-$PWD}" ;;
   relay) th_relay "$@" ;;
-  *) sed -n '2,41p' "$0" >&2; exit 2 ;;
+  *) sed -n '2,46p' "$0" >&2; exit 2 ;;
 esac

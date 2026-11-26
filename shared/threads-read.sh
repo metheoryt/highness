@@ -79,17 +79,23 @@ _lock() { # <name> [tries]
 }
 _unlock() { rmdir "$TH_DIR/$1.lock" 2>/dev/null; }
 
-# The PR references and ticket keys a thread names, as the jq the check and the agenda share.
-TR_LINKS='def links: [((.pr // "") | [scan("[A-Za-z0-9_./-]+#[0-9]+")] | .[] | {kind: "pr", id: .}),
-                      ((.ticket // "") | [scan("[A-Za-z][A-Za-z0-9_]*-[0-9]+")] | .[] | {kind: "ticket", id: .})];'
+# The PR references and ticket keys a thread names, as the jq the check and the agenda share: in
+# `pr`, "repo#12" or a PR's URL (…/pull/12, …/merge_requests/12); in `ticket`, a key ("AB-3") or
+# an issue reference ("repo#4"). Each goes to the command as the journal holds it.
+TR_LINKS='def links: [((.pr // "") | [scan("https?://[A-Za-z0-9_.~:/-]+/(?:pull|merge_requests)/[0-9]+"),
+                                     (gsub("https?://[^ ,;]+"; "") | scan("[A-Za-z0-9_./-]+#[0-9]+"))]
+                       | unique | .[] | {kind: "pr", id: .}),
+                      ((.ticket // "") | [scan("[A-Za-z0-9_./-]+#[0-9]+"),
+                                         (gsub("[A-Za-z0-9_./-]+#[0-9]+"; "") | scan("[A-Za-z][A-Za-z0-9_]*-[0-9]+"))]
+                       | unique | .[] | {kind: "ticket", id: .})];'
 
 # th_check [--all | --project <dir>] [--ttl S] [--wait]: the live check. A thread is a model's
 # notes, so a PR it names may have merged and a ticket closed since the note was written. The check
 # asks the forge and the tracker through the team's own commands, from the config at the thread's
 # project:
-#   threads.check.pr      {{PR}} the reference as the journal holds it ("repo#12")
+#   threads.check.pr      {{PR}} the reference as the journal holds it ("repo#12", or the PR's URL)
 #                         → one JSON object, {"state": "open|merged|closed", ...}
-#   threads.check.ticket  {{KEY}} a ticket key → {"state": "<name>", "resolved": true|false}
+#   threads.check.ticket  {{KEY}} a ticket key or "repo#4" → {"state": "<name>", "resolved": true|false}
 # each with {{ROOT}} the project, shell-quoted. A thread whose every PR is merged or closed and
 # every ticket resolved is closed in the journal (status done, the reason in its history, an
 # event with session "check"); every other thread with links carries what was found in `check`.

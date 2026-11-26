@@ -275,6 +275,100 @@ reply '{"ops":[]}'
 check 'check: a paused thread it closed is done' "$(jq -r '.threads[] | select(.id == "P") | .status' "$CL")" 'done'
 check 'check: and the next turn posts no comment for it' "$([ -s "$CK/posted" ] && echo posted || echo none)" 'none'
 
+# The sweep: the live check over the whole journal, every project. Only an answer counts: a
+# command that fails or is rate-limited leaves the thread open.
+cat >"$CK/fake.sh" <<'EOF'
+#!/bin/sh
+echo "$1" >>"$CK_LOG"
+case "$1" in slow*) sleep 5 ;; fail*) echo '{"state":"merged"}'; exit 1 ;; esac
+grep "^$1	" "$CK_STATES" | cut -f2
+EOF
+printf 'rl#1\t{"message":"API rate limit exceeded","documentation_url":"x"}\nhttps://github.com/o/svc/pull/5\t{"state":"MERGED"}\nsvc#6\t{"state":"CLOSED","resolved":true}\nsvc#7\t{"state":"OPEN","resolved":false}\n' >>"$CK/states"
+day=86400
+jq --argjson now "$now" --argjson old $((now - 20 * day)) --argjson mid $((now - 10 * day)) --arg p "$CK/proj" --arg o "$CK/other" '
+  def th($id; $proj; $pr; $ticket; $epoch): {id: $id, project: $proj, title: $id, status: "waiting", waits_on: "person",
+    next: "n", open_items: ["x"], pr: $pr, ticket: $ticket, updated: "x", updated_epoch: $epoch};
+  .threads += [th("F1"; $o; "svc#9"; ""; $now), th("G"; $o; "rl#1"; ""; $now), th("H"; $o; "fail#1"; ""; $now),
+               th("U"; $o; "https://github.com/o/svc/pull/5"; "svc#6"; $now), th("V"; $o; ""; "svc#7"; $now),
+               th("I1"; $p; ""; ""; $old) + {imported: true, sessions: ["r9"]},
+               th("I2"; $p; ""; ""; $now) + {imported: true},
+               th("I3"; $p; ""; ""; $old) + {imported: false},
+               th("IM"; $p; ""; ""; $mid) + {imported: true},
+               th("L1"; $p; ""; ""; $old) + {sessions: ["r1"]},
+               th("L2"; $p; ""; ""; $old) + {sessions: ["r1", "r2"]},
+               th("L3"; $p; ""; ""; $old) + {sessions: []}]' "$CL" >"$CL.n" && mv "$CL.n" "$CL"
+mkdir -p "$CK/state/threads/backfilled" "$CK/state/threads/origin"
+touch "$CK/state/threads/backfilled/r1" "$CK/state/threads/backfilled/r2" "$CK/state/threads/origin/r2"
+st() { jq -r --arg id "$1" '.threads[] | select(.id == $id) | .status' "$CL"; }
+rm -f "$CK/posted"
+# The age is the user's: one journal for every project, so a repo's own setting is not read.
+printf '{"threads":{"check":{"pr":"sh %s {{PR}}","ticket":"sh %s {{KEY}}"},"sweep":{"imported_days":1}}}' "$CK/fake.sh" "$CK/fake.sh" >"$CK/proj/.claude/highness.json"
+jq '.threads.sweep.imported_days = 15' "$CK/user.json" >"$CK/user.n" && mv "$CK/user.n" "$CK/user.json"
+out=$(cd "$CK/proj" && HIGHNESS_STATE="$CK/state" HIGHNESS_CONFIG="$CK/user.json" CK_LOG="$CK/log" CK_STATES="$CK/states" bash "$TH" sweep)
+check 'sweep: another project'"'"'s landed thread is closed' "$(st F1)" 'done'
+check 'sweep: a rate-limited answer is not done' "$(st G) $(jq -r '.threads[] | select(.id == "G") | .check.links | length' "$CL")" 'waiting 0'
+check 'sweep: a failing command is not done, whatever it printed' "$(st H)" 'waiting'
+check 'sweep: a PR URL and a repo#N ticket are checked' "$(st U) $(jq -r '.threads[] | select(.id == "U") | .history[-1].note' "$CL")" \
+  'done closed by the live check: https://github.com/o/svc/pull/5 MERGED, svc#6 CLOSED'
+check 'sweep: a repo#N ticket still open keeps its thread' "$(st V)" 'waiting'
+check 'age-out: imported, untouched past the age — dropped, kept' "$(jq -r '.threads[] | select(.id == "I1") | [.status, .waits_on, (.open_items | length), (.aged_out != null), .history[-1].session] | @tsv' "$CL")" "dropped	none	0	true	sweep"
+check 'age-out: the age is the user'"'"'s (10 days old, 15 set; the repo'"'"'s 1 not read)' "$(st IM)" 'waiting'
+check 'age-out: imported but fresh — kept open' "$(st I2)" 'waiting'
+check 'age-out: a live turn touched it — kept open' "$(st I3)" 'waiting'
+check 'age-out: an old journal, every session only replayed — dropped' "$(st L1)" 'dropped'
+check 'age-out: an old journal, a session read live — kept open' "$(st L2)" 'waiting'
+check 'age-out: no sessions known — kept open' "$(st L3)" 'waiting'
+check 'sweep: prints what it closed and dropped' "$(printf '%s\n' "$out" | sort | tr '\n' ,)" 'F1,I1,L1,U,'
+check 'age-out: one event each, from the sweep' "$(jq -r 'select(.session == "sweep") | .id + ">" + .to' "$CK/state/threads/events.jsonl" | sort | tr '\n' ,)" 'I1>dropped,L1>dropped,'
+check 'sweep: posts no ticket comment' "$([ -s "$CK/posted" ] && echo posted || echo none)" 'none'
+check 'sweep: never deletes a thread' "$(jq '.threads | length' "$CL")" '20'
+jq '.threads |= map(if .id == "IM" then .updated_epoch = 0 else . end)' "$CL" >"$CL.n" && mv "$CL.n" "$CL"
+printf '{"threads":{"sweep":{"imported_days":0}}}' >"$CK/user0.json"
+(cd "$CK/proj" && HIGHNESS_STATE="$CK/state" HIGHNESS_CONFIG="$CK/user0.json" CK_LOG="$CK/log" CK_STATES="$CK/states" bash "$TH" sweep >/dev/null)
+check 'age-out: 0 days turns it off' "$(st IM)" 'waiting'
+
+# After a turn the job sweeps once in threads.sweep.hours, not every turn.
+printf '{"threads":{"check":{"pr":"sh %s {{PR}}","ticket":"sh %s {{KEY}}"}}}' "$CK/fake.sh" "$CK/fake.sh" >"$CK/proj/.claude/highness.json"
+jq --argjson now "$now" '.threads += [{id: "F2", project: "'"$CK/other"'", title: "later", status: "waiting", waits_on: "person", next: "", open_items: [], pr: "svc#9", ticket: "", updated: "x", updated_epoch: $now}]' "$CL" >"$CL.n" && mv "$CL.n" "$CL"
+pr() { a 'more' >>"$CK/t.jsonl"; u 'again' >>"$CK/t.jsonl"; (cd "$CK/proj" && HIGHNESS_STATE="$CK/state" CK_LOG="$CK/log" CK_STATES="$CK/states" bash "$TH" process "$CK/t.jsonl" sck "$CK/proj"); }
+pr
+check 'sweep: not again within the day' "$(st F2)" 'waiting'
+touch -t 202001010000 "$CK/state/threads/swept"; pr
+check 'sweep: the next turn after a day sweeps' "$(st F2)" 'done'
+
+# A replay marks the threads it makes imported; a live turn on one clears it.
+reply '{"ops":[{"op":"create","title":"From history","status":"waiting","waits_on":"person"}]}'
+TR7="$T/t7.jsonl"; { u 'old work'; a 'done'; } >"$TR7"
+bash "$TH" replay "$TR7" s7 "$T/umb"
+check 'replay: the thread it made is imported' "$(jq -r '.threads[] | select(.title == "From history") | .imported' "$DIR/threads.json")" 'true'
+id7=$(jq -r '.threads[] | select(.title == "From history") | .id' "$DIR/threads.json")
+reply "{\"ops\":[{\"op\":\"update\",\"id\":\"$id7\",\"next\":\"carry on\"}]}"
+{ u 'back to it'; a 'ok'; } >"$T/t8.jsonl"; bash "$TH" process "$T/t8.jsonl" s8 "$T/umb"
+check 'live turn: an imported thread it touches is no longer imported' "$(jq -r --arg id "$id7" '.threads[] | select(.id == $id) | .imported' "$DIR/threads.json")" 'false'
+reply '{"ops":[{"op":"create","title":"Live one","status":"active","waits_on":"agent"}]}'
+u 'new' >>"$T/t8.jsonl"; a 'ok' >>"$T/t8.jsonl"; bash "$TH" process "$T/t8.jsonl" s8 "$T/umb"
+check 'live turn: a thread it makes is not imported' "$(jq -r '.threads[] | select(.title == "Live one") | .imported' "$DIR/threads.json")" 'false'
+
+# The log: one line per distinct message, with a count once it repeats, newest last.
+LD="$T/logst"; mkdir -p "$LD/threads"
+printf '2026-01-01T00:00:00Z old error\nraw stderr line\n2026-01-02T00:00:00Z old error\n2026-01-03T00:00:00Z (x5 since 2025-12-01T00:00:00Z) hook warning\n' >"$LD/threads/log"
+printf 'hook warning\nnew thing\n\nhook warning\n' | HIGHNESS_STATE="$LD" bash "$TH" log-in
+check 'log: an old log is folded, one line per message' "$(wc -l <"$LD/threads/log" | tr -d ' ')" '4'
+check 'log: a repeat keeps its first time and counts' "$(grep 'old error' "$LD/threads/log")" '2026-01-02T00:00:00Z (x2 since 2026-01-01T00:00:00Z) old error'
+check 'log: a line with no time takes the one before it' "$(grep 'raw stderr' "$LD/threads/log")" '2026-01-01T00:00:00Z raw stderr line'
+check 'log: a counted line goes on counting, moved last' "$(tail -1 "$LD/threads/log" | sed 's/^[^ ]* //')" '(x7 since 2025-12-01T00:00:00Z) hook warning'
+check 'log: a new message, once' "$(grep -c 'new thing' "$LD/threads/log")" '1'
+cat >"$T/bin/claude" <<'EOF'
+#!/usr/bin/env bash
+cat >/dev/null
+echo 'Plugin hooks not loaded: --safe-mode' >&2
+cat "$FAKE_REPLY"
+EOF
+reply '{"ops":[]}'
+for i in 1 2 3; do u "turn $i" >>"$T/t8.jsonl"; a 'ok' >>"$T/t8.jsonl"; bash "$TH" process "$T/t8.jsonl" s8 "$T/umb"; done
+check 'log: the model'"'"'s stderr repeated each turn is one line' "$(grep -c 'Plugin hooks not loaded' "$DIR/log")|$(grep -c '(x3 since' "$DIR/log")" '1|1'
+check 'log: earlier messages are still there' "$(grep -c 'model said: You.ve hit your usage limit' "$DIR/log")" '1'
+
 # The skill relays first and gives the resume line last: sent, then started, then manual.
 SK="$HERE/../skills/where/SKILL.md"
 case "$(cat "$SK")" in *'"$TH" relay'*'`sent`'*'`started`'*'`manual`'*) ok 'where: relay, then new terminal, then the resume line' ;; *) no 'where: relay, then new terminal, then the resume line' ;; esac

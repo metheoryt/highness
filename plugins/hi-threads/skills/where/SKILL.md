@@ -40,7 +40,16 @@ other checkouts and worktrees), oldest first, in the background:
 bash "$TH" replay <transcript> <session id: the file name without .jsonl> <the session's cwd>
 ```
 
-The cwd is the transcript's first `cwd` field. Replay posts no ticket comments.
+The cwd is the transcript's first `cwd` field. Replay posts no ticket comments. The threads it
+makes are marked imported: one no live turn touches for `threads.sweep.imported_days` days
+(default 14) is dropped by the daily sweep, never deleted.
+
+**The user asks to clean the journal up** ("too many threads", "close what is done"):
+`bash "$TH" sweep` runs the daily sweep now, over every project: it closes the threads whose PRs
+all merged or closed and whose tickets are all resolved (by the team's `threads.check.*`
+commands; a failed or rate-limited answer leaves a thread open) and drops the aged-out imported
+ones. It prints the ids it closed or dropped; say how many. With no `threads.check.*` commands
+set, it closes nothing: say so.
 
 ## 2. Show
 
