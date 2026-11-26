@@ -340,5 +340,27 @@ t6	terminal	unknown" "$(run agents /w/a)"
 mkstub 'exit 1'
 run agents /w/a >/dev/null 2>&1; assert_status "agents: no Orca exits 1" 1 "$?"
 
+# --- a preview cut inside an emoji ---------------------------------------------
+# Orca cuts a terminal's preview to length, and the cut can leave a high surrogate with no low
+# one. jq 1.8 rejects the whole document for it, so every terminal in it went unseen. A whole
+# emoji (a valid pair) in a title stays as it is.
+printf '{"ok":true,"result":{"terminals":[
+  {"handle":"t1","worktreePath":"/w/a","connected":true,"writable":true,"agentIdentity":"claude","tabId":"A","leafId":"1","title":"go \\ud83d\\ude80","preview":"cut \\ud83d"},
+  {"handle":"t2","worktreePath":"/w/b","connected":true,"writable":true,"agentIdentity":null,"orphaned":true,"preview":"lone \\udc00 low"}
+]}}' > "$stub/tl.json"
+if printf '"\\ud83d"' | jq . >/dev/null 2>&1; then
+  printf '  note: this jq accepts a lone surrogate, so the cases below cannot fail here\n'
+fi
+mkstub "case \"\$*\" in 'status --json') echo '$READY' ;; 'terminal list --json') cat '$stub/tl.json' ;; *) exit 1 ;; esac"
+out=$(run terminals /w/a); rc=$?
+assert_status "terminals: a lone surrogate in a preview still lists the terminal" 0 "$rc"
+assert_eq "terminals: a whole emoji in the title is kept" "t1	claude	go 🚀" "$out"
+assert_eq "agents: a lone surrogate in a preview still lists the agent" "t1	terminal	unknown" "$(run agents /w/a)"
+assert_eq "orphaned: a lone surrogate in a preview still lists the orphan" "/w/b" "$(run orphaned)"
+mkstub 'echo "not json"'
+out=$(run terminals /w/a 2>&1 >/dev/null); rc=$?
+assert_status "terminals: an unreadable list exits 1" 1 "$rc"
+assert_contains "terminals: and says why on stderr" "$out" 'did not answer ok'
+
 rm -rf "$stub"
 assert_summary

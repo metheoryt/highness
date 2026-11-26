@@ -330,6 +330,20 @@ orca_cmd() {
   echo orca
 }
 
+# Orca's JSON with every lone UTF-16 surrogate escape made U+FFFD (the same filter as hi's
+# orca.sh). A terminal's `preview` is its output cut to length, and the cut can split an emoji;
+# jq 1.8 then rejects the whole answer, so a terminal read as closed, a lost pane as gone and an
+# open dialog as none. Valid pairs are set aside under \001 first. ERE only (BSD sed).
+unsurrogate() {
+  local p; p=$(printf '\001')
+  sed -E "s/\\\\u([dD][89abAB][0-9a-fA-F]{2})\\\\u([dD][c-fC-F][0-9a-fA-F]{2})/${p}\1${p}\2/g
+s/\\\\u[dD][89a-fA-F][0-9a-fA-F]{2}/\\\\ufffd/g
+s/${p}([0-9a-fA-F]{4})${p}([0-9a-fA-F]{4})/\\\\u\1\\\\u\2/g"
+}
+
+# orca_terminal <args…>: an Orca `terminal` subcommand's JSON, made parseable (unsurrogate).
+orca_terminal() { "$(orca_cmd)" terminal "$@" --json 2>/dev/null </dev/null | unsurrogate; }
+
 cmd_record() {
   [ $# -eq 2 ] || die 'usage: record <KEY> <json>'
   need_jq
@@ -727,7 +741,7 @@ cmd_asks() {
 # closed) or no answer is not proven open, so a notice that depends on it stays listed.
 terminal_open() {
   [ -n "$1" ] || return 1
-  "$(orca_cmd)" terminal show --terminal "$1" --json 2>/dev/null | jq -e '.ok == true' >/dev/null 2>&1
+  orca_terminal show --terminal "$1" | jq -e '.ok == true' >/dev/null 2>&1
 }
 
 # Whether a worker Dispatch can still take an answer. Orca closes a question whose Dispatch is
@@ -998,9 +1012,9 @@ ws_policy_waits() { # <repo selector> <workspace path>
 # Whether the runner's command shows in one of the workspace's terminals: Orca types it there.
 ws_runner_typed() { # <workspace path> <runner>
   local h
-  for h in $("$(orca_cmd)" terminal list --worktree "path:$1" --json 2>/dev/null \
+  for h in $(orca_terminal list --worktree "path:$1" \
     | jq -r '.result.terminals[]?.handle // empty' 2>/dev/null); do
-    "$(orca_cmd)" terminal read --terminal "$h" --json 2>/dev/null \
+    orca_terminal read --terminal "$h" \
       | jq -r '.result.terminal.tail[]? // empty' 2>/dev/null | grep -Fq "$2" && return 0
   done
   return 1
@@ -2180,7 +2194,7 @@ lost_pane() {
     | jq -r 'select(.ok == true) | .result | select((.terminalState // "") == "retained") | .terminal // empty' 2>/dev/null)
   [ -n "$h" ] || return 1
   # A closed pane still answers ok, with connected false (measured, Orca 1.4.271).
-  "$(orca_cmd)" terminal show --terminal "$h" --json 2>/dev/null \
+  orca_terminal show --terminal "$h" \
     | jq -e '.ok == true and .result.terminal.connected == true and .result.terminal.writable != false
              and ((.result.terminal.status // "running") == "running")' >/dev/null 2>&1 || return 1
   printf '%s\n' "$h"
@@ -2270,7 +2284,7 @@ EOF
     "$(orca_cmd)" terminal wait --terminal "$pane" --for tui-idle --timeout-ms 30000 --json >/dev/null 2>&1 </dev/null
   fi
   # A dialog open in the pane would take the new Dispatch's text as its answer.
-  if "$(orca_cmd)" terminal show --terminal "$pane" --json 2>/dev/null | jq -e '(.result.terminal.agentWait // null) != null' >/dev/null 2>&1; then
+  if orca_terminal show --terminal "$pane" | jq -e '(.result.terminal.agentWait // null) != null' >/dev/null 2>&1; then
     die "resume: $key's session in its pane $pane waits on a dialog: answer it there, then run resume again"
   fi
   title=$(printf '%s' "$facts" | jq -r '.title // empty'); [ -n "$title" ] || title=$key

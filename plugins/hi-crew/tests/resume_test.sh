@@ -47,9 +47,11 @@ case "$1 $2" in
     case "${FAKE_PANE_GONE:-}" in
       closed) echo '{"ok":true,"result":{"terminal":{"status":null,"connected":false}}}' ;;
       ?*) echo '{"ok":false,"error":{"code":"terminal_not_found"}}'; exit 1 ;;
-      *) if [ -n "${FAKE_DIALOG:-}" ]; then
-           echo '{"ok":true,"result":{"terminal":{"status":null,"connected":true,"writable":true,"agentWait":{"kind":"permission"}}}}'
-         else echo '{"ok":true,"result":{"terminal":{"status":null,"connected":true,"writable":true,"agentWait":null}}}'; fi ;;
+      *) # FAKE_CUT: a preview cut inside an emoji, a lone surrogate jq 1.8 rejects outright.
+         cut=''; [ -z "${FAKE_CUT:-}" ] || cut=',"preview":"cut \ud83d"'
+         if [ -n "${FAKE_DIALOG:-}" ]; then
+           echo '{"ok":true,"result":{"terminal":{"status":null,"connected":true,"writable":true'"$cut"',"agentWait":{"kind":"permission"}}}}'
+         else echo '{"ok":true,"result":{"terminal":{"status":null,"connected":true,"writable":true'"$cut"',"agentWait":null}}}'; fi ;;
     esac ;;
   "terminal send") # the relaunch line; FAKE_START: the session then runs in that pane
     printf '%s\n' "$*" >>"$FAKE_LOG.send"
@@ -281,6 +283,12 @@ fresh; transcripts; rm -f "$FAKE_LOG.send"; running 4242 sid1 term_pane
 err=$(FAKE_PANE=term_pane FAKE_DIALOG=1 bash "$C" resume AB-1 2>&1) && no 'dialog: exit 0'
 has 'dialog: says answer it there' "$err" 'waits on a dialog'
 [ -s "$FAKE_LOG" ] && no 'dialog: started nothing' || ok 'dialog: started nothing'
+# The same dialog, its pane's preview cut inside an emoji: it used to read as no dialog, and the
+# Dispatch was typed into it.
+fresh; transcripts; rm -f "$FAKE_LOG.send"; running 4242 sid1 term_pane
+err=$(FAKE_PANE=term_pane FAKE_DIALOG=1 FAKE_CUT=1 bash "$C" resume AB-1 2>&1) && no 'dialog, cut preview: exit 0'
+has 'dialog, cut preview: still seen' "$err" 'waits on a dialog'
+[ -s "$FAKE_LOG" ] && no 'dialog, cut preview: started nothing' || ok 'dialog, cut preview: started nothing'
 
 # Fallbacks to a new worker: today's behaviour.
 fresh; transcripts; rm -f "$FAKE_LOG.send"; running 4242 sid1 term_other
