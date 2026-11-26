@@ -379,4 +379,13 @@ has 'unconfirmed relaunch: says look at the pane' "$out" 'look at the pane'
 [ -s "$FAKE_LOG" ] && no 'unconfirmed relaunch: started nothing' || ok 'unconfirmed relaunch: started nothing'
 check 'unconfirmed relaunch: facts unchanged' "$(bash "$C" get AB-1 | jq -r .dispatch)" ctx_old
 
+# Orca counts the worker running and sees no agent in its orphaned workspace, but a Claude still
+# runs in one of its terminals: refuse, start nothing beside it.
+fresh; rm -rf "$T/proc" "$T/cfg/sessions" "$FAKE_LOG"; running 6161 sid7 t_sh
+err=$(FAKE_TL="$T/tl.orphan" FAKE_LIVE=ctx_old bash "$C" resume AB-1 2>&1) && no 'orphaned, a Claude still runs: exit 0'
+has 'orphaned, a Claude still runs: says so' "$err" 'still runs in one of them'
+[ -s "$FAKE_LOG" ] && no 'orphaned, a Claude still runs: started nothing' || ok 'orphaned, a Claude still runs: started nothing'
+check 'orphaned, a Claude still runs: facts unchanged' "$(bash "$C" get AB-1 | jq -r .dispatch)" ctx_old
+rm -rf "$T/proc/6161" "$T/cfg/sessions/6161.json"
+
 exit $fail

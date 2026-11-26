@@ -2393,7 +2393,8 @@ cmd_orphaned() {
     ws=$(printf '%s' "$facts" | jq -r "$WS_PATH")
     [ -n "$key" ] && ws_orphaned "$ws" "$paths" || continue
     d=$(worker_dispatch "$facts") || d=''
-    if dispatch_live "$d"; then st=live
+    if [ -z "$d" ]; then st=lost
+    elif dispatch_live "$d"; then st=live
     elif "$(orca_cmd)" orchestration worker-show --dispatch "$d" --json 2>/dev/null </dev/null \
         | jq -e '.result.state == "succeeded"' >/dev/null 2>&1; then st=done
     else st=lost
@@ -2439,6 +2440,14 @@ cmd_resume() {
     # terminals and no agent: nothing there can act on that Dispatch, so it is as lost.
     ws_orphaned "$ws" \
       || die "resume: $key's worker $d is not settled in Orca (orchestration worker-show --dispatch $d); a lost one is"
+    # Orca sees no agent there, but a Claude may still run in one of its terminals: a restart
+    # with a worker mid-Dispatch was never observed, so a running session refuses.
+    local th
+    th=$(bash "$ORCA_SH" terminals "$ws" 2>/dev/null </dev/null | cut -f1 | tr '\n' ' ')
+    if [ -n "$th" ] && live_sessions | awk -F'\t' -v hs="$th" 'BEGIN { n = split(hs, a, " "); for (i = 1; i <= n; i++) h[a[i]] = 1 }
+         ($3 in h) { f = 1 } END { exit !f }'; then
+      die "resume: $key's workspace has only orphaned terminals, but a Claude session still runs in one of them: look at it in Orca first"
+    fi
     printf 'crew: resume: %s: Orca still counts %s running, but its workspace has only orphaned terminals and no agent; resuming\n' "$key" "$d" >&2
   fi
   [ -n "$d" ] || d=$(printf '%s' "$facts" | jq -r '.dispatch // empty')
