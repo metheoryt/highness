@@ -38,15 +38,17 @@ while [ $# -gt 0 ]; do
   esac
 done
 printf '%s %s %s %s\n' "$method" "$url" "$data" "$qs" >>"$FAKE/req"
-while IFS='	' read -r m sub code body; do
+while IFS='	' read -r m sub code body want; do
   [ "$m" = "$method" ] || continue
+  # An optional fifth column: a substring the request's body or query must hold.
+  if [ -n "$want" ]; then case "$data $qs" in *"$want"*) ;; *) continue ;; esac; fi
   case "$url" in *"$sub"*) cat "$FAKE/$body"; printf '\n%s' "$code"; exit 0 ;; esac
 done <"$FAKE/routes"
 printf '{"errorMessages":["no route"]}\n404'
 EOF
 chmod +x "$T/bin/curl"
 reset() { rm -f "$FAKE/argv" "$FAKE/stdin" "$FAKE/req" "$FAKE/routes"; touch "$FAKE/routes"; }
-route() { printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" >>"$FAKE/routes"; }
+route() { printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "${5:-}" >>"$FAKE/routes"; }
 body() { cat >"$FAKE/$1"; }
 team() { printf '%s' "$1" >"$T/root/.claude/highness.json"; }
 person() { printf '%s' "$1" >"$HIGHNESS_CONFIG"; }
@@ -152,6 +154,107 @@ jql=$(head -1 "$FAKE/req" | sed 's/^POST [^ ]* //' | jq -r '.jql' 2>/dev/null)
 has "sections JQL: mine" "$jql" 'assignee = currentUser()'
 has "sections JQL: the projects" "$jql" 'project in ("AB")'
 has "sections JQL: not the done statuses" "$jql" 'status not in ("Done")'
+check "sections without sprint or handed_off: one request" "$(wc -l <"$FAKE/req" | tr -d ' ')" 1
+hasnt "sections without sprint: no sprint field asked" "$(cat "$FAKE/req")" customfield
+check "sections without sprint: no sprint group" "$(printf '%s\n' "$out" | jq -r 'select(.group == "sprint") | .key')" ''
+
+# tracker.sprint: the active sprint's todo tickets are group "sprint", the rest of todo stays
+# "later" as the backlog. Both value shapes: Cloud's objects, the old Data Center string.
+JIRA_SPRINT='{"tracker": {"kind": "jira", "base_url": "https://example.atlassian.net", "projects": ["AB"],
+  "statuses": {"To Do": "todo", "In Progress": "active", "QA": "testing", "Blocked": "waiting", "Done": "done"},
+  "sprint": "customfield_10020"}}'
+body sprint.json <<'EOF'
+{"issues":[
+ {"key":"AB-10","fields":{"summary":"Planned","status":{"name":"To Do","statusCategory":{"key":"new"}},"updated":"2026-01-05T10:00:00.000+0000",
+  "customfield_10020":[{"id":1,"name":"Sprint 1","state":"closed"},{"id":2,"name":"Sprint 2","state":"active"}]}},
+ {"key":"AB-11","fields":{"summary":"Backlog","status":{"name":"To Do","statusCategory":{"key":"new"}},"updated":"2026-01-04T10:00:00.000+0000","customfield_10020":null}},
+ {"key":"AB-12","fields":{"summary":"Next sprint","status":{"name":"To Do","statusCategory":{"key":"new"}},"updated":"2026-01-03T10:00:00.000+0000",
+  "customfield_10020":[{"id":3,"name":"Sprint 3","state":"future"}]}},
+ {"key":"AB-13","fields":{"summary":"Old site","status":{"name":"To Do","statusCategory":{"key":"new"}},"updated":"2026-01-02T10:00:00.000+0000",
+  "customfield_10020":["com.atlassian.greenhopper.service.sprint.Sprint@1a2b[id=2,rapidViewId=1,state=ACTIVE,name=Sprint 2,startDate=2026-01-01]"]}},
+ {"key":"AB-14","fields":{"summary":"Started","status":{"name":"In Progress","statusCategory":{"key":"indeterminate"}},"updated":"2026-01-01T10:00:00.000+0000",
+  "customfield_10020":[{"id":2,"name":"Sprint 2","state":"active"}]}}
+],"isLast":true}
+EOF
+team "$JIRA_SPRINT"; reset; route POST rest/api/3/search/jql 200 sprint.json
+out=$(run sections); check "sprint: exit 0" "$?" 0
+check "sprint: the active sprint's todo → sprint" "$(printf '%s\n' "$out" | jq -r 'select(.group == "sprint") | .key' | tr '\n' ' ')" 'AB-10 AB-13 '
+check "sprint: no sprint or a future one → later, the backlog" "$(printf '%s\n' "$out" | jq -r 'select(.group == "later") | .key' | tr '\n' ' ')" 'AB-11 AB-12 '
+check "sprint: next says sprint or backlog" "$(printf '%s\n' "$out" | jq -r 'select(.key == "AB-10" or .key == "AB-11") | .next' | tr '\n' '|')" \
+  'in the sprint, not started|in the backlog, not started|'
+check "sprint: an active ticket stays you" "$(printf '%s\n' "$out" | jq -r 'select(.key == "AB-14") | "\(.group)|\(.next)"')" 'you|in progress'
+check "sprint: the field is asked for" "$(head -1 "$FAKE/req" | sed 's/^POST [^ ]* //' | jq -c '.fields | index("customfield_10020") != null')" true
+team '{"tracker": {"kind": "jira", "base_url": "https://example.atlassian.net", "sprint": "Sprint"}}'
+reset; run sections 2>"$T/err"; check "sprint: not a custom field id → exit 4" "$?" 4
+check "sprint: a bad field sends nothing" "$([ -s "$FAKE/req" ] && echo sent || echo none)" none
+
+# tracker.handed_off: the person's tickets in waiting/testing that someone else holds → others,
+# from a second search. The developer field, then the last assignee before the hand-off.
+body mine.json <<'EOF'
+{"issues":[{"key":"AB-20","fields":{"summary":"Mine","status":{"name":"In Progress","statusCategory":{"key":"indeterminate"}},"updated":"2026-01-06T10:00:00.000+0000"}}],"isLast":true}
+EOF
+body handed.json <<'EOF'
+{"issues":[
+ {"key":"AB-21","fields":{"summary":"In QA","status":{"name":"QA","statusCategory":{"key":"indeterminate"}},"updated":"2026-01-07T10:00:00.000+0000",
+  "assignee":{"accountId":"2","displayName":"Bob Tester"}},
+  "changelog":{"histories":[
+   {"created":"2026-01-02T10:00:00.000+0000","items":[{"field":"assignee","fieldId":"assignee","from":null,"to":"1"}]},
+   {"created":"2026-01-07T10:00:00.000+0000","items":[{"field":"status","fieldId":"status","from":"3","to":"4"},{"field":"assignee","fieldId":"assignee","from":"1","to":"2"}]}]}},
+ {"key":"AB-22","fields":{"summary":"Passed on","status":{"name":"Blocked","statusCategory":{"key":"indeterminate"}},"updated":"2026-01-06T10:00:00.000+0000",
+  "assignee":{"accountId":"3","displayName":"Cy"}},
+  "changelog":{"histories":[
+   {"created":"2026-01-05T10:00:00.000+0000","items":[{"field":"assignee","fieldId":"assignee","from":"2","to":"3"}]},
+   {"created":"2026-01-01T10:00:00.000+0000","items":[{"field":"assignee","fieldId":"assignee","from":"1","to":"2"}]}]}}
+],"isLast":true}
+EOF
+team '{"tracker": {"kind": "jira", "base_url": "https://example.atlassian.net", "projects": ["AB"],
+  "statuses": {"To Do": "todo", "In Progress": "active", "QA": "testing", "Blocked": "waiting", "Done": "done"},
+  "handed_off": {"field": "customfield_10050"}}}'
+reset; route POST rest/api/3/search/jql 200 handed.json 'cf[10050]'; route POST rest/api/3/search/jql 200 mine.json
+out=$(run sections); check "handed_off field: exit 0" "$?" 0
+check "handed_off field: own tickets, then the handed ones" "$(printf '%s\n' "$out" | jq -r '"\(.key):\(.group)"' | tr '\n' ' ')" 'AB-20:you AB-21:others AB-22:others '
+check "handed_off: next names who has it" "$(printf '%s\n' "$out" | jq -r 'select(.key == "AB-21") | "\(.next)|\(.handed_to)"')" 'in testing, with Bob Tester|Bob Tester'
+check "handed_off: own tickets carry no handed_to" "$(printf '%s\n' "$out" | jq -r 'select(.key == "AB-20") | has("handed_to")')" false
+jql=$(sed -n 2p "$FAKE/req" | sed 's/^POST [^ ]* //' | jq -r '.jql')
+has "handed_off JQL: the developer field" "$jql" 'cf[10050] = currentUser()'
+has "handed_off JQL: someone else holds it" "$jql" '(assignee != currentUser() OR assignee is EMPTY)'
+has "handed_off JQL: the waiting and testing statuses" "$jql" 'status in ("QA", "Blocked")'
+has "handed_off JQL: the projects" "$jql" 'project in ("AB")'
+hasnt "handed_off field: no changelog asked" "$(sed -n 2p "$FAKE/req")" changelog
+
+team '{"tracker": {"kind": "jira", "base_url": "https://example.atlassian.net",
+  "statuses": {"QA": "testing", "Blocked": "waiting"}, "handed_off": {"last_assignee": true}}}'
+body me1.json <<'EOF'
+{"accountId":"1","displayName":"Ada Lovelace"}
+EOF
+reset; route GET rest/api/2/myself 200 me1.json
+route POST rest/api/3/search/jql 200 handed.json 'assignee was'; route POST rest/api/3/search/jql 200 mine.json
+out=$(run sections); check "handed_off last_assignee: exit 0" "$?" 0
+check "last_assignee: only where the person held it before the last change" "$(printf '%s\n' "$out" | jq -r 'select(.group == "others") | .key' | tr '\n' ' ')" 'AB-21 '
+has "last_assignee: the changelog is asked for" "$(grep 'assignee was' "$FAKE/req" | sed 's/^POST [^ ]* //' | jq -r .expand)" changelog
+
+team '{"tracker": {"kind": "jira", "base_url": "https://example.atlassian.net", "statuses": {"QA": "active"}, "handed_off": {"last_assignee": true}}}'
+reset; run sections 2>"$T/err"; check "handed_off with no waiting/testing status → exit 4" "$?" 4
+has "handed_off with no waiting/testing status: says so" "$(cat "$T/err")" 'waiting or testing'
+team '{"tracker": {"kind": "jira", "base_url": "https://example.atlassian.net", "handed_off": {"field": "x", "last_assignee": true}}}'
+reset; run sections 2>/dev/null; check "handed_off with both modes → exit 4" "$?" 4
+team '{"tracker": {"kind": "jira", "base_url": "https://example.atlassian.net", "statuses": {"QA": "testing"}, "handed_off": {"field": "Developer"}}}'
+reset; run sections 2>/dev/null; check "handed_off field not customfield_N on Jira → exit 4" "$?" 4
+team "$JIRA"
+# A failing search is the section's error, never an empty section.
+reset; route POST rest/api/3/search/jql 401 e401.json
+run sections >/dev/null 2>&1; check "sections: a rejected search → exit 2" "$?" 2
+team '{"tracker": {"kind": "jira", "base_url": "https://example.atlassian.net", "statuses": {"QA": "testing"}, "handed_off": {"last_assignee": true}}}'
+reset; route POST rest/api/3/search/jql 401 e401.json
+run sections >/dev/null 2>&1; check "sections with handed_off: a rejected first search → exit 2" "$?" 2
+team '{"tracker": {"kind": "youtrack", "base_url": "https://youtrack.example.com", "sprint": "Board X: {current sprint}"}}'
+person '{"trackers": {"youtrack.example.com": {"token_env": "HI_TEST_TOKEN"}}}'
+body ytok.json <<'EOF'
+[]
+EOF
+reset; route GET api/issues 401 e401.json 'current sprint'; route GET api/issues 200 ytok.json
+run sections >/dev/null 2>&1; check "youtrack: a rejected sprint search → exit 2" "$?" 2
+person "$CRED"; team "$JIRA"
 
 # Data Center has no search/jql: the v2 search, paged by startAt.
 body search2.json <<'EOF'
@@ -253,6 +356,33 @@ check "youtrack: resolved and unmapped → done, left out" "$(printf '%s\n' "$ou
 check "youtrack: role, url, since in ISO" "$(printf '%s\n' "$out" | jq -r 'select(.key == "AB-5") | "\(.role)|\(.url)|\(.since)"')" \
   'todo|https://youtrack.example.com/issue/AB-5|2026-01-02T00:00:00Z'
 has "youtrack sections query" "$(cat "$FAKE/req")" 'query=for: me #Unresolved project: AB, {Big Project}'
+check "youtrack sections without sprint: one request" "$(wc -l <"$FAKE/req" | tr -d ' ')" 1
+
+body ytsprint.json <<'EOF'
+[{"idReadable":"AB-5","summary":"Five","customFields":[{"name":"State","value":{"name":"Open"}}]}]
+EOF
+body ythanded.json <<'EOF'
+[{"idReadable":"AB-8","summary":"Eight","updated":1767312000000,"resolved":null,
+  "customFields":[{"name":"State","value":{"name":"Testing"}},{"name":"Assignee","value":{"login":"bob","fullName":"Bob Tester"}}]}]
+EOF
+body ytmine2.json <<'EOF'
+[{"idReadable":"AB-5","summary":"Five","updated":1767312000000,"resolved":null,"customFields":[{"name":"State","value":{"name":"Open"}}]},
+ {"idReadable":"AB-9","summary":"Nine","updated":1767312000000,"resolved":null,"customFields":[{"name":"State","value":{"name":"Open"}}]}]
+EOF
+team '{"tracker": {"kind": "youtrack", "base_url": "https://youtrack.example.com", "projects": ["AB"],
+  "statuses": {"Open": "todo", "Testing": "testing", "Fixed": "done"},
+  "sprint": "Board {Team board}: {current sprint}", "handed_off": {"field": "Developer"}}}'
+reset; route GET api/issues 200 ytsprint.json 'current sprint'; route GET api/issues 200 ythanded.json 'Developer: me'
+route GET api/issues 200 ytmine2.json
+out=$(run sections); check "youtrack sprint and handed_off: exit 0" "$?" 0
+check "youtrack: groups" "$(printf '%s\n' "$out" | jq -r '"\(.key):\(.group)"' | tr '\n' ' ')" 'AB-5:sprint AB-9:later AB-8:others '
+check "youtrack handed_off: with whom" "$(printf '%s\n' "$out" | jq -r 'select(.key == "AB-8") | .next')" 'in testing, with Bob Tester'
+has "youtrack sprint query: the person's, ANDed with the clause" "$(cat "$FAKE/req")" 'query=for: me #Unresolved project: AB (Board {Team board}: {current sprint})'
+has "youtrack handed_off query" "$(cat "$FAKE/req")" 'query=Developer: me Assignee: -me #Unresolved State: Testing project: AB'
+team '{"tracker": {"kind": "youtrack", "base_url": "https://youtrack.example.com", "statuses": {"Testing": "testing"}, "handed_off": {"last_assignee": true}}}'
+reset; run sections 2>"$T/err"; check "youtrack last_assignee → exit 4" "$?" 4
+has "youtrack last_assignee: says Jira only" "$(cat "$T/err")" 'Jira only'
+team "$YT"
 reset; route GET api/issues 200 ytissues.json
 out=$(run candidates auto); check "youtrack candidates" "$(printf '%s\n' "$out" | jq -r .key | tr '\n' ' ')" 'AB-5 '
 has "youtrack candidates query" "$(cat "$FAKE/req")" 'query=tag: auto State: Open project: AB, {Big Project}'
@@ -304,6 +434,25 @@ check "github: the key is <repo>-<n>" "$(printf '%s\n' "$out" | jq -r .key | tr 
 check "github: a role label sets the role" "$(printf '%s\n' "$out" | jq -r 'select(.key == "widgets-3") | "\(.role)|\(.status)"')" 'active|In-Progress'
 check "github: no role label → todo" "$(printf '%s\n' "$out" | jq -r 'select(.key == "widgets-4") | .role')" todo
 has "github sections: mine, in the origin's repo" "$(cat "$FAKE/gh")" 'issue list -R acme/widgets --assignee @me --state open'
+hasnt "github sections without sprint: no milestone asked" "$(cat "$FAKE/gh")" milestone
+check "github without sprint: todo is later" "$(printf '%s\n' "$out" | jq -r 'select(.key == "widgets-4") | "\(.group)|\(.next)"')" 'later|not started'
+cp "$FAKE/gh-list.json" "$FAKE/gh-list.keep"
+cat >"$FAKE/gh-list.json" <<'EOF'
+[{"number":5,"title":"Five","url":"https://github.com/acme/widgets/issues/5","state":"OPEN","labels":[],"milestone":{"number":1,"title":"Sprint 7","dueOn":null},"updatedAt":"2026-01-05T00:00:00Z"},
+ {"number":6,"title":"Six","url":"https://github.com/acme/widgets/issues/6","state":"OPEN","labels":[],"milestone":{"number":2,"title":"Later","dueOn":null},"updatedAt":"2026-01-05T00:00:00Z"},
+ {"number":7,"title":"Seven","url":"https://github.com/acme/widgets/issues/7","state":"OPEN","labels":[],"milestone":null,"updatedAt":"2026-01-05T00:00:00Z"}]
+EOF
+team '{"tracker": {"kind": "github", "sprint": "Sprint 7"}}'
+rm -f "$FAKE/gh"; out=$(run sections); check "github sprint: exit 0" "$?" 0
+check "github sprint: by milestone title" "$(printf '%s\n' "$out" | jq -r '"\(.key):\(.group)"' | tr '\n' ' ')" 'widgets-5:sprint widgets-6:later widgets-7:later '
+has "github sprint: the milestone is asked for" "$(cat "$FAKE/gh")" milestone
+team '{"tracker": {"kind": "github", "sprint": "*"}}'
+out=$(run sections)
+check "github sprint *: any milestone" "$(printf '%s\n' "$out" | jq -r 'select(.group == "sprint") | .key' | tr '\n' ' ')" 'widgets-5 widgets-6 '
+team '{"tracker": {"kind": "github", "handed_off": {"field": "x"}}}'
+run sections 2>/dev/null; check "github handed_off → exit 4" "$?" 4
+mv "$FAKE/gh-list.keep" "$FAKE/gh-list.json"
+team '{"tracker": {"kind": "github", "statuses": {"in-progress": "active", "in-review": "in_review", "needs-decision": "waiting"}}}'
 out=$(run candidates auto); check "github candidates" "$(printf '%s\n' "$out" | jq -r .key | tr '\n' ' ')" 'widgets-4 '
 run read other-3 2>/dev/null; check "github read: another repo's key → exit 3" "$?" 3
 cat >"$FAKE/gh-view.json" <<'EOF'

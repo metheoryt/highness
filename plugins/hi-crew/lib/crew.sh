@@ -241,7 +241,7 @@
 #                                     HI_TOOL_STUCK minutes (default 30) is told by the watch once:
 #                                     a hung shell keeps a session "working", and only its age shows
 #   crew.sh sections                  the team's own digest sections (config agenda.sections), one
-#                                     JSON object per line: section, group (you | others | later | done),
+#                                     JSON object per line: section, group (you | others | sprint | later | done),
 #                                     title, next, url, since; or section and error. See cmd_sections.
 #                                     Then the built-in forge sections (lib/forge.sh): the person's
 #                                     PRs no worker owns, and the reviews waiting on them. Each
@@ -1446,7 +1446,7 @@ ws_sync() { # <facts json> <pr state json>
 # workers without hi knowing the team's tracker or forge. Each section is {"name", "command"}; the
 # command runs from the team file's root (derive_root: an umbrella, from a child clone it lists)
 # with {{ROOT}}, {{MARKER}} and {{TRACKER}} filled in, and prints
-# one JSON object per line: {"group": "you|others|later|done", "title", "next", "url", "since"}
+# one JSON object per line: {"group": "you|others|sprint|later|done", "title", "next", "url", "since"}
 # (all but title optional). `{{TRACKER}} sections` is the person's tickets from the configured
 # tracker (lib/tracker.sh).
 # The open threads of the hi-threads journal come first, as section "threads" (with open_items,
