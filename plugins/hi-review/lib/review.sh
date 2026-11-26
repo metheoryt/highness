@@ -34,10 +34,11 @@
 #   review.sh key <owner/repo> <n>             the hi-crew key of the review: review-<owner>-<repo>-<n>
 #   review.sh task --pr-url U --key K --base SHA --head SHA --workspace P [--voice F]
 #                                              the review worker's task (reference/deep-task.md)
-#   review.sh submit <owner/repo> <n> <payload> --head SHA --login L [--seen-pending F]
+#   review.sh submit <owner/repo> <n> <payload> --head SHA --login L [--sha256 S] [--seen-pending F]
 #                                              post, as the action the person said yes to, only
-#                                              what they saw: exit 4 when the PR's head moved or
-#                                              their pending review is not the one the cards showed
+#                                              what they saw: exit 4 when the PR's head moved, the
+#                                              payload is not the one of sha256 S, or their pending
+#                                              review is not the one the cards showed
 #
 # Exit: 0 ok · 1 no (not in the diff, no pending review) · 2 usage or bad input · 3 git/gh failed
 #       · 4 changed since the cards (submit)
@@ -367,19 +368,22 @@ cmd_task() {
 }
 
 # submit: the post of a deep review, as the action the person says yes to. It posts only what the
-# person saw: exit 4, posting nothing, when the PR's head is no longer --head, or the person's own
+# person saw: exit 4, posting nothing, when the PR's head is no longer --head, the payload's
+# sha256 is not --sha256 (the action pins its script, not the files it reads), or the person's own
 # pending review is not the one --seen-pending holds (one appeared, changed or went; with no
 # --seen-pending, any pending review). A pending review that matches is kept beside the payload,
 # deleted (GitHub holds one per person per PR), and put back when the post fails.
 cmd_submit() {
-  local or="${1:-}" n="${2:-}" f="${3:-}" head='' login='' seen='' now cur pend id
-  case "$or" in */*) ;; *) say 'usage: submit <owner/repo> <n> <payload> --head SHA --login L [--seen-pending F]'; return 2 ;; esac
-  case "$n" in ''|*[!0-9]*) say 'usage: submit <owner/repo> <n> <payload> --head SHA --login L [--seen-pending F]'; return 2 ;; esac
-  shift 3 2>/dev/null || { say 'usage: submit <owner/repo> <n> <payload> --head SHA --login L [--seen-pending F]'; return 2; }
+  local or="${1:-}" n="${2:-}" f="${3:-}" head='' login='' seen='' sha='' now cur pend id
+  local u='usage: submit <owner/repo> <n> <payload> --head SHA --login L [--sha256 S] [--seen-pending F]'
+  case "$or" in */*) ;; *) say "$u"; return 2 ;; esac
+  case "$n" in ''|*[!0-9]*) say "$u"; return 2 ;; esac
+  shift 3 2>/dev/null || { say "$u"; return 2; }
   while [ $# -gt 0 ]; do
     case "$1" in
       --head) head="${2:-}"; shift 2 ;;
       --login) login="${2:-}"; shift 2 ;;
+      --sha256) sha="${2:-}"; shift 2 ;;
       --seen-pending) seen="${2:-}"; shift 2 ;;
       *) say "submit: unknown flag $1"; return 2 ;;
     esac
@@ -387,6 +391,11 @@ cmd_submit() {
   [ -n "$head" ] && [ -n "$login" ] || { say 'submit: --head and --login are required'; return 2; }
   [ -f "$f" ] || { say "submit: no payload file $f"; return 2; }
   [ -z "$seen" ] || [ -f "$seen" ] || { say "submit: no file $seen"; return 2; }
+  # --sha256: the payload is the one the cards were built from, byte for byte.
+  if [ -n "$sha" ]; then
+    now=$( { command -v sha256sum >/dev/null 2>&1 && sha256sum "$f" || shasum -a 256 "$f"; } | cut -d' ' -f1)
+    [ "$now" = "$sha" ] || { say "submit: $f changed since the cards were shown: nothing posted; show the cards again"; return 4; }
+  fi
   now=$("$GH" api "repos/$or/pulls/$n" --jq .head.sha) || { say "submit: cannot read the head of $or#$n"; return 3; }
   [ "$now" = "$head" ] || { say "submit: $or#$n moved to $now since the review of $head: nothing posted; review the new head"; return 4; }
   pend="$f.pending.json"

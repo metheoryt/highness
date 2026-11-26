@@ -263,5 +263,11 @@ check 'submit: a failed post is exit 3' "$(sb --head abc --seen-pending "$T/seen
 check 'submit: and the pending review is put back' "$(jq -c '.comments[0].body' "$T/stdin.json")" '"edited"'
 rm -f "$T/post-fails"
 bash "$R" submit o/r 7 "$T/p.json" --head abc 2>/dev/null; check 'submit: no --login is usage' "$?" 2
+echo '[]' >"$T/reviews.json"
+psha=$( { command -v sha256sum >/dev/null 2>&1 && sha256sum "$T/p.json" || shasum -a 256 "$T/p.json"; } | cut -d' ' -f1)
+check 'submit: the payload of that sha256 posts' "$(sb --head abc --sha256 "$psha" | tail -1)" 'rc=0'
+: >"$STUB_LOG"
+check 'submit: a payload changed since the cards is exit 4' "$(sb --head abc --sha256 0000)" 'rc=4'
+check 'submit: and reaches no gh call' "$(wc -l <"$STUB_LOG" | tr -d ' ')" 0
 
 exit $fail

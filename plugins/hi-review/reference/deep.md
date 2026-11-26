@@ -126,12 +126,14 @@ is the review workspace.
 
    ```bash
    bash '<PLUGIN>/lib/review.sh' submit '<REPO>' <N> '<D>/<N>.<EVENT>.json' \
-     --head <HEAD_SHA> --login '<ME>' [--seen-pending '<D>/<N>.pending.seen.json']
+     --head <HEAD_SHA> --login '<ME>' --sha256 <the payload's sha256> \
+     [--seen-pending '<D>/<N>.pending.seen.json']
    ```
 
-   (`--seen-pending` only when that file exists), and store it as the spec's action rule says;
-   keep each printed id. `submit` posts only what the cards showed: the PR's head moved, or the
-   person's pending review is not the one the cards showed → exit 4, nothing posted.
+   (`--seen-pending` only when that file exists; the sha256 from `sha256sum`, or `shasum -a 256`
+   on macOS), and store it as the spec's action rule says; keep each printed id. `submit` posts
+   only what the cards showed: the PR's head moved, the payload changed, or the person's pending
+   review is not the one the cards showed → exit 4, nothing posted.
 9. **The one ask**, then end your turn:
 
    ```
