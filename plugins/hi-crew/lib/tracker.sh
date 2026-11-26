@@ -33,6 +33,15 @@
 #   state_field   YouTrack's state field (default State)
 #   query         an extra clause in the tracker's own query language, ANDed into sections and
 #                 candidates (GitHub: search terms)
+#   sprint        splits the person's todo tickets into the sprint's (group "sprint") and the
+#                 backlog (group "later"); without it every todo ticket is "later".
+#                 Jira: the sprint custom field's id ("customfield_10020"), the active sprint only;
+#                 YouTrack: a query clause the sprint's issues match ("Board {Team}: {current sprint}");
+#                 GitHub: a milestone's title, or "*" for any milestone
+#   handed_off    the person's tickets in a waiting or testing status that are assigned to someone
+#                 else, in group "others": {"field": "<the developer field>"} (Jira: its id,
+#                 customfield_N; YouTrack: its name) or {"last_assignee": true} (Jira only: the
+#                 person was the assignee before the last change of assignee). Not on GitHub
 #
 # Credentials never come from a repo. They sit in the person's own file, top level, keyed by the
 # tracker's host, so a token is only ever sent to the host the person paired it with — a cloned
@@ -72,6 +81,16 @@ TRANSITIONS=$(cfg_json transitions '{}')
 FIELDS=$(cfg_json fields '{}')
 PROJECTS=$(cfg_json projects '[]')
 QUERY=$(cfg query) || QUERY=''
+SPRINT=$(cfg sprint) || SPRINT=''
+HANDOFF=$(cfg_json handed_off 'null')
+bad=$(printf '%s' "$HANDOFF" | jq -r '
+  if . == null then empty
+  elif type != "object" then "tracker.handed_off is not an object"
+  elif (has("field") and has("last_assignee")) then "tracker.handed_off has both field and last_assignee: pick one"
+  elif has("field") then (if (.field | type) == "string" and .field != "" then empty else "tracker.handed_off.field is not a field name" end)
+  elif .last_assignee == true then empty
+  else "tracker.handed_off needs field or last_assignee: true" end')
+[ -z "$bad" ] || die 4 "$bad"
 bad=$(printf '%s' "$STATUSES" | jq -r --arg r "$ROLES" '
   if type != "object" then "tracker.statuses is not an object"
   else [ .[] | select(type != "string" or (. as $v | ($r | split(" ") | index($v)) == null)) ]
@@ -85,7 +104,10 @@ want_role() {
 }
 
 # jq definitions every kind shares: a status name's role from tracker.statuses (case ignored),
-# and a section line from a normalized ticket {key, title, status, role, url, updated}.
+# and a section line from a normalized ticket {key, title, status, role, url, updated}, plus
+# `sprint` (true in the sprint, false not, absent when tracker.sprint is unset) and `handed` (the
+# assignee a handed-off ticket is with). A todo ticket in the sprint is group "sprint", one
+# outside it stays "later" (the backlog); a handed-off ticket is "others", whatever its role.
 JQ_DEFS='
   def rolemap: $statuses | to_entries | map({key: (.key | ascii_downcase), value}) | from_entries;
   def role_of($name; $fallback): rolemap[($name // "" | ascii_downcase)] // $fallback;
@@ -94,9 +116,23 @@ JQ_DEFS='
   def next_of: {todo: "not started", active: "in progress", bounced: "came back: read the latest comment",
                 in_review: "in review", testing: "in testing", waiting: "waiting on someone else",
                 done: "done"}[.] // "status not mapped to a role";
-  def section: {group: (.role | group_of), title: "\(.key) · \(.title) — \(.status)",
-                next: (.role | next_of), url, since: .updated, key, role, status};
+  def tgroup: if .handed then "others" elif .role == "todo" and .sprint == true then "sprint" else (.role | group_of) end;
+  def tnext: (if .role == "todo" and .sprint == true then "in the sprint, not started"
+              elif .role == "todo" and .sprint == false then "in the backlog, not started"
+              else (.role | next_of) end) as $n
+             | if .handed then "\($n), with \(.handed)" else $n end;
+  def section: {group: tgroup, title: "\(.key) · \(.title) — \(.status)",
+                next: tnext, url, since: .updated, key, role, status}
+               + (if .handed then {handed_to: .handed} else {} end);
 '
+# The status names configured for the hand-off roles (waiting, testing), as a JSON list; exit 4
+# when there are none, since a hand-off search would then have nothing to keep to.
+handoff_names() {
+  local n
+  n=$(printf '%s' "$STATUSES" | jq -c '[to_entries[] | select(.value == "waiting" or .value == "testing") | .key]')
+  [ "$n" != '[]' ] || die 4 'tracker.handed_off needs tracker.statuses to name a waiting or testing status'
+  printf '%s' "$n"
+}
 # The status names configured for a role, as a JSON list.
 names_for() { printf '%s' "$STATUSES" | jq -c --arg r "$1" '[to_entries[] | select(.value == $r) | .key]'; }
 # Every role but done that has a status name, as a JSON list of names.

@@ -10,15 +10,16 @@ JQ_JQL='def jqs: "\"" + (gsub("\\\\"; "\\\\") | gsub("\""; "\\\"")) + "\"";
 
 # The tickets a JQL query finds, one {key, fields} per line, up to 500. Cloud's search/jql pages
 # with nextPageToken; where it does not exist (404: Data Center), the v2 search pages with startAt.
-jira_search() { # <jql> <fields csv>
-  local jql=$1 fields=$2 token='' printed=0 n req max=500
+jira_search() { # <jql> <fields csv> [expand]
+  local jql=$1 fields=$2 expand=${3:-} token='' printed=0 n req max=500
   while :; do
-    req=$(jq -nc --arg q "$jql" --arg f "$fields" --arg t "$token" \
-      '{jql: $q, maxResults: 100, fields: ($f | split(","))} + (if $t == "" then {} else {nextPageToken: $t} end)')
+    req=$(jq -nc --arg q "$jql" --arg f "$fields" --arg t "$token" --arg x "$expand" \
+      '{jql: $q, maxResults: 100, fields: ($f | split(","))} + (if $t == "" then {} else {nextPageToken: $t} end)
+       + (if $x == "" then {} else {expand: $x} end)')
     http POST rest/api/3/search/jql "$req"
-    [ "$CODE" = 404 ] && [ "$printed" = 0 ] && { jira_search_v2 "$jql" "$fields"; return; }
+    [ "$CODE" = 404 ] && [ "$printed" = 0 ] && { jira_search_v2 "$jql" "$fields" "$expand"; return; }
     check
-    printf '%s' "$RESP" | jq -c '(.issues // [])[] | {key, fields}'
+    printf '%s' "$RESP" | jq -c '(.issues // [])[] | {key, fields} + (if .changelog then {changelog} else {} end)'
     n=$(printf '%s' "$RESP" | jq -r '(.issues // []) | length')
     printed=$((printed + n))
     token=$(printf '%s' "$RESP" | jq -r '.nextPageToken // empty')
@@ -27,13 +28,14 @@ jira_search() { # <jql> <fields csv>
 }
 
 jira_search_v2() {
-  local jql=$1 fields=$2 at=0 n total req
+  local jql=$1 fields=$2 expand=${3:-} at=0 n total req
   while :; do
-    req=$(jq -nc --arg q "$jql" --arg f "$fields" --argjson at "$at" \
-      '{jql: $q, startAt: $at, maxResults: 100, fields: ($f | split(","))}')
+    req=$(jq -nc --arg q "$jql" --arg f "$fields" --argjson at "$at" --arg x "$expand" \
+      '{jql: $q, startAt: $at, maxResults: 100, fields: ($f | split(","))}
+       + (if $x == "" then {} else {expand: ($x | split(","))} end)')
     http POST rest/api/2/search "$req"
     check
-    printf '%s' "$RESP" | jq -c '(.issues // [])[] | {key, fields}'
+    printf '%s' "$RESP" | jq -c '(.issues // [])[] | {key, fields} + (if .changelog then {changelog} else {} end)'
     n=$(printf '%s' "$RESP" | jq -r '(.issues // []) | length')
     total=$(printf '%s' "$RESP" | jq -r '.total // 0')
     at=$((at + n))
@@ -42,15 +44,18 @@ jira_search_v2() {
 }
 
 # {key, fields} lines → normalized tickets. A status tracker.statuses does not name takes its
-# role from Jira's status category.
+# role from Jira's status category. [sprint field]: add `sprint`, whether the ticket is in an
+# active sprint. A `handed` on the line is kept.
 jira_norm() {
-  jq -c --argjson statuses "$STATUSES" --arg base "$BASE" "$JQ_DEFS"'
+  jq -c --argjson statuses "$STATUSES" --arg base "$BASE" --arg sf "${1:-}" "$JQ_DEFS$JQ_SPRINT"'
     .fields as $f
     | ($f.status.statusCategory.key // "") as $cat
     | {key, title: ($f.summary // ""), status: ($f.status.name // ""),
        role: role_of($f.status.name; ({new: "todo", done: "done"}[$cat] // "active")),
        url: "\($base)/browse/\(.key)", updated: $f.updated, created: $f.created,
-       labels: ($f.labels // [])}'
+       labels: ($f.labels // [])}
+      + (if $sf != "" then {sprint: in_active_sprint($f[$sf])} else {} end)
+      + (if .handed then {handed} else {} end)'
 }
 
 t_status() {
@@ -59,18 +64,65 @@ t_status() {
   printf 'jira %s as %s\n' "$BASE" "$(printf '%s' "$RESP" | jq -r '.displayName // .name // .accountId // "?"')"
 }
 
-t_sections() {
-  load_auth
-  local jql
-  jql=$(jq -rn --argjson p "$PROJECTS" --argjson statuses "$STATUSES" --arg x "$QUERY" "$JQ_JQL"'
-    [ "assignee = currentUser()",
-      (if ($p | length) > 0 then "project in \($p | inlist)" else empty end),
+# A sprint value: an object with a state (Cloud, and Data Center's newer API), or the old
+# toString form "com.atlassian.greenhopper.service.sprint.Sprint@…[id=1,state=ACTIVE,name=…]".
+JQ_SPRINT='def in_active_sprint($v):
+  [($v // []) | if type == "array" then .[] else . end
+   | if type == "object" then ((.state // "") | ascii_downcase) == "active"
+     elif type == "string" then test("[,\\[]state=active[,\\]]"; "i")
+     else false end] | any;'
+
+# The JQL clause that finds the person's own tickets, and the sections' shared clauses.
+jira_open_clauses() {
+  jq -rn --argjson p "$PROJECTS" --argjson statuses "$STATUSES" --arg x "$QUERY" "$JQ_JQL"'
+    [ (if ($p | length) > 0 then "project in \($p | inlist)" else empty end),
       "statusCategory != Done",
       ([$statuses | to_entries[] | select(.value == "done") | .key] | if length > 0 then "status not in \(inlist)" else empty end),
       (if $x != "" then "(\($x))" else empty end)
-    ] | join(" AND ") + " ORDER BY updated DESC"')
-  jira_search "$jql" summary,status,updated,created,labels | jira_norm \
+    ] | join(" AND ")'
+}
+
+t_sections() {
+  if [ -n "$SPRINT" ]; then
+    printf '%s\n' "$SPRINT" | grep -Eq '^customfield_[0-9]+$' \
+      || die 4 "tracker.sprint '$SPRINT' is not a Jira custom field id (customfield_N)"
+  fi
+  local hf='' hl='' hnames='' me='' rest
+  if [ "$HANDOFF" != null ]; then
+    hf=$(printf '%s' "$HANDOFF" | jq -r '.field // empty')
+    hl=$(printf '%s' "$HANDOFF" | jq -r '.last_assignee // empty')
+    if [ -n "$hf" ]; then
+      printf '%s\n' "$hf" | grep -Eq '^customfield_[0-9]+$' \
+        || die 4 "tracker.handed_off.field '$hf' is not a Jira custom field id (customfield_N)"
+    fi
+    hnames=$(handoff_names) || exit $?
+  fi
+  load_auth
+  rest=$(jira_open_clauses)
+  local fields=summary,status,updated,created,labels${SPRINT:+,$SPRINT}
+  jira_search "assignee = currentUser() AND $rest ORDER BY updated DESC" "$fields" | jira_norm "$SPRINT" \
     | jq -c --argjson statuses "$STATUSES" "$JQ_DEFS"' select(.role != "done") | section'
+  [ "$HANDOFF" != null ] || return 0
+
+  # Handed to someone else: the person's by the developer field, or by having been the assignee
+  # before the last change of assignee (JQL's "was" says only "ever", so the changelog decides).
+  local who jql
+  if [ -n "$hf" ]; then who="cf[${hf#customfield_}] = currentUser()"; else who='assignee was currentUser()'; fi
+  jql=$(jq -rn --arg who "$who" --arg rest "$rest" --argjson h "$hnames" "$JQ_JQL"'
+    "\($who) AND (assignee != currentUser() OR assignee is EMPTY) AND status in \($h | inlist) AND \($rest) ORDER BY updated DESC"')
+  if [ -n "$hl" ]; then
+    http GET rest/api/2/myself; check
+    me=$(printf '%s' "$RESP" | jq -c '[.accountId, .key, .name] | map(select(type == "string" and . != ""))')
+    jira_search "$jql" summary,status,updated,created,labels,assignee changelog \
+      | jq -c --argjson me "$me" '
+          [(.changelog.histories // []) | sort_by(.created)[] | .created as $c
+           | .items[]? | select(.fieldId == "assignee" or .field == "assignee") | {c: $c, from}] as $ch
+          | select(($ch | length) > 0 and (($ch | last | .from) as $f | $me | index($f)) != null)
+          | del(.changelog)'
+  else
+    jira_search "$jql" summary,status,updated,created,labels,assignee
+  fi | jq -c '. + {handed: (.fields.assignee.displayName // "no one")}' | jira_norm \
+     | jq -c --argjson statuses "$STATUSES" "$JQ_DEFS"' select(.role != "done") | section'
 }
 
 t_candidates() {

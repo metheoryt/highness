@@ -301,8 +301,21 @@ the team's file (or an overlay); the credential never does:
   gives the fields a move to a role must set, so a transition with required fields goes through.
 - `state_field` (YouTrack, default `State`); `query`: a clause in the tracker's own query language
   that narrows the person's tickets and the candidates (a sprint, a component).
-- In the digest a role becomes a group: `todo` → later, `active` and `bounced` → you, `in_review`,
-  `testing` and `waiting` → others; `done` is left out.
+- `sprint` splits the person's `todo` tickets into the sprint's (group `sprint`) and the backlog
+  (group `later`): on Jira the sprint custom field's id (`"customfield_10020"`; the field id differs
+  per site), and only an active sprint counts; on YouTrack a query clause the sprint's issues match
+  (`"Board {Team}: {current sprint}"`); on GitHub a milestone's title, or `"*"` for any milestone.
+  Without it every `todo` ticket is `later`.
+- `handed_off` keeps the person's tickets that were handed to someone else (moved to testing, say)
+  while they still wait on the person: a second search for their tickets in a `waiting` or
+  `testing` status that another person holds, in group `others`, with `next` naming who has it.
+  `{"field": "customfield_10050"}` finds them by a developer field (on YouTrack, the field's
+  name), `{"last_assignee": true}` by the person having been the assignee before the last change
+  of assignee (Jira only: it reads the changelog). Not on GitHub Issues. `query` cannot do either:
+  it is ANDed into the person's own tickets, so it only narrows.
+- In the digest a role becomes a group: `todo` → later (or sprint, above), `active` and `bounced`
+  → you, `in_review`, `testing` and `waiting` → others, and a handed-off ticket → others; `done` is
+  left out.
 
 The verbs: `status`, `sections` (the person's open tickets, as `agenda.sections` lines),
 `candidates [LABEL]` (ready tickets with the label, for autostart), `read <KEY>` (the ticket as
