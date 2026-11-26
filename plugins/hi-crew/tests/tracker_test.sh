@@ -241,6 +241,20 @@ reset; run sections 2>/dev/null; check "handed_off with both modes → exit 4" "
 team '{"tracker": {"kind": "jira", "base_url": "https://example.atlassian.net", "statuses": {"QA": "testing"}, "handed_off": {"field": "Developer"}}}'
 reset; run sections 2>/dev/null; check "handed_off field not customfield_N on Jira → exit 4" "$?" 4
 team "$JIRA"
+# A failing search is the section's error, never an empty section.
+reset; route POST rest/api/3/search/jql 401 e401.json
+run sections >/dev/null 2>&1; check "sections: a rejected search → exit 2" "$?" 2
+team '{"tracker": {"kind": "jira", "base_url": "https://example.atlassian.net", "statuses": {"QA": "testing"}, "handed_off": {"last_assignee": true}}}'
+reset; route POST rest/api/3/search/jql 401 e401.json
+run sections >/dev/null 2>&1; check "sections with handed_off: a rejected first search → exit 2" "$?" 2
+team '{"tracker": {"kind": "youtrack", "base_url": "https://youtrack.example.com", "sprint": "Board X: {current sprint}"}}'
+person '{"trackers": {"youtrack.example.com": {"token_env": "HI_TEST_TOKEN"}}}'
+body ytok.json <<'EOF'
+[]
+EOF
+reset; route GET api/issues 401 e401.json 'current sprint'; route GET api/issues 200 ytok.json
+run sections >/dev/null 2>&1; check "youtrack: a rejected sprint search → exit 2" "$?" 2
+person "$CRED"; team "$JIRA"
 
 # Data Center has no search/jql: the v2 search, paged by startAt.
 body search2.json <<'EOF'

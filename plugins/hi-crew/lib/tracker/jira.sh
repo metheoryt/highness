@@ -101,7 +101,7 @@ t_sections() {
   rest=$(jira_open_clauses)
   local fields=summary,status,updated,created,labels${SPRINT:+,$SPRINT}
   jira_search "assignee = currentUser() AND $rest ORDER BY updated DESC" "$fields" | jira_norm "$SPRINT" \
-    | jq -c --argjson statuses "$STATUSES" "$JQ_DEFS"' select(.role != "done") | section'
+    | jq -c --argjson statuses "$STATUSES" "$JQ_DEFS"' select(.role != "done") | section' || exit $?
   [ "$HANDOFF" != null ] || return 0
 
   # Handed to someone else: the person's by the developer field, or by having been the assignee
