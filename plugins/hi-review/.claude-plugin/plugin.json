@@ -1,5 +1,5 @@
 {
   "name": "hi-review",
-  "description": "Review a GitHub pull request and submit it as one review: a read-only reviewer subagent drafts the findings, a second pass tries to break each one, one question picks the verdict. Or a brief: 2-4 items for the person to decide, picked by their own review lens, when a review bot already finds the bugs.",
+  "description": "Review a GitHub pull request and submit it as one review: a read-only reviewer subagent drafts the findings, a second pass tries to break each one, one question picks the verdict. Or a brief: 2-4 items for the person to decide, picked by their own review lens, when a review bot already finds the bugs, with at most three verified defects it missed, set apart.",
   "license": "MIT"
 }

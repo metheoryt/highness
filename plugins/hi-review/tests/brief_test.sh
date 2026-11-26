@@ -94,13 +94,16 @@ bash "$B" log --pr p#1 --item 1 --kind lens --outcome skipped --title a
 bash "$B" log --pr p#1 --item 1 --kind lens --outcome ticket
 bash "$B" log --pr p#1 --item 2 --kind bold --outcome not_interesting
 bash "$B" log --pr p#2 --item 0 --kind empty --outcome skipped
+bash "$B" log --pr p#2 --item 1 --kind finding --outcome change --title f
 bash "$B" log --pr p#2 --item 1 --kind nope --outcome ticket 2>/dev/null; check 'unknown kind: exit 2' "$?" 2
 bash "$B" log --pr p#2 --item 1 --kind lens --outcome meh 2>/dev/null; check 'unknown outcome: exit 2' "$?" 2
-check 'journal has four lines' "$(wc -l <"$(bash "$B" journal)" | tr -d ' ')" 4
+check 'journal has five lines' "$(wc -l <"$(bash "$B" journal)" | tr -d ' ')" 5
 s=$(bash "$B" stats)
 has 'stats: PRs and items' "$s" 'briefs: 2 PRs, 2 items, 1 empty'
 has 'stats: the last outcome wins' "$s" 'led somewhere: 1 of 2 (50%)'
 has 'stats: by kind' "$s" 'lens: ticket 1'
+has 'stats: findings apart' "$s" 'findings: 1, acted on: 1 of 1 (100%)'
+has 'stats: findings by kind' "$s" 'finding: change 1'
 has 'stats --since filters' "$(bash "$B" stats --since 2999-01-01)" 'briefs: 0 PRs'
 
 exit $fail

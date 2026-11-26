@@ -32,7 +32,9 @@
 # briefs.jsonl: {at, pr, head, item, kind, outcome, title, note}. It stays on the machine.
 #   kind     lens (picked by the lens) · outside (picked outside it, so the lens does not narrow)
 #            · clash (where people's reviews agree or disagree) · bold (one change that closes
-#            several past problems) · empty (the brief had nothing for the person; item 0)
+#            several past problems) · finding (a defect the agent found that no one raised
+#            before, verified by a second pass; counted apart from the items) · empty (the brief
+#            had nothing for the person; item 0)
 #   outcome  discussed (became a review comment or a talk) · ticket · change (the author changed
 #            the code) · skipped (no reaction) · not_interesting (the person said so)
 #
@@ -45,7 +47,7 @@ CONFIG="$HERE/config.sh"
 GH="${HI_REVIEW_GH:-gh}"
 STATE="${HIGHNESS_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/highness}/review"
 JOURNAL="$STATE/briefs.jsonl"
-KINDS='lens outside clash bold empty'
+KINDS='lens outside clash bold finding empty'
 OUTCOMES='discussed ticket change skipped not_interesting'
 
 say() { printf 'brief.sh: %s\n' "$*" >&2; }
@@ -199,11 +201,14 @@ cmd_stats() {
   # The last word on an item wins: an outcome logged again (skipped, then a ticket) replaces it.
   jq -rs --arg since "$since" '
     map(select(.at >= $since)) | group_by([.pr, .item]) | map(last) as $all
-    | ($all | map(select(.kind != "empty"))) as $items
-    | ($items | map(select(.outcome == "discussed" or .outcome == "ticket" or .outcome == "change")) | length) as $acted
+    | def acted: map(select(.outcome == "discussed" or .outcome == "ticket" or .outcome == "change")) | length;
+      def share($n; $of): "\($n) of \($of)\(if $of > 0 then " (\($n * 100 / $of | floor)%)" else "" end)";
+      ($all | map(select(.kind != "empty" and .kind != "finding"))) as $items
+    | ($all | map(select(.kind == "finding"))) as $found
     | "briefs: \($all | map(.pr) | unique | length) PRs, \($items | length) items, \($all | map(select(.kind == "empty")) | length) empty",
-      "led somewhere: \($acted) of \($items | length)\(if ($items | length) > 0 then " (\($acted * 100 / ($items | length) | floor)%)" else "" end)",
-      ($items | group_by(.kind)[] | "\(.[0].kind): " + (group_by(.outcome) | map("\(.[0].outcome) \(length)") | join(", ")))
+      "led somewhere: \(share($items | acted; $items | length))",
+      (if ($found | length) > 0 then "findings: \($found | length), acted on: \(share($found | acted; $found | length))" else empty end),
+      ($all | map(select(.kind != "empty")) | group_by(.kind)[] | "\(.[0].kind): " + (group_by(.outcome) | map("\(.[0].outcome) \(length)") | join(", ")))
   ' "$JOURNAL"
 }
 

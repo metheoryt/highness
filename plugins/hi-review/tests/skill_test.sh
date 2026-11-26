@@ -66,7 +66,9 @@ has reference/session.md 'only the chosen review is written' 'Nothing reaches Gi
 
 S=skills/brief/SKILL.md
 has $S 'brief posts nothing' 'This skill posts nothing'
-has $S 'not a bug hunt' 'Never a bug'
+has $S 'brief defects are verified' 'Nothing reaches the person unverified'
+has $S 'brief defects come after the items' 'after the items and set apart'
+has $S 'a defect is never an item' 'never an item: defects go to step 5'
 has $S 'view before the question' 'your own view and recommendation'
 has $S 'context from zero' 'Context from zero'
 has $S 'bold needs two citations' 'Without two citations, no'
