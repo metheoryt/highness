@@ -208,7 +208,7 @@ th_agenda() {
     jq -c --arg ids "$closed" '($ids | split("\n")) as $ids | .threads[] | select(.id | IN($ids[])) | {
       group: "done",
       title: (.title + (if (.ticket // "") != "" then " (" + .ticket + ")" else "" end)),
-      next: (.history[-1].note // ""), status, url: (.pr // ""), since: .updated}' "$LEDGER"
+      next: (.history[-1].note // ""), id, status, url: (.pr // ""), since: .updated}' "$LEDGER"
   fi
   th_list --project "$proj" --json | jq -c --argjson now "$(date +%s)" --argjson days "$days" '{
     group: (if .waits_on == "person" or .status == "paused" then "you"
@@ -216,7 +216,7 @@ th_agenda() {
             elif .status == "waiting" then "others" else "you" end),
     title: (.title + (if (.ticket // "") != "" then " (" + .ticket + ")" else "" end)),
     next: ((.next // "") + (if (.open_items | length) > 0 then " [+\(.open_items | length) open]" else "" end)),
-    open_items, status, waits_on,
+    id, open_items, status, waits_on,
     live: ([.check.links[]? | "\(.id) \(.state)"] | join("; ")),
     stale: ((.pr // "") == "" and (.ticket // "") == "" and (.updated_epoch // 0) < ($now - $days * 86400)),
     url: (.pr // ""), since: .updated,
