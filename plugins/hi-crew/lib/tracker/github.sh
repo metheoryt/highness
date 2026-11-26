@@ -38,7 +38,8 @@ gh_norm() {
     | {key: "\($r)-\(.number)", title: (.title // ""),
        status: (if $s == "CLOSED" then "closed" else ($l // "open") end),
        role: (if $s == "CLOSED" then "done" elif $l then role_of($l; "todo") else "todo" end),
-       url, updated: .updatedAt, created: .createdAt, labels: [.labels[]?.name]}'
+       url, updated: .updatedAt, created: .createdAt, labels: [.labels[]?.name]}
+      + (if has("milestone") then {milestone: (.milestone.title // null)} else {} end)'
 }
 
 t_status() {
@@ -48,10 +49,19 @@ t_status() {
   printf 'github %s as %s\n' "$REPO" "$who"
 }
 
+# tracker.sprint: the milestone a todo issue must carry to count as the sprint's ("*": any).
 t_sections() {
+  [ "$HANDOFF" = null ] || die 4 'tracker.handed_off is not supported on GitHub Issues'
+  if [ -z "$SPRINT" ]; then
+    gh_json issue list -R "$REPO" --assignee @me --state open --limit 200 ${QUERY:+--search "$QUERY"} \
+        --json number,title,url,labels,state,updatedAt,createdAt \
+      | gh_norm | jq -c --argjson statuses "$STATUSES" "$JQ_DEFS"' select(.role != "done") | section'
+    return
+  fi
   gh_json issue list -R "$REPO" --assignee @me --state open --limit 200 ${QUERY:+--search "$QUERY"} \
-      --json number,title,url,labels,state,updatedAt,createdAt \
-    | gh_norm | jq -c --argjson statuses "$STATUSES" "$JQ_DEFS"' select(.role != "done") | section'
+      --json number,title,url,labels,state,updatedAt,createdAt,milestone \
+    | gh_norm | jq -c --argjson statuses "$STATUSES" --arg ms "$SPRINT" "$JQ_DEFS"'
+      select(.role != "done") | . + {sprint: (.milestone != null and ($ms == "*" or .milestone == $ms))} | section'
 }
 
 t_candidates() {

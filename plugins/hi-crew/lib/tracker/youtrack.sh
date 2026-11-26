@@ -29,7 +29,7 @@ yt_norm() {
     | {key: .idReadable, title: (.summary // ""), status: $st,
        role: role_of($st; (if .resolved then "done" else "active" end)),
        url: "\($base)/issue/\(.idReadable)", updated: (.updated | ms2iso), created: (.created | ms2iso),
-       labels: [.tags[]?.name]}'
+       labels: [.tags[]?.name]} + (if .handed then {handed} else {} end)'
 }
 
 yt_projects() { printf '%s' "$PROJECTS" | jq -r 'map(if test(" ") then "{\(.)}" else . end) | if length > 0 then "project: " + join(", ") else empty end'; }
@@ -41,10 +41,30 @@ t_status() {
 }
 
 t_sections() {
+  local hf='' hnames='' states q mine sprint='null'
+  if [ "$HANDOFF" != null ]; then
+    hf=$(printf '%s' "$HANDOFF" | jq -r '.field // empty')
+    [ -n "$hf" ] || die 4 'tracker.handed_off.last_assignee is Jira only: on YouTrack name the developer field (handed_off.field)'
+    hnames=$(handoff_names) || exit $?
+  fi
   load_auth
-  local q
   q="for: me #Unresolved $(yt_projects)${QUERY:+ ($QUERY)} sort by: updated desc"
-  yt_search "$q" | yt_norm | jq -c --argjson statuses "$STATUSES" "$JQ_DEFS"' select(.role != "done") | section'
+  mine=$(yt_search "$q") || exit $?
+  # The sprint: the keys of the person's issues that also match tracker.sprint's clause.
+  if [ -n "$SPRINT" ]; then
+    sprint=$(yt_search "for: me #Unresolved $(yt_projects)${QUERY:+ ($QUERY)} ($SPRINT)" | jq -c '[.[].idReadable]') || exit $?
+  fi
+  printf '%s' "$mine" | yt_norm | jq -c --argjson statuses "$STATUSES" --argjson sp "$sprint" "$JQ_DEFS"'
+    select(.role != "done")
+    | if $sp == null then . else . + {sprint: (.key as $k | $sp | index($k) != null)} end | section'
+  [ -n "$hf" ] || return 0
+  states=$(printf '%s' "$hnames" | jq -r --arg sf "$SF" '
+    def br: if test(" ") then "{\(.)}" else . end;
+    "\($sf | br): " + (map(br) | join(", "))')
+  q="$(yt_q "$hf"): me Assignee: -me #Unresolved $states $(yt_projects)${QUERY:+ ($QUERY)} sort by: updated desc"
+  yt_search "$q" \
+    | jq -c '.[] | . + {handed: ([.customFields[]? | select(.name == "Assignee") | .value.fullName // .value.login][0] // "no one")}' \
+    | yt_norm | jq -c --argjson statuses "$STATUSES" "$JQ_DEFS"' select(.role != "done") | section'
 }
 
 t_candidates() {

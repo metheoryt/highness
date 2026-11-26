@@ -25,7 +25,8 @@ this skill" printed above, two levels up.
    **The team's sections**: `bash "$C" sections` — what the team set under `agenda.sections` in
    `.claude/highness.json` (its tracker and forge: the person's tickets, PRs, reviews waiting),
    one JSON object per line: `section`, `group` (`you` waits on the person, `others` waits on
-   someone else, `later` not started yet, `done`), `title`, `next`, `url`, `since`; or `section` and `error` when that
+   someone else, `sprint` not started but in the current sprint, `later` not started yet, the
+   backlog, `done`), `title`, `next`, `url`, `since`; or `section` and `error` when that
    source failed (say so in one line, do not guess its content). A ticket the workers already
    carry shows once, under the worker.
    **The forge sections** come last in the same output, built in (README, Forge sections): `my
@@ -111,8 +112,9 @@ One short list, most urgent first, each item with its next step in words:
    open items as a short sublist; no ids, paths or session ids unless asked. The `stale` threads
    only as one count ("and 37 old notes with no PR or ticket"), with an offer to go through them.
 2. **Running** — what each worker is doing, from its last report; then the sections' `others`
-   items (waiting on a reviewer, a bot, a teammate), one line each. The `later` items only as a
-   count per section ("and 12 not started"), listed when the person asks.
+   items (waiting on a reviewer, a bot, a teammate, or a ticket handed to a tester), one line each.
+   Then the `sprint` items, one line each: what the person picks up next. The `later` items (the
+   backlog) only as a count per section ("and 12 in the backlog"), listed when the person asks.
 3. **Done since last time** — merged or closed, and reports whose subject starts `already done:`
    (the worker found the work landed and opened no PR; show its evidence); propose closing the
    facts. The sections' `done` items go here too, the threads the check just closed among them.
