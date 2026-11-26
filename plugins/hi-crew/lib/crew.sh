@@ -101,7 +101,8 @@
 #                                     (question | decision_gate | escalation), run id, dispatch id,
 #                                     created_at, first line. A question or gate is open while no
 #                                     message carries its id as thread_id and its dispatch is live
-#                                     (Orca closes the question of a settled or stopped worker); an
+#                                     (Orca closes the question of a settled or stopped worker;
+#                                     its "Decide it yourself" notice is not an answer); an
 #                                     escalation, while its dispatch has sent no later worker_done.
 #                                     Orca's "Worker stopped without reporting" (the worker only
 #                                     ended a turn) folds into the Dispatch's open ask, and with no
@@ -584,12 +585,12 @@ choice_gaps() {
   # Every Run hi-crew made, not only the open tickets' ones: a closed ticket's gap still counts.
   m=$(inbox "$(jq -Rsc 'split("\n") | map(select(. != ""))' "$DIR/run")") || return 1
   # Both lists grow with every ask ever answered: through pipes, never as arguments.
-  printf '%s' "$m" | jq -r --slurpfile keys <(printf '%s' "$keys") --slurpfile seen <(printf '%s' "$seen") '
+  printf '%s' "$m" | jq -r --slurpfile keys <(printf '%s' "$keys") --slurpfile seen <(printf '%s' "$seen") "$JQ_ANSWER"'
     $keys[0] as $keys | $seen[0] as $seen
     | . as $m
     | $m[] | select(.type == "question" or .type == "decision_gate")
     | . as $q
-    | ([ $m[] | select(.thread_id == $q.id and .id != $q.id) | .created_at ] | min) as $ans
+    | ([ $m[] | select(answers($q)) | .created_at ] | min) as $ans
     | select($ans != null and ($seen | index($q.id) | not))
     | [ ($keys[$q.dispatch] // "-"), $q.id, $ans, (($q.body // $q.subject // "") | split("\n")[0]) ] | @tsv'
 }
@@ -657,6 +658,17 @@ cmd_runs() {
   cmd_list | jq -r '.run // empty' | sort -u
 }
 
+# jq defs for what answers an ask. Orca's own notice on an ask whose coordinator's turn ended
+# without answering it ("Your coordinator stopped without answering…", "No one coordinates
+# Run…", "Your question was removed…") is threaded to the ask like a reply, but answers nothing:
+# the person's answer is still to come, and Orca still delivers it (highness#155). It has a
+# reply's shape (a status from the Run), so only its fixed closing sentence tells it apart.
+#   orca_release        the message is that notice
+#   answers($q)         the message answers ask $q: threaded to it, not it, not that notice
+JQ_ANSWER='def orca_release: (.body // "") | test("Decide it yourself and say what you chose when you report");
+  def answers($q): .thread_id == $q.id and .id != $q.id and (orca_release | not);
+'
+
 inbox() { # [<runs json array>] (default: the open tickets' Runs)
   local runs=${1:-}
   [ -n "$runs" ] || runs=$(cmd_runs | jq -Rsc 'split("\n") | map(select(. != ""))')
@@ -673,10 +685,11 @@ cmd_asks() {
   # The Dispatches `resume` replaced: their escalation (the worker lost) is handled.
   resumed=$(cmd_list | jq -sc 'map(.resumed // []) | add // []') || resumed='[]'
   # Each row: id, type, run, dispatch, created_at, stopReason, terminal handle, first line.
-  rows=$(printf '%s' "$m" | jq -r --slurpfile resumed <(printf '%s' "$resumed") '
+  rows=$(printf '%s' "$m" | jq -r --slurpfile resumed <(printf '%s' "$resumed") "$JQ_ANSWER"'
     $resumed[0] as $resumed
     | . as $m
-    | [ $m[] | select(.thread_id != null and .thread_id != .id) | .thread_id ] as $answered
+    | [ $m[] | select(.thread_id != null and .thread_id != .id and (orca_release | not))
+             | .thread_id ] as $answered
     | $m[]
     | select(.type == "question" or .type == "decision_gate" or .type == "escalation")
     | select(.id as $id | $answered | index($id) | not)
@@ -2333,11 +2346,11 @@ cmd_resume() {
   # The inbox goes through a file: as an argument it can pass the kernel's limit on one.
   m=$(mktemp "${TMPDIR:-/tmp}/hi-crew-inbox.XXXXXX") || die 'resume: no temp file'
   inbox >"$m" 2>/dev/null && [ -s "$m" ] || echo '[]' >"$m"
-  asked=$(cmd_stranded 2>/dev/null | jq -rs --arg k "$key" --slurpfile mm "$m" '
+  asked=$(cmd_stranded 2>/dev/null | jq -rs --arg k "$key" --slurpfile mm "$m" "$JQ_ANSWER"'
     $mm[0] as $m
     | map(select(.key == $k)) | unique_by(.ask)[]
     | (if .what == "unsent" then .body
-       elif .what == "unheard" then (.ask as $a | [$m[] | select(.thread_id == $a and .id != $a)] | min_by(.created_at) | .body // "")
+       elif .what == "unheard" then (.ask as $a | [$m[] | select(answers({id: $a}))] | min_by(.created_at) | .body // "")
        else "" end) as $ans
     | "- It asked: \(.question)\n"
       + (if $ans != "" then "  The person answered (it never reached that worker; act on it):\n\n"
