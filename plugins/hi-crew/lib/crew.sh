@@ -244,7 +244,11 @@
 #                                     JSON object per line: section, group (you | others | later | done),
 #                                     title, next, url, since; or section and error. See cmd_sections.
 #                                     Then the built-in forge sections (lib/forge.sh): the person's
-#                                     PRs no worker owns, and the reviews waiting on them
+#                                     PRs no worker owns, and the reviews waiting on them. Each
+#                                     item carries "mark": "new" | "changed" when it moved since the
+#                                     last read (none on the first read). See sections_mark.
+#   crew.sh sections --ack            take the last `sections` pass as read: the next one marks
+#                                     against it
 #   crew.sh orphaned                  open tickets whose workspace an Orca restart left with only
 #                                     orphaned terminals and no live agent (hi's orca.sh orphaned
 #                                     and agents), TSV: key, workspace, dispatch, state (live: Orca
@@ -1449,8 +1453,46 @@ ws_sync() { # <facts json> <pr state json>
 # status, waits_on and resume besides the usual fields), when the journal exists.
 # Out: the same objects with "section" added; other lines are skipped. A section whose command fails
 # gives one line with "error" set instead, so a broken source shows rather than vanishes.
+# Then each item is marked against what the person last read (sections_mark).
 cmd_sections() {
   need_jq
+  if [ "${1:-}" = --ack ]; then
+    [ -f "$DIR/agenda/sections.read" ] && mv -f "$DIR/agenda/sections.read" "$DIR/agenda/sections.seen"
+    return 0
+  fi
+  sections_raw | sections_mark
+}
+
+# sections_mark: the section lines with "mark": "new" (not in the last read) or "changed" (its
+# group, next, live, status or waits_on differ from the last read). An item is known by its
+# section and its id (a thread's), else its url, else its title. The last read is
+# agenda/sections.seen, which `sections --ack` writes from this pass's agenda/sections.read once
+# the person has been shown it, so marks run from one read to the next. With no last read
+# (the first one) nothing is marked: every item would be. A section that failed this pass keeps
+# its items of the last read, so they do not all come back new once it recovers.
+SECTION_ID='def nz: if . == null or . == "" then empty else . end;
+  def sid: (.section // "") + "\u0001" + ([(.id | nz), (.url | nz), (.title // "")][0] | tostring);
+  def sfp: [.group, .next, .live, .status, .waits_on] | tojson;'
+sections_mark() {
+  local d="$DIR/agenda" seen all
+  mkdir -p "$d" 2>/dev/null
+  seen="$d/sections.seen"; [ -f "$seen" ] || seen=''
+  all=$(jq -c 'select(type == "object")' 2>/dev/null) || all=''
+  printf '%s\n' "$all" | jq -cs --slurpfile s "${seen:-/dev/null}" "$SECTION_ID"'
+    ($s[0] // null) as $s
+    | ([.[] | select(.error) | .section]) as $failed
+    | (if $s == null then {} else $s | with_entries(select(.key | split("\u0001")[0] | IN($failed[]))) end)
+      + ([.[] | select(.error | not) | {key: sid, value: sfp}] | from_entries)' \
+    >"$d/sections.read.tmp" 2>/dev/null && mv -f "$d/sections.read.tmp" "$d/sections.read"
+  printf '%s\n' "$all" | jq -c --slurpfile s "${seen:-/dev/null}" "$SECTION_ID"'
+    ($s[0] // null) as $s
+    | if .error or $s == null then .
+      elif $s[sid] == null then . + {mark: "new"}
+      elif $s[sid] != sfp then . + {mark: "changed"}
+      else . end'
+}
+
+sections_raw() {
   local root secs n i name cmd line out rc team=''
   root=$(derive_root)
   # The person's open work threads from the hi-threads journal, when that plugin keeps one here.
@@ -2633,7 +2675,7 @@ case "$sub" in
   events) cmd_events "$@" ;;
   prompts) cmd_prompts ;;
   states) cmd_states ;;
-  sections) cmd_sections ;;
+  sections) cmd_sections "$@" ;;
   orca) orca_cmd ;;
   orphaned) cmd_orphaned ;;
   setup-status) cmd_setup_status ;;

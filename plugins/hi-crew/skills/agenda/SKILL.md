@@ -46,6 +46,9 @@ this skill" printed above, two levels up.
    `stale` is a thread with no PR and no ticket left untouched for days: nothing can check it.
    A thread whose PR or ticket a team section also lists shows once, by the section's line (it is
    live), with the thread's open items under it.
+   **What moved since the last read**: an item with `mark` `new` (not there last time) or
+   `changed` (its next step, group or state moved) is what moved since the person last read the
+   agenda; no `mark` is as they last saw it. The first read marks nothing.
    **A held autostart**: `bash "$C" held` — one line, "autostart held <N> h: <reason>", when
    autostart has started nothing for over an hour because every pass stopped short (the budget,
    no coordinator, no root); nothing otherwise. A hold starts no worker and makes no event, so this
@@ -79,6 +82,10 @@ this skill" printed above, two levels up.
    **Workers on a dialog**: `bash "$C" prompts` (TSV: key, run, since, tool, kind — `permission`, `input` for an MCP server's input dialog, or `question` for a question form). Such a
    worker waits for someone to click in its terminal and sends no question, so nothing else shows
    it; the person answers it there (`$O terminal list`, or the worker's workspace in Orca).
+   **Workers an Orca restart orphaned**: `bash "$C" orphaned` (TSV: key, workspace, dispatch,
+   state). Orca left the worker's workspace with only orphaned terminals and no agent, so nothing
+   there can act. `live` (Orca still counts it running) shows nowhere else: the worker just went
+   quiet. A `lost` one is also an escalation in `asks`: show it once, by that line.
 3. **Last reports**: `bash "$C" reports` — the latest `worker_done` per dispatch. A report no
    session handled lands here; record what it names (`pr`, `head`).
 4. **What the watch saw**: `bash "$C" events` — PRs merged or closed (a ticket's own, or one it
@@ -105,7 +112,8 @@ One short list, most urgent first, each item with its next step in words:
 
 1. **Waiting on you** — a held autostart's line as it came (its reason says what to fix: the
    budget, a coordinator session to open; for the budget, with the account that has room, if any), open questions and gates (with the worker's proposals), workers on a
-   dialog (since when, which tool), stopped workers, stranded answers ("resume it?"), people's new comments on a
+   dialog (since when, which tool), stopped workers, workers an Orca restart orphaned ("<KEY>
+   <title>: an Orca restart left it no terminal — resume it?"), stranded answers ("resume it?"), people's new comments on a
    PR, PRs whose review loop finished and that wait for a person to resolve threads and merge;
    then the sections' `you` items, by section. A thread left unfinished (`paused`) carries its
    open items as a short sublist; no ids, paths or session ids unless asked. The `stale` threads
@@ -117,7 +125,12 @@ One short list, most urgent first, each item with its next step in words:
    (the worker found the work landed and opened no PR; show its evidence); propose closing the
    facts. The sections' `done` items go here too, the threads the check just closed among them.
 
-Then `bash "$C" events --ack`, propose where to start, and go one topic at a time.
+Within each section, the items with a `mark` come first, each tagged with one word (`new`,
+`changed`), so a long list reads from the top of what moved. A count says how many moved ("and 12
+not started, 3 new"). No other words go to the marks.
+
+Then `bash "$C" events --ack` and `bash "$C" sections --ack`: the person has read both. The next
+agenda marks what moved since this one. Then propose where to start, and go one topic at a time.
 
 ## 3. Work through it
 
@@ -148,6 +161,9 @@ and say in one line that Orca now wakes this session, not the other one, for tha
   look at that pane (a dialog?) before anything else, then run `resume` again. It refuses when the workspace is gone or the PR is merged or closed:
   say so, and offer `/hi-crew:start` for a fresh attempt or closing the facts. Never Orca's
   `--retry-of` for this: it needs the old Task, whose spec cannot carry the note.
+- **A worker an Orca restart orphaned** (`orphaned`): offer "resume it?" the same way. On a yes,
+  run `bash "$C" resume <KEY>`. It takes up a worker that Orca still counts running too, because
+  its workspace has no agent left to act on that Dispatch. Its stderr says so.
 - **A person's comment on a PR**: show it with your read; on the user's decision, send the worker a
   round: `$O orchestration send --to dispatch:<dispatch> --subject … --body …`, saying what to
   change and how to reply, and only that: the worker has its spec and chat (`hi-crew:start`,
