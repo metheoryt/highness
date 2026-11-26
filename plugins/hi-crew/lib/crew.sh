@@ -244,7 +244,17 @@
 #                                     JSON object per line: section, group (you | others | sprint | later | done),
 #                                     title, next, url, since; or section and error. See cmd_sections.
 #                                     Then the built-in forge sections (lib/forge.sh): the person's
-#                                     PRs no worker owns, and the reviews waiting on them
+#                                     PRs no worker owns, and the reviews waiting on them. Each
+#                                     item carries "mark": "new" | "changed" when it moved since the
+#                                     last read (none on the first read). See sections_mark.
+#   crew.sh sections --ack            take the last `sections` pass as read: the next one marks
+#                                     against it
+#   crew.sh orphaned                  open tickets whose workspace an Orca restart left with only
+#                                     orphaned terminals and no live agent (hi's orca.sh orphaned
+#                                     and agents), TSV: key, workspace, dispatch, state (live: Orca
+#                                     still counts the worker running, so nothing else shows it;
+#                                     done | lost: settled). `resume <KEY>` takes it up. No hi
+#                                     plugin or no Orca: nothing
 #   crew.sh orca                      the Orca executable this host should use
 #   crew.sh setup-status              what hi-crew needs on this machine and from this person, one
 #                                     row per item, name<TAB>state<TAB>detail (/hi:setup renders them):
@@ -307,6 +317,7 @@ DIR="${HIGHNESS_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/highness}/crew"
 # hi's wt.sh (the hi plugin beside this one): the board column and a workspace's removal go
 # through it, so its rules hold here too (a hand move on the board wins; nothing unsafe is removed).
 WT_SH="${HI_WT_SH:-$HERE/../../hi/lib/wt.sh}"
+ORCA_SH="${HI_ORCA_SH:-$HERE/../../hi/lib/orca.sh}"
 # The facts' `workspace` as a path (jq). /hi-crew:start records what worker-start answered,
 # Orca's worktree id "<repo id>::<path>"; autostart records the bare path. Both read as the path.
 WS_PATH='.workspace // empty | sub("^[^/]*::"; "")'
@@ -329,6 +340,20 @@ orca_cmd() {
   if [ "$(uname -s)" = Linux ] && [ -z "${ORCA_TERMINAL_HANDLE:-}" ]; then echo orca-ide; return; fi
   echo orca
 }
+
+# Orca's JSON with every lone UTF-16 surrogate escape made U+FFFD (the same filter as hi's
+# orca.sh). A terminal's `preview` is its output cut to length, and the cut can split an emoji;
+# jq 1.8 then rejects the whole answer, so a terminal read as closed, a lost pane as gone and an
+# open dialog as none. Valid pairs are set aside under \001 first. ERE only (BSD sed).
+unsurrogate() {
+  local p; p=$(printf '\001')
+  sed -E "s/\\\\u([dD][89abAB][0-9a-fA-F]{2})\\\\u([dD][c-fC-F][0-9a-fA-F]{2})/${p}\1${p}\2/g
+s/\\\\u[dD][89a-fA-F][0-9a-fA-F]{2}/\\\\ufffd/g
+s/${p}([0-9a-fA-F]{4})${p}([0-9a-fA-F]{4})/\\\\u\1\\\\u\2/g"
+}
+
+# orca_terminal <args…>: an Orca `terminal` subcommand's JSON, made parseable (unsurrogate).
+orca_terminal() { "$(orca_cmd)" terminal "$@" --json 2>/dev/null </dev/null | unsurrogate; }
 
 cmd_record() {
   [ $# -eq 2 ] || die 'usage: record <KEY> <json>'
@@ -727,7 +752,7 @@ cmd_asks() {
 # closed) or no answer is not proven open, so a notice that depends on it stays listed.
 terminal_open() {
   [ -n "$1" ] || return 1
-  "$(orca_cmd)" terminal show --terminal "$1" --json 2>/dev/null | jq -e '.ok == true' >/dev/null 2>&1
+  orca_terminal show --terminal "$1" | jq -e '.ok == true' >/dev/null 2>&1
 }
 
 # Whether a worker Dispatch can still take an answer. Orca closes a question whose Dispatch is
@@ -998,9 +1023,9 @@ ws_policy_waits() { # <repo selector> <workspace path>
 # Whether the runner's command shows in one of the workspace's terminals: Orca types it there.
 ws_runner_typed() { # <workspace path> <runner>
   local h
-  for h in $("$(orca_cmd)" terminal list --worktree "path:$1" --json 2>/dev/null \
+  for h in $(orca_terminal list --worktree "path:$1" \
     | jq -r '.result.terminals[]?.handle // empty' 2>/dev/null); do
-    "$(orca_cmd)" terminal read --terminal "$h" --json 2>/dev/null \
+    orca_terminal read --terminal "$h" \
       | jq -r '.result.terminal.tail[]? // empty' 2>/dev/null | grep -Fq "$2" && return 0
   done
   return 1
@@ -1428,8 +1453,46 @@ ws_sync() { # <facts json> <pr state json>
 # status, waits_on and resume besides the usual fields), when the journal exists.
 # Out: the same objects with "section" added; other lines are skipped. A section whose command fails
 # gives one line with "error" set instead, so a broken source shows rather than vanishes.
+# Then each item is marked against what the person last read (sections_mark).
 cmd_sections() {
   need_jq
+  if [ "${1:-}" = --ack ]; then
+    [ -f "$DIR/agenda/sections.read" ] && mv -f "$DIR/agenda/sections.read" "$DIR/agenda/sections.seen"
+    return 0
+  fi
+  sections_raw | sections_mark
+}
+
+# sections_mark: the section lines with "mark": "new" (not in the last read) or "changed" (its
+# group, next, live, status or waits_on differ from the last read). An item is known by its
+# section and its id (a thread's), else its url, else its title. The last read is
+# agenda/sections.seen, which `sections --ack` writes from this pass's agenda/sections.read once
+# the person has been shown it, so marks run from one read to the next. With no last read
+# (the first one) nothing is marked: every item would be. A section that failed this pass keeps
+# its items of the last read, so they do not all come back new once it recovers.
+SECTION_ID='def nz: if . == null or . == "" then empty else . end;
+  def sid: (.section // "") + "\u0001" + ([(.id | nz), (.url | nz), (.title // "")][0] | tostring);
+  def sfp: [.group, .next, .live, .status, .waits_on] | tojson;'
+sections_mark() {
+  local d="$DIR/agenda" seen all
+  mkdir -p "$d" 2>/dev/null
+  seen="$d/sections.seen"; [ -f "$seen" ] || seen=''
+  all=$(jq -c 'select(type == "object")' 2>/dev/null) || all=''
+  printf '%s\n' "$all" | jq -cs --slurpfile s "${seen:-/dev/null}" "$SECTION_ID"'
+    ($s[0] // null) as $s
+    | ([.[] | select(.error) | .section]) as $failed
+    | (if $s == null then {} else $s | with_entries(select(.key | split("\u0001")[0] | IN($failed[]))) end)
+      + ([.[] | select(.error | not) | {key: sid, value: sfp}] | from_entries)' \
+    >"$d/sections.read.tmp" 2>/dev/null && mv -f "$d/sections.read.tmp" "$d/sections.read"
+  printf '%s\n' "$all" | jq -c --slurpfile s "${seen:-/dev/null}" "$SECTION_ID"'
+    ($s[0] // null) as $s
+    | if .error or $s == null then .
+      elif $s[sid] == null then . + {mark: "new"}
+      elif $s[sid] != sfp then . + {mark: "changed"}
+      else . end'
+}
+
+sections_raw() {
   local root secs n i name cmd line out rc team=''
   root=$(derive_root)
   # The person's open work threads from the hi-threads journal, when that plugin keeps one here.
@@ -2180,7 +2243,7 @@ lost_pane() {
     | jq -r 'select(.ok == true) | .result | select((.terminalState // "") == "retained") | .terminal // empty' 2>/dev/null)
   [ -n "$h" ] || return 1
   # A closed pane still answers ok, with connected false (measured, Orca 1.4.271).
-  "$(orca_cmd)" terminal show --terminal "$h" --json 2>/dev/null \
+  orca_terminal show --terminal "$h" \
     | jq -e '.ok == true and .result.terminal.connected == true and .result.terminal.writable != false
              and ((.result.terminal.status // "running") == "running")' >/dev/null 2>&1 || return 1
   printf '%s\n' "$h"
@@ -2270,7 +2333,7 @@ EOF
     "$(orca_cmd)" terminal wait --terminal "$pane" --for tui-idle --timeout-ms 30000 --json >/dev/null 2>&1 </dev/null
   fi
   # A dialog open in the pane would take the new Dispatch's text as its answer.
-  if "$(orca_cmd)" terminal show --terminal "$pane" --json 2>/dev/null | jq -e '(.result.terminal.agentWait // null) != null' >/dev/null 2>&1; then
+  if orca_terminal show --terminal "$pane" | jq -e '(.result.terminal.agentWait // null) != null' >/dev/null 2>&1; then
     die "resume: $key's session in its pane $pane waits on a dialog: answer it there, then run resume again"
   fi
   title=$(printf '%s' "$facts" | jq -r '.title // empty'); [ -n "$title" ] || title=$key
@@ -2298,6 +2361,48 @@ EOF
   printf '%s\n' "$out"
   printf 'crew: resume: %s got a new Dispatch %s, its chat kept\n' "$key" "$where" >&2
   return 0
+}
+
+# ws_orphaned <workspace> [<orphaned paths>]: whether Orca left that workspace with only orphaned
+# terminals (an Orca restart) and no agent at all: no live agent terminal and no chat (hi's orca.sh
+# orphaned, then agents, which must answer and list none). Unknown is not orphaned: no hi plugin,
+# no Orca or an unreadable answer is exit 1. The paths, when given, spare the terminal list call.
+ws_orphaned() {
+  local ws=$1 paths=${2-} real ag
+  [ -n "$ws" ] && [ -f "$ORCA_SH" ] || return 1
+  [ $# -ge 2 ] || paths=$(bash "$ORCA_SH" orphaned 2>/dev/null </dev/null) || return 1
+  real=$(cd "$ws" 2>/dev/null && pwd -P) || real=$ws
+  printf '%s\n' "$paths" | grep -Fx -e "$ws" -e "$real" >/dev/null || return 1
+  ag=$(bash "$ORCA_SH" agents "$ws" 2>/dev/null </dev/null) || return 1
+  [ -z "$ag" ]
+}
+
+# orphaned: the open tickets whose workspace ws_orphaned calls orphaned, TSV: key, workspace,
+# dispatch, state. `live` is the case nothing else shows: Orca still counts the worker running, so
+# `asks` has no "lost" escalation for it, and it just goes quiet. `lost` (settled without a
+# report) is in `asks` too; `done` (it reported) still has no session to take a follow-up round.
+cmd_orphaned() {
+  need_jq
+  local paths facts key ws d st
+  [ -f "$ORCA_SH" ] || return 0
+  paths=$(bash "$ORCA_SH" orphaned 2>/dev/null </dev/null) || return 0
+  [ -n "$paths" ] || return 0
+  while IFS= read -r facts; do
+    [ -n "$facts" ] || continue
+    key=$(printf '%s' "$facts" | jq -r '.key // empty')
+    ws=$(printf '%s' "$facts" | jq -r "$WS_PATH")
+    [ -n "$key" ] && ws_orphaned "$ws" "$paths" || continue
+    d=$(worker_dispatch "$facts") || d=''
+    if [ -z "$d" ]; then st=lost
+    elif dispatch_live "$d"; then st=live
+    elif "$(orca_cmd)" orchestration worker-show --dispatch "$d" --json 2>/dev/null </dev/null \
+        | jq -e '.result.state == "succeeded"' >/dev/null 2>&1; then st=done
+    else st=lost
+    fi
+    printf '%s\t%s\t%s\t%s\n' "$key" "$ws" "${d:--}" "$st"
+  done <<EOF
+$(cmd_list)
+EOF
 }
 
 # resume <KEY>: get a worker going again on <KEY> after the last one was lost without reporting
@@ -2331,7 +2436,19 @@ cmd_resume() {
     esac
   fi
   if d=$(worker_dispatch "$facts") && dispatch_live "$d"; then
-    die "resume: $key's worker $d is not settled in Orca (orchestration worker-show --dispatch $d); a lost one is"
+    # Orca still counts it running, but an Orca restart left its workspace with only orphaned
+    # terminals and no agent: nothing there can act on that Dispatch, so it is as lost.
+    ws_orphaned "$ws" \
+      || die "resume: $key's worker $d is not settled in Orca (orchestration worker-show --dispatch $d); a lost one is"
+    # Orca sees no agent there, but a Claude may still run in one of its terminals: a restart
+    # with a worker mid-Dispatch was never observed, so a running session refuses.
+    local th
+    th=$(bash "$ORCA_SH" terminals "$ws" 2>/dev/null </dev/null | cut -f1 | tr '\n' ' ')
+    if [ -n "$th" ] && live_sessions | awk -F'\t' -v hs="$th" 'BEGIN { n = split(hs, a, " "); for (i = 1; i <= n; i++) h[a[i]] = 1 }
+         ($3 in h) { f = 1 } END { exit !f }'; then
+      die "resume: $key's workspace has only orphaned terminals, but a Claude session still runs in one of them: look at it in Orca first"
+    fi
+    printf 'crew: resume: %s: Orca still counts %s running, but its workspace has only orphaned terminals and no agent; resuming\n' "$key" "$d" >&2
   fi
   [ -n "$d" ] || d=$(printf '%s' "$facts" | jq -r '.dispatch // empty')
   root=$(facts_root "$facts")
@@ -2567,8 +2684,9 @@ case "$sub" in
   events) cmd_events "$@" ;;
   prompts) cmd_prompts ;;
   states) cmd_states ;;
-  sections) cmd_sections ;;
+  sections) cmd_sections "$@" ;;
   orca) orca_cmd ;;
+  orphaned) cmd_orphaned ;;
   setup-status) cmd_setup_status ;;
   *) sed -n '2,/^set -uo/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; [ -z "$sub" ] || exit 2 ;;
 esac
