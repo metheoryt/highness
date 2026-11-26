@@ -66,6 +66,16 @@
 #                                     starting nothing: open facts for <KEY> (but those of an adopt
 #                                     whose worker-start failed: run it again), no Run, a PR that
 #                                     is not open or comes from a fork. Prints the receipt
+#   crew.sh dispatch <KEY> --kind K --title T --workspace P --task-file F [--guide G]
+#                 [--facts JSON] [--root R]
+#                                     a worker for a task that is not a ticket (another plugin's:
+#                                     hi-review's deep review), under this session's Run, in the
+#                                     workspace P (kept open: the person can open it and take
+#                                     over). Its spec is `spec --task-file F`; its facts carry kind
+#                                     K, guide G (the file telling a coordinator how to handle this
+#                                     worker's asks and reports) and the --facts object, never a
+#                                     `pr`: the watch follows only its dialogs and hung calls.
+#                                     Refuses open facts with a dispatch, and no Run (cmd_dispatch)
 #   crew.sh choices [<KEY>]           the recorded choices, one JSON object per line, each with
 #                                     as_recommended derived (below)
 #   crew.sh choices --gaps            answers to hi-crew asks with no choice line (sent without
@@ -109,8 +119,11 @@
 #                                     open ask shows only once the worker's terminal is gone.
 #   crew.sh reports                   the latest worker_done per dispatch in those Runs, TSV:
 #                                     run id, dispatch id, created_at, outcome, subject
-#   crew.sh spec --key K --title T [--brief-file F] [--root R] [--no-profile]
-#                                     the worker spec for a ticket, from reference/worker-spec.md and
+#   crew.sh spec --key K --title T [--brief-file F] [--root R] [--no-profile] [--task-file F]
+#                                     --task-file: a task worker's spec (dispatch): the caller's
+#                                     task text, then the rules on asking and actions, with no
+#                                     ticket steps and no team process.
+#                                     Otherwise the worker spec for a ticket, from reference/worker-spec.md and
 #                                     the config keys crew.process and crew.marker, read at R (default:
 #                                     `crew.sh root`). No crew.process and no team file at R is
 #                                     refused (exit 2: R is most likely the wrong directory), unless
@@ -782,9 +795,10 @@ cmd_reports() {
 
 cmd_spec() {
   local key='' title='' brief_file='' brief='' process marker merge crew root='' prefs copy no_profile=''
-  local handover='' pr='' ws='' bg='' view='' stands='' branch='' base='' mode=FRESH
+  local handover='' pr='' ws='' bg='' view='' stands='' branch='' base='' mode=FRESH task_file='' task=''
   while [ $# -gt 0 ]; do
     case "$1" in
+      --task-file) task_file=${2:-}; shift 2 ;;
       --root) root=${2:-}; shift 2 ;;
       --no-profile) no_profile=1; shift ;;
       --key) key=${2:-}; shift 2 ;;
@@ -799,9 +813,10 @@ cmd_spec() {
       *) die "spec: unknown argument '$1'" ;;
     esac
   done
-  [ -n "$key" ] && [ -n "$title" ] || die 'usage: spec --key K --title T [--brief-file F] [--root R] [--no-profile] [--handover --pr URL [--workspace P] [--background X]...]'
+  [ -n "$key" ] && [ -n "$title" ] || die 'usage: spec --key K --title T [--brief-file F | --task-file F] [--root R] [--no-profile] [--handover --pr URL [--workspace P] [--background X]...]'
   [ -z "$handover" ] || [ -n "$pr" ] || die 'spec: --handover needs --pr <the open PR url>'
   [ -n "$handover" ] || [ -z "$pr$ws$bg" ] || die 'spec: --pr, --workspace and --background go with --handover'
+  [ -z "$task_file" ] || [ -z "$handover$brief_file" ] || die 'spec: --task-file goes alone: no --handover, no --brief-file'
   keyfile "$key" >/dev/null || exit 2
   [ -f "$TEMPLATE" ] || die "missing $TEMPLATE"
   if [ -n "$brief_file" ]; then
@@ -810,6 +825,12 @@ cmd_spec() {
   fi
   [ -n "$root" ] || root=$(cmd_root)
   [ -d "$root" ] || die "spec: the root is not a directory: '$root'"
+  # A task (another plugin's worker, a review): the caller's text replaces the ticket's steps and
+  # the team process, which are about taking a ticket to a merged PR; asking stays hi-crew's.
+  if [ -n "$task_file" ]; then
+    [ -s "$task_file" ] || die "spec: no task file, or an empty one: $task_file"
+    task=$(cat "$task_file"); mode=TASK; no_profile=1
+  fi
   if [ -n "$handover" ]; then
     need_jq
     mode=HANDOVER
@@ -853,19 +874,23 @@ $bg"
   copy="$DIR/specs/$key.md"
   mkdir -p "$DIR/specs" 2>/dev/null
   # Placeholders are replaced in a fixed order by awk with literal strings (no regex, no &).
-  # {{#FRESH}}…{{/FRESH}} and {{#HANDOVER}}…{{/HANDOVER}} (each on a line of its own) keep only
-  # the mode's own blocks: a handover replaces the fresh-ticket steps, never contradicts them.
-  MODE=$mode PR=$pr BRANCH=$branch BASE=$base STANDS=$stands BACKGROUND=$bg \
+  # {{#FRESH}}…{{/FRESH}}, {{#HANDOVER}}…{{/HANDOVER}} and {{#TASK}}…{{/TASK}} (each on a line of
+  # its own, never nested) keep only the mode's own blocks: a handover replaces the fresh-ticket
+  # steps, never contradicts them. {{#TICKET}} blocks are FRESH and HANDOVER's shared ones.
+  MODE=$mode PR=$pr BRANCH=$branch BASE=$base STANDS=$stands BACKGROUND=$bg TASK=$task \
   PREFS=$prefs KEY=$key TITLE=$title BRIEF=$brief PROCESS=$process MARKER=$marker MERGE=$merge CREW=$crew ROOT=$root TRACKER=$(tracker_cmd "$root") awk '
     function rep(s, ph, val,   out, i) {
       out = ""
       while ((i = index(s, ph)) > 0) { out = out substr(s, 1, i - 1) val; s = substr(s, i + length(ph)) }
       return out s
     }
-    $0 == "{{#FRESH}}" || $0 == "{{#HANDOVER}}" { skip = ($0 != "{{#" ENVIRON["MODE"] "}}"); next }
-    $0 == "{{/FRESH}}" || $0 == "{{/HANDOVER}}" { skip = 0; next }
+    function block(s, open) { return substr(s, 1, 3) == (open ? "{{#" : "{{/") && substr(s, length(s) - 1) == "}}" }
+    block($0, 1) { n = substr($0, 4, length($0) - 5)
+      skip = !(n == ENVIRON["MODE"] || (n == "TICKET" && ENVIRON["MODE"] != "TASK")); next }
+    block($0, 0) { skip = 0; next }
     skip { next }
     { line = $0
+      if (line == "{{TASK}}") { print ENVIRON["TASK"]; next }
       if (line == "{{STANDS}}") { print ENVIRON["STANDS"]; next }
       if (line == "{{BACKGROUND}}") { if (ENVIRON["BACKGROUND"] != "") printf "%s", ENVIRON["BACKGROUND"]; next }
       line = rep(line, "{{PR}}", ENVIRON["PR"])
@@ -894,7 +919,7 @@ $bg"
 # spec itself is never inlined (it is long). Every error is silence: a session start must never
 # fail on it.
 cmd_reentry() {
-  local in cwd real f row="" key title spec pr msg
+  local in cwd real f row="" key title spec pr msg kind
   in=$(head -c 16384 2>/dev/null); cat >/dev/null 2>&1
   command -v jq >/dev/null 2>&1 || return 0
   cwd=$(printf '%s' "$in" | jq -r '.cwd // empty' 2>/dev/null)
@@ -906,18 +931,20 @@ cmd_reentry() {
       (.workspace // "" | sub("^[^/]*::"; "")) as $w | select($w != "")
       | select([$a, $b] | any(. == $w or startswith($w + "/")))
       | (if (.resumed_spec // "") != "" and .resumed_for == .dispatch then .resumed_spec else (.spec // "") end) as $s
-      | [.key, (.title // ""), $s, (.pr // "")] | @tsv' "$f" 2>/dev/null) || continue
+      | [.key, (.title // ""), $s, (.kind // "ticket"), (.pr // "")] | @tsv' "$f" 2>/dev/null) || continue
     [ -n "$row" ] && break
   done
   [ -n "$row" ] || return 0
-  IFS="$(printf '\t')" read -r key title spec pr <<EOF
+  IFS="$(printf '\t')" read -r key title spec kind pr <<EOF
 $row
 EOF
   [ -n "$spec" ] || spec="$DIR/specs/$key.md"
+  local what='the ticket, the rules on asking, merging and markers, the team process'
+  [ "$kind" = ticket ] || what="the task, the rules on asking and on steps only a person's yes allows"
   if [ -f "$spec" ]; then
-    msg="hi-crew: this session is the ticket worker for $key${title:+ ($title)}, and the compaction kept only a summary of your spec: the ticket, the rules on asking, merging and markers, the team process. Re-read it before your next step: $spec"
+    msg="hi-crew: this session is the $kind worker for $key${title:+ ($title)}, and the compaction kept only a summary of your spec: $what. Re-read it before your next step: $spec"
   else
-    msg="hi-crew: this session is the ticket worker for $key${title:+ ($title)}, and the compaction kept only a summary of your spec: the ticket, the rules on asking, merging and markers, the team process. No copy of it was saved; re-read it from the first prompt of this session's transcript before your next step."
+    msg="hi-crew: this session is the $kind worker for $key${title:+ ($title)}, and the compaction kept only a summary of your spec: $what. No copy of it was saved; re-read it from the first prompt of this session's transcript before your next step."
   fi
   [ -z "$pr" ] || msg="$msg Your PR: $pr."
   jq -n -c --arg m "$msg" '{hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: $m}}' 2>/dev/null
@@ -1523,7 +1550,7 @@ sections_raw() {
 
 cmd_watch() {
   need_jq
-  local w="$DIR/watch" lock="$DIR/watch/lock" t key pr run now snap what hit since tool kind hs ap to fp ip wp ws
+  local w="$DIR/watch" lock="$DIR/watch/lock" t key pr run now snap what hit since tool kind tk hs ap to fp ip wp ws
   mkdir -p "$w"
   if ! mkdir "$lock" 2>/dev/null; then
     [ -n "$(find "$lock" -maxdepth 0 -mmin +30 2>/dev/null)" ] || return 0  # another watch runs
@@ -1533,6 +1560,7 @@ cmd_watch() {
   cmd_list | while IFS= read -r t; do
     key=$(printf '%s' "$t" | jq -r .key); pr=$(printf '%s' "$t" | jq -r '.pr // empty')
     run=$(printf '%s' "$t" | jq -r '.run // empty')
+    tk=$(printf '%s' "$t" | jq -r '.kind // "ticket"')
     # A dialog is told once: its `since` is kept until the next one.
     if hit=$(on_prompt "$t"); then
       since=$(printf '%s' "$hit" | cut -f1); tool=$(printf '%s' "$hit" | cut -f2); kind=$(printf '%s' "$hit" | cut -f3)
@@ -1553,6 +1581,8 @@ cmd_watch() {
           "has had one $tool call open for $(( ($(date +%s) - since) / 60 )) min — a hung command?"
       fi
     fi
+    # A task worker (crew.sh dispatch: a review) owns no PR and has no ticket: nothing below is its.
+    [ "$tk" = ticket ] || continue
     # The PRs the ticket waits on (`waits_on`, a list of PR urls): each one that merges or closes is
     # told once, to the worker as a round, else the coordinator. Before the ticket's own PR, which
     # a ticket waiting on another may not have yet.
@@ -2634,17 +2664,83 @@ cmd_adopt() {
       --arg root "$root" --arg s "$DIR/specs/$key.md" --arg run "$run" --arg a "$agent" --arg m "$model" '
       {title: $t, repo: $r, workspace: $w, branch: $b, pr: $pr, head: $h, root: $root, spec: $s, run: $run,
        agent: $a, model: $m, handover: true}')") || { rm -f "$sf"; die 'adopt: could not record the facts; nothing started'; }
-  out=$(cd "$root" && "$(orca_cmd)" orchestration worker-start --spec-file "$sf" --task-title "$key: $title (handover)" \
+  start_worker adopt "$key" "$key: $title (handover)" "$ws" "$root" "$run" "$handle" "$agent" "$model" "$sf"
+}
+
+# start_worker <verb> <KEY> <task title> <workspace> <root> <run> <handle> <agent> <model> <spec file>:
+# the worker-start of a start whose facts are already recorded (adopt, dispatch), in that
+# workspace and kept open (the person can open the session and take it over), then the dispatch
+# and task recorded. The spec file is removed. A failure says to run the same verb again, which
+# takes over the facts it recorded. Prints the receipt.
+start_worker() {
+  local verb=$1 key=$2 tt=$3 ws=$4 root=$5 run=$6 handle=$7 agent=$8 model=$9 sf=${10} out rc
+  out=$(cd "$root" && "$(orca_cmd)" orchestration worker-start --spec-file "$sf" --task-title "$tt" \
     --worktree "path:$ws" --keep-open --agent "$agent" ${model:+--model "$model"} --run "$run" \
     ${handle:+--from "$handle"} --json 2>&1)
   rc=$?
   rm -f "$sf"
   if [ $rc -ne 0 ] || [ "$(printf '%s' "$out" | jq -r '.ok // false' 2>/dev/null)" != true ]; then
-    die "adopt: worker-start failed; its facts are recorded, so after reading failedStage (orca skills get orchestration --reference references/recovery-and-cleanup.md) run the same adopt again: $out"
+    die "$verb: worker-start failed; its facts are recorded, so after reading failedStage (orca skills get orchestration --reference references/recovery-and-cleanup.md) run the same $verb again: $out"
   fi
   (cmd_record "$key" "$(printf '%s' "$out" | jq -c '{dispatch: .result.dispatchId, task: .result.taskId}')") \
-    || die "adopt: the worker started, but its dispatch was not recorded; record it by hand: $out"
+    || die "$verb: the worker started, but its dispatch was not recorded; record it by hand: $out"
   printf '%s\n' "$out"
+}
+
+# dispatch <KEY> --kind K --title T --workspace P --task-file F [--guide G] [--facts JSON] [--root R]
+# A worker for a task that is not a ticket (another plugin's: a review), on hi-crew's machinery:
+# this session's Run, the facts, asks and relay, actions, resume, the compaction re-entry. The
+# spec is `spec --task-file F` (the caller's task, then hi-crew's rules on asking). The facts get
+# kind K (never "ticket"), guide G (the file that tells a coordinator how to show this worker's
+# asks and reports) and the --facts object, recorded before worker-start. A task worker's facts
+# carry no `pr`: the watch, the board and the agenda's forge sections follow a ticket worker's own
+# PR, and a task's PR (one under review) belongs to someone else. The watch still tells its
+# dialogs and hung calls. Refuses, starting nothing: open facts with a dispatch (a lost worker
+# continues with `resume`), no Run, a workspace that is not a directory. Prints the receipt.
+cmd_dispatch() {
+  need_jq
+  local key='' kind='' title='' ws='' tf='' guide='' extra='{}' root='' facts run handle sf agent model
+  [ $# -gt 0 ] && case "$1" in -*) ;; *) key=$1; shift ;; esac
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --kind) kind=${2:-}; shift 2 ;;
+      --title) title=${2:-}; shift 2 ;;
+      --workspace) ws=${2:-}; shift 2 ;;
+      --task-file) tf=${2:-}; shift 2 ;;
+      --guide) guide=${2:-}; shift 2 ;;
+      --facts) extra=${2:-}; shift 2 ;;
+      --root) root=${2:-}; shift 2 ;;
+      *) die "dispatch: unknown argument '$1'" ;;
+    esac
+  done
+  [ -n "$key" ] && [ -n "$kind" ] && [ -n "$title" ] && [ -n "$ws" ] && [ -n "$tf" ] \
+    || die 'usage: dispatch <KEY> --kind K --title T --workspace P --task-file F [--guide G] [--facts JSON] [--root R]'
+  keyfile "$key" >/dev/null || exit 2
+  case "$kind" in ticket|*[!a-z0-9-]*) die "dispatch: --kind '$kind': a lowercase word other than ticket (a ticket starts with /hi-crew:start)" ;; esac
+  [ -s "$tf" ] || die "dispatch: no task file, or an empty one: $tf"
+  [ -z "$guide" ] || [ -f "$guide" ] || die "dispatch: no guide file: $guide"
+  printf '%s' "$extra" | jq -e 'type == "object" and (has("pr") | not)' >/dev/null 2>&1 \
+    || die 'dispatch: --facts must be a JSON object, without "pr" (a task worker owns no PR)'
+  if facts=$(cmd_get "$key"); then
+    printf '%s' "$facts" | jq -e '(.dispatch // "") == ""' >/dev/null 2>&1 \
+      || die "dispatch: $key has open facts (crew.sh get $key): a worker was started on it; a lost one continues with crew.sh resume $key"
+  fi
+  [ -d "$ws" ] || die "dispatch: the workspace is not a directory: '$ws'"
+  ws=$(cd "$ws" && pwd -P)
+  run=$(cmd_run) || die 'dispatch: this session has no hi-crew Run yet (crew.sh run <run_id>, /hi-crew:start step 4)'
+  handle=${ORCA_TERMINAL_HANDLE:-$(cat "$DIR/handles/$run" 2>/dev/null)}
+  [ -n "$root" ] || root=$(cmd_root)
+  [ -d "$root" ] || die "dispatch: the root is not a directory: '$root'"
+  sf=$(mktemp "${TMPDIR:-/tmp}/hi-crew-spec.XXXXXX") || die 'dispatch: no temp file'
+  (cmd_spec --key "$key" --title "$title" --task-file "$tf" --root "$root") >"$sf" || { rm -f "$sf"; die 'dispatch: could not build the spec'; }
+  agent=$(cd "$root" && bash "$CONFIG" get '.crew.agent') || agent=claude
+  model=$(cd "$root" && bash "$CONFIG" get '.crew.model') || model=''
+  [ -z "$guide" ] || guide=$(cd "$(dirname "$guide")" && printf '%s/%s' "$(pwd -P)" "$(basename "$guide")")
+  (cmd_record "$key" "$(jq -nc --slurpfile x <(printf '%s' "$extra") --arg k "$kind" --arg t "$title" --arg w "$ws" \
+      --arg g "$guide" --arg root "$root" --arg s "$DIR/specs/$key.md" --arg run "$run" --arg a "$agent" --arg m "$model" '
+      $x[0] + {kind: $k, title: $t, repo: "path:\($w)", workspace: $w, root: $root, spec: $s, run: $run, agent: $a, model: $m}
+      + (if $g == "" then {} else {guide: $g} end)')") || { rm -f "$sf"; die 'dispatch: could not record the facts; nothing started'; }
+  start_worker dispatch "$key" "$key: $title" "$ws" "$root" "$run" "$handle" "$agent" "$model" "$sf"
 }
 
 . "$HERE/action.sh"
@@ -2657,6 +2753,7 @@ case "$sub" in
   stranded) cmd_stranded ;;
   resume) cmd_resume "$@" ;;
   adopt) cmd_adopt "$@" ;;
+  dispatch) cmd_dispatch "$@" ;;
   record) cmd_record "$@" ;;
   get) cmd_get "$@" ;;
   list) cmd_list ;;
