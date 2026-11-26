@@ -301,7 +301,9 @@ mkdir -p "$CK/state/threads/backfilled" "$CK/state/threads/origin"
 touch "$CK/state/threads/backfilled/r1" "$CK/state/threads/backfilled/r2" "$CK/state/threads/origin/r2"
 st() { jq -r --arg id "$1" '.threads[] | select(.id == $id) | .status' "$CL"; }
 rm -f "$CK/posted"
-printf '{"threads":{"check":{"pr":"sh %s {{PR}}","ticket":"sh %s {{KEY}}"},"sweep":{"imported_days":15}}}' "$CK/fake.sh" "$CK/fake.sh" >"$CK/proj/.claude/highness.json"
+# The age is the user's: one journal for every project, so a repo's own setting is not read.
+printf '{"threads":{"check":{"pr":"sh %s {{PR}}","ticket":"sh %s {{KEY}}"},"sweep":{"imported_days":1}}}' "$CK/fake.sh" "$CK/fake.sh" >"$CK/proj/.claude/highness.json"
+jq '.threads.sweep.imported_days = 15' "$CK/user.json" >"$CK/user.n" && mv "$CK/user.n" "$CK/user.json"
 out=$(cd "$CK/proj" && HIGHNESS_STATE="$CK/state" HIGHNESS_CONFIG="$CK/user.json" CK_LOG="$CK/log" CK_STATES="$CK/states" bash "$TH" sweep)
 check 'sweep: another project'"'"'s landed thread is closed' "$(st F1)" 'done'
 check 'sweep: a rate-limited answer is not done' "$(st G) $(jq -r '.threads[] | select(.id == "G") | .check.links | length' "$CL")" 'waiting 0'
@@ -310,7 +312,7 @@ check 'sweep: a PR URL and a repo#N ticket are checked' "$(st U) $(jq -r '.threa
   'done closed by the live check: https://github.com/o/svc/pull/5 MERGED, svc#6 CLOSED'
 check 'sweep: a repo#N ticket still open keeps its thread' "$(st V)" 'waiting'
 check 'age-out: imported, untouched past the age — dropped, kept' "$(jq -r '.threads[] | select(.id == "I1") | [.status, .waits_on, (.open_items | length), (.aged_out != null), .history[-1].session] | @tsv' "$CL")" "dropped	none	0	true	sweep"
-check 'age-out: the age is configurable (10 days old, 15 set)' "$(st IM)" 'waiting'
+check 'age-out: the age is the user'"'"'s (10 days old, 15 set; the repo'"'"'s 1 not read)' "$(st IM)" 'waiting'
 check 'age-out: imported but fresh — kept open' "$(st I2)" 'waiting'
 check 'age-out: a live turn touched it — kept open' "$(st I3)" 'waiting'
 check 'age-out: an old journal, every session only replayed — dropped' "$(st L1)" 'dropped'
@@ -321,8 +323,8 @@ check 'age-out: one event each, from the sweep' "$(jq -r 'select(.session == "sw
 check 'sweep: posts no ticket comment' "$([ -s "$CK/posted" ] && echo posted || echo none)" 'none'
 check 'sweep: never deletes a thread' "$(jq '.threads | length' "$CL")" '20'
 jq '.threads |= map(if .id == "IM" then .updated_epoch = 0 else . end)' "$CL" >"$CL.n" && mv "$CL.n" "$CL"
-printf '{"threads":{"check":{"pr":"sh %s {{PR}}","ticket":"sh %s {{KEY}}"},"sweep":{"imported_days":0}}}' "$CK/fake.sh" "$CK/fake.sh" >"$CK/proj/.claude/highness.json"
-(cd "$CK/proj" && HIGHNESS_STATE="$CK/state" CK_LOG="$CK/log" CK_STATES="$CK/states" bash "$TH" sweep >/dev/null)
+printf '{"threads":{"sweep":{"imported_days":0}}}' >"$CK/user0.json"
+(cd "$CK/proj" && HIGHNESS_STATE="$CK/state" HIGHNESS_CONFIG="$CK/user0.json" CK_LOG="$CK/log" CK_STATES="$CK/states" bash "$TH" sweep >/dev/null)
 check 'age-out: 0 days turns it off' "$(st IM)" 'waiting'
 
 # After a turn the job sweeps once in threads.sweep.hours, not every turn.

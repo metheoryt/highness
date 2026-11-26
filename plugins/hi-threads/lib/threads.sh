@@ -21,7 +21,7 @@
 # threads.comment.lang (en or ru), and threads.comment.commands, read from the user file only
 # (see _comments); threads.check.pr, threads.check.ticket and threads.check.stale_days for the
 # live check (threads-read.sh, th_check); threads.sweep.hours and threads.sweep.imported_days for
-# the sweep (th_sweep).
+# the sweep (th_sweep), read from the user file only: the journal is the machine's, every project.
 #
 #   threads.sh hook-stop                Stop hook: payload on stdin; starts the job, prints nothing
 #   threads.sh hook-start               SessionStart hook: the project's top open threads as context
@@ -50,6 +50,8 @@ CHUNK_MAX=${HI_THREADS_CHUNK_MAX:-60000}
 . "$HERE/threads-read.sh"   # th_project, _repo, th_list, th_check, th_agenda, th_relay, _lock
 
 _cfg() { bash "$HERE/config.sh" get "$1" 2>/dev/null; }
+# A setting of the machine's one journal, not of the repo a session happens to run in.
+_cfg_user() { bash "$HERE/config.sh" get --user "$1" 2>/dev/null; }
 _log() { printf '%s\n' "$*" | _log_in; }
 
 # The log holds one line per distinct message: "<last seen> <message>", or
@@ -309,7 +311,7 @@ th_process() { # <transcript> <session> <cwd>
   # Close what landed elsewhere (a PR merged, a ticket closed), so the next session's list is true.
   th_check --project "$proj" --ttl "${HI_THREADS_CHECK_TTL:-600}" >/dev/null
   # Once in threads.sweep.hours (default 24; 0 turns it off), the whole journal.
-  local hours; hours=$(_cfg .threads.sweep.hours); case "$hours" in ''|*[!0-9]*) hours=24 ;; esac
+  local hours; hours=$(_cfg_user .threads.sweep.hours); case "$hours" in ''|*[!0-9]*) hours=24 ;; esac
   if [ "$hours" -gt 0 ] && { [ ! -f "$TH_DIR/swept" ] ||
        [ -n "$(find "$TH_DIR/swept" -maxdepth 0 -mmin +$((hours * 60 - 1)) 2>/dev/null)" ]; }; then
     th_sweep >/dev/null
@@ -334,7 +336,7 @@ th_sweep() {
   _lock sweep 1 || return 0
   touch "$TH_DIR/swept"
   th_check --all --ttl "${HI_THREADS_CHECK_TTL:-600}" --wait
-  days=$(_cfg .threads.sweep.imported_days); case "$days" in ''|*[!0-9]*) days=14 ;; esac
+  days=$(_cfg_user .threads.sweep.imported_days); case "$days" in ''|*[!0-9]*) days=14 ;; esac
   if [ "$days" -gt 0 ] && _lock journal; then
     now=$(date +%s); iso=$(date -u '+%Y-%m-%dT%H:%M:%SZ'); cut=$((now - days * 86400))
     # sessions only ever replayed: replayed, and never met by the live hook
