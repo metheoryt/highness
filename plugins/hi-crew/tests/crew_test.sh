@@ -403,6 +403,27 @@ out=$(cd "$S" && bash "$C" sections)
 check 'sections: open threads of this project first' "$(printf '%s\n' "$out" | head -1 | jq -r '[.section, .group, .title, .resume] | join("|")')" "threads|you|Login fix (AB-1)|cd '$SP' && claude --resume s1"
 check 'sections: no done or foreign threads' "$(printf '%s\n' "$out" | jq -r 'select(.section == "threads") | .title' | wc -l | tr -d ' ')" '1'
 rm -rf "$HIGHNESS_STATE/threads"
+
+# New or changed since the last read: marked against what `sections --ack` last took as read.
+cat >"$S/.claude/highness.json" <<'JSON'
+{"agenda": {"sections": [
+  {"name": "Tickets", "command": "printf '{\"group\":\"you\",\"title\":\"T-1\",\"url\":\"u1\",\"next\":\"%s\"}\\n' \"${MK_NEXT:-start}\"; printf '{\"title\":\"T-0\",\"url\":\"u0\"}\\n'; [ -z \"${MK_NEW:-}\" ] || printf '{\"title\":\"T-2\",\"url\":\"u2\"}\\n'"},
+  {"name": "Flaky", "command": "[ -z \"${MK_FAIL:-}\" ] || exit 4; printf '{\"title\":\"F-1\",\"url\":\"f1\"}\\n'"}
+ ]}}
+JSON
+rm -rf "$HIGHNESS_STATE/crew/agenda"
+marks() { (cd "$S" && env "$@" bash "$C" sections) | jq -r 'select(.section != "my PRs") | "\(.title // .section):\(.mark // .error // "-")"' | tr '\n' ' '; }
+check 'marks: the first read marks nothing' "$(marks MK_NEW=)" 'T-1:- T-0:- F-1:- '
+bash "$C" sections --ack
+check 'marks: the same again, nothing' "$(marks MK_NEW=)" 'T-1:- T-0:- F-1:- '
+check 'marks: an item not read before is new, a next that moved is changed' "$(marks MK_NEW=1 MK_NEXT=review)" 'T-1:changed T-0:- T-2:new F-1:- '
+check 'marks: not acked, so still marked' "$(marks MK_NEW=1 MK_NEXT=review)" 'T-1:changed T-0:- T-2:new F-1:- '
+bash "$C" sections --ack
+check 'marks: acked, nothing' "$(marks MK_NEW=1 MK_NEXT=review)" 'T-1:- T-0:- T-2:- F-1:- '
+marks MK_NEW=1 MK_NEXT=review MK_FAIL=1 >/dev/null; bash "$C" sections --ack
+check 'marks: a section that failed keeps its last read' "$(marks MK_NEW=1 MK_NEXT=review)" 'T-1:- T-0:- T-2:- F-1:- '
+check 'marks: --ack with nothing read is a no-op' "$(rm -f "$HIGHNESS_STATE/crew/agenda/sections.read"; bash "$C" sections --ack; echo "rc=$?")" 'rc=0'
+rm -rf "$HIGHNESS_STATE/crew/agenda"
 export PATH=$OLDPATH
 
 # --- spec (the fake orca: spec asks this session's Run for a pinned root, and must not reach a real one)

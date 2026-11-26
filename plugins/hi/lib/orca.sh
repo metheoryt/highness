@@ -78,6 +78,34 @@ short_branch() { printf '%s' "${1#refs/heads/}"; }
 # are host + share; the rest is the path. Non-UNC values pass through untouched.
 JQ_POSIX='def posix: if startswith("\\\\") then (gsub("\\\\"; "/") | sub("^//[^/]+/[^/]+"; "")) else . end;'
 
+# Orca's JSON with every lone UTF-16 surrogate escape made U+FFFD. A terminal's `preview` is its
+# output cut to length, and the cut can split an emoji, leaving a high surrogate (`\ud83d`) with no
+# low one. jq 1.8 rejects the whole document for it ("Invalid \uXXXX\uXXXX surrogate pair
+# escape"), so every terminal in it went unseen: `terminals` and `agents` exited 1 with no output
+# while `orca terminal list` showed them, and a removal check read that as no agent. Valid pairs
+# are set aside first under \001, which valid JSON never holds raw, then put back. ERE only
+# (BSD sed). An escaped backslash before `ud83d` text is rewritten too, harmlessly: the text
+# stays valid JSON.
+unsurrogate() {
+  local p; p=$(printf '\001')
+  sed -E "s/\\\\u([dD][89abAB][0-9a-fA-F]{2})\\\\u([dD][c-fC-F][0-9a-fA-F]{2})/${p}\1${p}\2/g
+s/\\\\u[dD][89a-fA-F][0-9a-fA-F]{2}/\\\\ufffd/g
+s/${p}([0-9a-fA-F]{4})${p}([0-9a-fA-F]{4})/\\\\u\1\\\\u\2/g"
+}
+
+# orca_json <args…>: run Orca with --json appended, its output made parseable (unsurrogate).
+# Exit 1 when Orca fails or does not answer ok:true, with one line on stderr saying so: the
+# subcommands that list terminals used to fail silently, which hid this bug for weeks.
+orca_json() {
+  local js
+  js=$("$ORCA" "$@" --json 2>/dev/null </dev/null | unsurrogate) || js=''
+  if [ "$(printf '%s' "$js" | jq -r '.ok // false' 2>/dev/null)" != "true" ]; then
+    printf 'orca.sh: `%s %s --json` failed or did not answer ok\n' "$ORCA" "$*" >&2
+    return 1
+  fi
+  printf '%s' "$js"
+}
+
 # The same conversion for a caller that parsed Orca's JSON itself (a skill that runs
 # the create line and reads the response cannot get the converted path from
 # `current` / `siblings`). Text only — needs no Orca binary.
@@ -393,8 +421,7 @@ terminals() {
   [ -n "$want" ] || { echo 'orca.sh terminals: <worktree-path> is required' >&2; return 2; }
   real=$(cd "$want" 2>/dev/null && pwd -P) || real=$want
   have_orca || return 1
-  js=$("$ORCA" terminal list --json 2>/dev/null) || return 1
-  [ "$(printf '%s' "$js" | jq -r '.ok // false' 2>/dev/null)" = "true" ] || return 1
+  js=$(orca_json terminal list) || return 1
   printf '%s' "$js" | jq -r --arg a "$want" --arg b "$real" "$JQ_POSIX"'
     (.result.terminals // [])[]
     | select((.connected // false) and (.writable // false))
@@ -414,17 +441,19 @@ terminals() {
 # state: done or idle is idle, any other state (working, a prompt, a new one) is busy. A bare
 # shell has no agentIdentity and no ps row: never listed. Exit 1: no Orca or no terminal list.
 agents() {
-  local want="${1:-}" real tl ps
+  local want="${1:-}" real tl psf rc
   [ -n "$want" ] || { echo 'orca.sh agents: <worktree-path> is required' >&2; return 2; }
   real=$(cd "$want" 2>/dev/null && pwd -P) || real=$want
   have_orca || return 1
-  tl=$("$ORCA" terminal list --json 2>/dev/null) || return 1
-  [ "$(printf '%s' "$tl" | jq -r '.ok // false' 2>/dev/null)" = "true" ] || return 1
-  ps=$("$ORCA" worktree ps --limit 10000 --json 2>/dev/null) || ps=''
-  [ "$(printf '%s' "$ps" | jq -r '.ok // false' 2>/dev/null)" = "true" ] || ps='{}'
-  printf '%s' "$tl" | jq -r --arg a "$want" --arg b "$real" --argjson ps "$ps" "$JQ_POSIX"'
+  tl=$(orca_json terminal list) || return 1
+  # worktree ps goes to jq through a file: as an argument (--argjson) a box with many
+  # workspaces passes the kernel's limit on one ("Argument list too long").
+  psf=$(mktemp "${TMPDIR:-/tmp}/hi-orca-ps.XXXXXX") || return 1
+  orca_json worktree ps --limit 10000 >"$psf" 2>/dev/null || echo '{}' >"$psf"
+  printf '%s' "$tl" | jq -r --arg a "$want" --arg b "$real" --slurpfile psa "$psf" "$JQ_POSIX"'
     def here: (. // "" | posix) as $p | $p != "" and ($p == $a or $p == $b);
-    [ ($ps.result.worktrees // [])[] | select(.path | here) | (.agents // [])[] ] as $ag
+    $psa[0] as $ps
+    | [ ($ps.result.worktrees // [])[] | select(.path | here) | (.agents // [])[] ] as $ag
     | ( (.result.terminals // [])[]
         | select((.connected // false) and (.writable // false) and ((.agentIdentity // "") != ""))
         | select(.worktreePath | here)
@@ -435,17 +464,21 @@ agents() {
         | [(.paneKey | sub(":.*$"; "")), "chat",
            (if (.state // "") == "done" or (.state // "") == "idle" then "idle" else "busy" end)] )
     | @tsv'
+  rc=$?
+  rm -f "$psf"
+  return "$rc"
 }
 
 # orphaned: one POSIX worktree path per line where Orca holds a terminal that came back from a
-# restart orphaned (orphaned:true, no agent identity) and no live agent terminal at all. The
-# session there still exists, but nothing can type into it until the tab is reopened. One
-# `terminal list` call covers every workspace.
+# restart orphaned (orphaned:true) and no live agent terminal at all (connected, writable, with an
+# agent identity). The orphaned flag alone says little: Orca 1.4.272 kept agent terminals from
+# earlier runs flagged orphaned:true that were connected, writable, named their agent and still ran
+# their Claude session (12 of 12 checked). Such a terminal counts as live here. One `terminal
+# list` call covers every workspace.
 orphaned() {
   local js
   have_orca || return 1
-  js=$("$ORCA" terminal list --json 2>/dev/null) || return 1
-  [ "$(printf '%s' "$js" | jq -r '.ok // false' 2>/dev/null)" = "true" ] || return 1
+  js=$(orca_json terminal list) || return 1
   printf '%s' "$js" | jq -r "$JQ_POSIX"'
     [ (.result.terminals // [])[] | select((.worktreePath // "") != "") | . + {p: (.worktreePath | posix)} ]
     | group_by(.p)[]

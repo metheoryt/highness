@@ -47,9 +47,11 @@ case "$1 $2" in
     case "${FAKE_PANE_GONE:-}" in
       closed) echo '{"ok":true,"result":{"terminal":{"status":null,"connected":false}}}' ;;
       ?*) echo '{"ok":false,"error":{"code":"terminal_not_found"}}'; exit 1 ;;
-      *) if [ -n "${FAKE_DIALOG:-}" ]; then
-           echo '{"ok":true,"result":{"terminal":{"status":null,"connected":true,"writable":true,"agentWait":{"kind":"permission"}}}}'
-         else echo '{"ok":true,"result":{"terminal":{"status":null,"connected":true,"writable":true,"agentWait":null}}}'; fi ;;
+      *) # FAKE_CUT: a preview cut inside an emoji, a lone surrogate jq 1.8 rejects outright.
+         cut=''; [ -z "${FAKE_CUT:-}" ] || cut=',"preview":"cut \ud83d"'
+         if [ -n "${FAKE_DIALOG:-}" ]; then
+           echo '{"ok":true,"result":{"terminal":{"status":null,"connected":true,"writable":true'"$cut"',"agentWait":{"kind":"permission"}}}}'
+         else echo '{"ok":true,"result":{"terminal":{"status":null,"connected":true,"writable":true'"$cut"',"agentWait":null}}}'; fi ;;
     esac ;;
   "terminal send") # the relaunch line; FAKE_START: the session then runs in that pane
     printf '%s\n' "$*" >>"$FAKE_LOG.send"
@@ -60,6 +62,9 @@ case "$1 $2" in
     fi
     echo '{"ok":true}' ;;
   "terminal wait") echo '{"ok":true}' ;;
+  "terminal list") # FAKE_TL: the file it answers; none: the call fails
+    if [ -f "${FAKE_TL:-/nonexistent}" ]; then cat "$FAKE_TL"; else echo '{"ok":false}'; exit 1; fi ;;
+  "worktree ps") echo '{"ok":true,"result":{"worktrees":[]}}' ;;
   "terminal create") # a new pane, term_new, only with FAKE_CREATE; FAKE_START: the session runs there
     printf '%s\n' "$*" >>"$FAKE_LOG.create"
     [ -n "${FAKE_CREATE:-}" ] || { echo '{"ok":false,"error":{"code":"no_worktree"}}'; exit 1; }
@@ -178,6 +183,30 @@ echo '{"state":"closed"}' >"$T/prstate"
 refused 'closed PR' 'PR is closed'
 echo '{"state":"open"}' >"$T/prstate"
 refused 'live worker' 'not settled' FAKE_LIVE=ctx_old
+
+# --- orphaned: an Orca restart left the workspace with only orphaned terminals, no agent
+printf '{"ok":true,"result":{"terminals":[
+  {"handle":"t_sh","worktreePath":"%s","connected":true,"writable":true,"agentIdentity":null,"orphaned":true,"preview":"cut \\ud83d"}
+]}}' "$T/ws" >"$T/tl.orphan"
+printf '{"ok":true,"result":{"terminals":[
+  {"handle":"t_sh","worktreePath":"%s","connected":true,"writable":true,"agentIdentity":null,"orphaned":true},
+  {"handle":"t_ag","worktreePath":"%s","connected":true,"writable":true,"agentIdentity":"claude","orphaned":true}
+]}}' "$T/ws" "$T/ws" >"$T/tl.alive"
+fresh
+check 'orphaned: a worker Orca counts running is listed live' \
+  "$(FAKE_TL="$T/tl.orphan" FAKE_LIVE=ctx_old bash "$C" orphaned)" "$(printf 'AB-1\t%s\tctx_old\tlive' "$T/ws")"
+check 'orphaned: a settled one, lost' "$(FAKE_TL="$T/tl.orphan" bash "$C" orphaned | cut -f4)" lost
+check 'orphaned: an orphaned agent terminal still runs its session: not listed' \
+  "$(FAKE_TL="$T/tl.alive" FAKE_LIVE=ctx_old bash "$C" orphaned)" ''
+check 'orphaned: no terminal list, nothing' "$(FAKE_LIVE=ctx_old bash "$C" orphaned; echo "rc=$?")" 'rc=0'
+check 'orphaned: no hi plugin, nothing' "$(HI_ORCA_SH="$T/none" FAKE_TL="$T/tl.orphan" bash "$C" orphaned; echo "rc=$?")" 'rc=0'
+refused 'live worker, an orphaned agent terminal still runs' 'not settled' FAKE_LIVE=ctx_old FAKE_TL="$T/tl.alive"
+fresh
+err=$(FAKE_TL="$T/tl.orphan" FAKE_LIVE=ctx_old bash "$C" resume AB-1 2>&1 >/dev/null); rc=$?
+check 'orphaned live worker: resume goes ahead' "$rc" 0
+has 'orphaned live worker: says why' "$err" 'only orphaned terminals and no agent'
+has 'orphaned live worker: a worker started' "$(cat "$FAKE_LOG" 2>/dev/null)" 'orchestration worker-start'
+rm -f "$FAKE_LOG"
 fresh
 err=$(FAKE_FAIL=1 bash "$C" resume AB-1 2>&1) && no 'failed start: exit 0'
 has 'failed start: says do not rerun' "$err" 'do not rerun it'
@@ -281,6 +310,12 @@ fresh; transcripts; rm -f "$FAKE_LOG.send"; running 4242 sid1 term_pane
 err=$(FAKE_PANE=term_pane FAKE_DIALOG=1 bash "$C" resume AB-1 2>&1) && no 'dialog: exit 0'
 has 'dialog: says answer it there' "$err" 'waits on a dialog'
 [ -s "$FAKE_LOG" ] && no 'dialog: started nothing' || ok 'dialog: started nothing'
+# The same dialog, its pane's preview cut inside an emoji: it used to read as no dialog, and the
+# Dispatch was typed into it.
+fresh; transcripts; rm -f "$FAKE_LOG.send"; running 4242 sid1 term_pane
+err=$(FAKE_PANE=term_pane FAKE_DIALOG=1 FAKE_CUT=1 bash "$C" resume AB-1 2>&1) && no 'dialog, cut preview: exit 0'
+has 'dialog, cut preview: still seen' "$err" 'waits on a dialog'
+[ -s "$FAKE_LOG" ] && no 'dialog, cut preview: started nothing' || ok 'dialog, cut preview: started nothing'
 
 # Fallbacks to a new worker: today's behaviour.
 fresh; transcripts; rm -f "$FAKE_LOG.send"; running 4242 sid1 term_other
@@ -343,5 +378,14 @@ inpane HI_RESUME_START_WAIT=1
 has 'unconfirmed relaunch: says look at the pane' "$out" 'look at the pane'
 [ -s "$FAKE_LOG" ] && no 'unconfirmed relaunch: started nothing' || ok 'unconfirmed relaunch: started nothing'
 check 'unconfirmed relaunch: facts unchanged' "$(bash "$C" get AB-1 | jq -r .dispatch)" ctx_old
+
+# Orca counts the worker running and sees no agent in its orphaned workspace, but a Claude still
+# runs in one of its terminals: refuse, start nothing beside it.
+fresh; rm -rf "$T/proc" "$T/cfg/sessions" "$FAKE_LOG"; running 6161 sid7 t_sh
+err=$(FAKE_TL="$T/tl.orphan" FAKE_LIVE=ctx_old bash "$C" resume AB-1 2>&1) && no 'orphaned, a Claude still runs: exit 0'
+has 'orphaned, a Claude still runs: says so' "$err" 'still runs in one of them'
+[ -s "$FAKE_LOG" ] && no 'orphaned, a Claude still runs: started nothing' || ok 'orphaned, a Claude still runs: started nothing'
+check 'orphaned, a Claude still runs: facts unchanged' "$(bash "$C" get AB-1 | jq -r .dispatch)" ctx_old
+rm -rf "$T/proc/6161" "$T/cfg/sessions/6161.json"
 
 exit $fail
