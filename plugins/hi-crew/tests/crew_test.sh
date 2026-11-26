@@ -119,15 +119,32 @@ stop() { # <id> <dispatch> <stopReason> <handle>
   stop msg_si ctx_i errored term_i    # another stop reason: listed as before
   stop msg_sj ctx_j finished term_j   # its ask was answered: not open, terminal gone: listed
   stop msg_sk ctx_k finished term_k   # its ask's Dispatch settled: not open, terminal gone: listed
+  # Orca's notice that the coordinator's turn ended without an answer is not one (highness#155)
+  echo ' {"id":"msg_qr","run_id":"run_abc123","type":"question","thread_id":"msg_qr","created_at":"2026-01-02T09:00:00Z","body":"A person'"'"'s call?","payload":"{\"dispatchId\":\"ctx_r\"}"},'
+  echo ' {"id":"msg_nr","run_id":"run_abc123","type":"status","thread_id":"msg_qr","created_at":"2026-01-02T09:00:01Z","subject":"Re: Question","body":"Your coordinator stopped without answering your question and has no worker running for it. Decide it yourself and say what you chose when you report. If an answer comes later, it still reaches you.","payload":null},'
+  stop msg_sr ctx_r finished term_r   # idle on its ask Orca released: folded into the ask
+  echo ' {"id":"msg_qw","run_id":"run_abc123","type":"question","thread_id":"msg_qw","created_at":"2026-01-02T09:00:00Z","body":"No reader?","payload":"{\"dispatchId\":\"ctx_w\"}"},'
+  echo ' {"id":"msg_nw","run_id":"run_abc123","type":"status","thread_id":"msg_qw","created_at":"2026-01-02T09:00:01Z","body":"No one coordinates Run run_abc123 now, so no one will read your question. Decide it yourself and say what you chose when you report.","payload":null},'
   echo ' {"id":"msg_sn","run_id":"run_abc123","type":"escalation","thread_id":null,"created_at":"2026-01-02T10:00:00Z","body":"Stopped","payload":"{\"dispatchId\":\"ctx_n\",\"stopReason\":\"finished\"}"}'
   echo ']}}'
 } >"$T/inbox-stops.json"
 check 'asks: a stop notice folds into an open ask; alone only once the terminal is gone' \
   "$(FAKE_INBOX="$T/inbox-stops.json" FAKE_TERMS='term_g term_i' FAKE_SETTLED=ctx_k bash "$C" asks | cut -f1 | tr '\n' ' ')" \
-  'msg_qf msg_sh msg_si msg_sj msg_sk msg_sn '
+  'msg_qf msg_sh msg_si msg_sj msg_sk msg_qr msg_qw msg_sn '
 check 'asks: a stop notice keeps its columns' \
   "$(FAKE_INBOX="$T/inbox-stops.json" FAKE_TERMS='term_g term_i' FAKE_SETTLED=ctx_k bash "$C" asks | grep '^msg_sh')" \
   "$(printf 'msg_sh\tescalation\trun_abc123\tctx_h\t2026-01-02T10:00:00Z\tWorker term_h ended its turn')"
+# An ask Orca released (its "Decide it yourself" notice) stays the ticket's open ask for relay,
+# is no answer sent without relay, and is unanswered once its worker is gone (highness#155).
+bash "$C" record ABC-155 '{"run":"run_abc123","dispatch":"ctx_r"}'
+check 'gaps: Orca'"'"'s release notice is no answer sent without relay' \
+  "$(FAKE_INBOX="$T/inbox-stops.json" bash "$C" choices --gaps | grep -c 'msg_q[rw]')" 0
+: >"$T/sent-r"; printf '{"body":"The person: A.","points":[]}' >"$T/r-r"
+check 'relay: with no --id, finds the ask Orca released' \
+  "$(FAKE_INBOX="$T/inbox-stops.json" FAKE_SENT="$T/sent-r" bash "$C" relay ABC-155 "$T/r-r" >/dev/null 2>&1; cut -d'|' -f1 "$T/sent-r")" 'msg_qr'
+check 'stranded: a released ask whose worker is gone is unanswered, not unheard' \
+  "$(FAKE_INBOX="$T/inbox-stops.json" FAKE_GONE=ctx_r bash "$C" stranded | jq -r 'select(.key == "ABC-155") | .what + " " + .ask')" 'unanswered msg_qr'
+bash "$C" close ABC-155
 
 # --- relay: the reply and its choice lines in one step; --gaps: answers sent any other way
 export FAKE_SENT="$T/sent"; : >"$FAKE_SENT"

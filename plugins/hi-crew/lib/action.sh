@@ -193,13 +193,13 @@ cmd_stranded() {
     dispatch_live "$d" && continue
     # Only the kept replies' ids, through a pipe: their bodies can be any size.
     printf '%s' "$m" | jq -c --arg d "$d" --arg key "$key" --arg ws "$ws" --arg s "$sess" \
-        --slurpfile k <(printf '%s' "$kept" | jq -c 'map(.ask)') '
+        --slurpfile k <(printf '%s' "$kept" | jq -c 'map(.ask)') "$JQ_ANSWER"'
       . as $m
       | $k[0] as $k
       | $m[] | select((.type == "question" or .type == "decision_gate") and .dispatch == $d)
       | select(.id as $id | $k | index($id) | not)
       | . as $q
-      | ([ $m[] | select(.thread_id == $q.id and .id != $q.id) | .created_at ] | min) as $ans
+      | ([ $m[] | select(answers($q)) | .created_at ] | min) as $ans
       | if $ans == null then {what: "unanswered", since: $q.created_at}
         # The "lost without reporting" notice Orca sends is not a word from the worker.
         elif ([ $m[] | select(.dispatch == $d and .created_at > $ans and .thread_id != $q.id)

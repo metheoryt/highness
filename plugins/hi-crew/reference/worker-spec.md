@@ -121,6 +121,13 @@ not done: read it, and ask if it is unclear whether to continue it.
 
 Ask the coordinator with Orca's `ask`, then end your turn; the answer wakes you.
 
+- A person's answer takes a while: the coordinator shows them your ask and ends its turn while
+  they read. Orca may then send you, threaded to your ask, a status that says your coordinator
+  stopped without answering (or that no one coordinates the Run, or that your question was
+  removed) and to decide it yourself. That is not the person's answer, and it never lets you
+  take their decision: take no option, keep the pull request a draft, merge nothing, and end
+  your turn again. Orca still delivers the answer when it comes, and it wakes you.
+
 - Ask when the decision is a person's: product, money, security, production, access or secrets, a
   rule's intent, or anything that would undo what was agreed earlier on this ticket.
 - Everything else: decide, and say what you decided in the PR. When one answer is clearly right,
