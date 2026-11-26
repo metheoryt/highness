@@ -128,8 +128,8 @@ One short list, most urgent first, each item with its next step in words:
    facts. The sections' `done` items go here too, the threads the check just closed among them.
 
 Within each section, the items with a `mark` come first, each tagged with one word (`new`,
-`changed`), so a long list reads from the top of what moved. A count says how many moved ("and 12
-not started, 3 new"). No other words go to the marks.
+`changed`), so a long list reads from the top of what moved. A count says how many moved ("and 12 in
+the backlog, 3 new"). No other words go to the marks.
 
 Then `bash "$C" events --ack` and `bash "$C" sections --ack`: the person has read both. The next
 agenda marks what moved since this one. Then propose where to start, and go one topic at a time.
@@ -165,7 +165,8 @@ and say in one line that Orca now wakes this session, not the other one, for tha
   `--retry-of` for this: it needs the old Task, whose spec cannot carry the note.
 - **A worker an Orca restart orphaned** (`orphaned`): offer "resume it?" the same way. On a yes,
   run `bash "$C" resume <KEY>`. It takes up a worker that Orca still counts running too, because
-  its workspace has no agent left to act on that Dispatch. Its stderr says so.
+  its workspace has no agent left to act on that Dispatch (its stderr says so). It refuses while
+  a Claude session still runs in one of that workspace's terminals: show what it says.
 - **A person's comment on a PR**: show it with your read; on the user's decision, send the worker a
   round: `$O orchestration send --to dispatch:<dispatch> --subject … --body …`, saying what to
   change and how to reply, and only that: the worker has its spec and chat (`hi-crew:start`,
