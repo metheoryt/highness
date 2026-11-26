@@ -270,4 +270,31 @@ check 'submit: the payload of that sha256 posts' "$(sb --head abc --sha256 "$psh
 check 'submit: a payload changed since the cards is exit 4' "$(sb --head abc --sha256 0000)" 'rc=4'
 check 'submit: and reaches no gh call' "$(wc -l <"$STUB_LOG" | tr -d ' ')" 0
 
+# --- bots: a known review bot, so review points at brief. The team's lists, or a bot's review.
+bo() { bash "$R" bots o/r "${1:-7}" 2>"$T/err"; echo "rc=$?"; }
+echo '[]' >"$T/reviews.json"
+check 'bots: none listed, no reviews: exit 1' "$(bo)" 'rc=1'
+echo '[{"id":1,"state":"COMMENTED","user":{"login":"ann","type":"User"}},{"id":2,"state":"APPROVED","user":{"login":"github-actions[bot]","type":"Bot"}}]' >"$T/reviews.json"
+check 'bots: a person s review and the Actions user are no review bot' "$(bo)" 'rc=1'
+echo '[{"id":3,"state":"COMMENTED","user":{"login":"coderabbitai[bot]","type":"Bot"}}]' >"$T/reviews.json"
+echo '[{"id":4,"state":"PENDING","user":{"login":"lazy[bot]","type":"Bot"}}]' >>"$T/reviews.json"
+check 'bots: a Bot s submitted review, across pages; a pending one is not' "$(bo)" 'coderabbitai[bot]
+rc=0'
+echo '[{"id":5,"state":"COMMENTED","user":{"login":"gatekeeper","type":"User"}}]' >"$T/reviews.json"
+check 'bots: a plain account reviewing is no bot unless listed' "$(bo)" 'rc=1'
+mkdir -p .claude && echo '{"review": {"bots": ["gatekeeper"]}}' >.claude/highness.json
+check 'bots: a review.bots login that reviewed' "$(bo)" 'gatekeeper
+rc=0'
+echo '[]' >"$T/reviews.json"
+echo '{"crew": {"bots": ["reviewer-x"]}}' >"$HIGHNESS_CONFIG"
+check 'bots: the team s lists count with no review yet' "$(bo)" 'gatekeeper
+reviewer-x
+rc=0'
+check 'bots: the PR s reviews unreadable: exit 3, the lists still printed' "$(bo 8)" 'gatekeeper
+reviewer-x
+rc=3'
+has 'bots: and the failure is said' "$(cat "$T/err")" 'reading the reviews of o/r#8 failed'
+bash "$R" bots o/r 2>/dev/null; check 'bots: no PR is usage' "$?" 2
+rm -f .claude/highness.json; echo '{}' >"$HIGHNESS_CONFIG"
+
 exit $fail

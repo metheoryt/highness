@@ -2,6 +2,7 @@
 
 Read by `/hi-review:review` when the args say `deep`, by the worker that review starts, and by a
 coordinator Orca wakes for that worker (the worker's hi-crew facts name this file as `guide`).
+`/hi-review:brief` reads a large diff through the same slices: worker step 3 below.
 
 Deep mode is the quick review (`skills/review/SKILL.md`) moved into its own session and workspace:
 
@@ -36,8 +37,8 @@ coordinator).
    `deep mode needs the hi-crew and hi plugins beside hi-review` and ask once whether to run quick
    instead (Run quick / Stop). `O=$(bash "$C" orca)`; `$O orchestration run-current` fails →
    say Orca orchestration is off (Settings → Orchestration) and ask the same.
-2. **The PR.** Steps 1.1–1.3 and 1.5 of the skill (gh, the repo, the PR, `ME`, the own-PR stop,
-   the voice files; `V` is the person's voice file or empty).
+2. **The PR.** Steps 1.1–1.4 and 1.6 of the skill (gh, the repo, the PR, `ME`, brief or review,
+   the own-PR stop, the voice files; `V` is the person's voice file or empty).
 3. **One worker per PR.** `KEY=$(bash "$R" key <o>/<r> <n>)`. `bash "$C" get "$KEY"` with open
    facts → a worker already reviews it: show its workspace and stop. One lost without reporting
    (a usage limit, an account switch) continues with `bash "$C" resume "$KEY"`, never a second
