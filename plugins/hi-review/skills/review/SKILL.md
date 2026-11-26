@@ -1,6 +1,6 @@
 ---
 name: review
-description: Review a GitHub pull request and submit it as one review, from the current session with no workspace (quick mode). A read-only reviewer subagent drafts the findings, a second reviewer pass tries to break each one before any card is shown, one question picks the verdict, and the review is posted with that verdict in a single call. Use when the user wants to review a PR, names a PR number or URL to review, or asks for a quick review. Args: <PR number or URL> [quick].
+description: Review a GitHub pull request and submit it as one review — from the current session with no workspace (quick mode), or as a hi-crew worker in its own review workspace whose diff is cut into slices for several reviewer subagents and whose verdict question comes back to this session (deep mode). A read-only reviewer subagent drafts the findings, a second reviewer pass tries to break each one before any card is shown, one question picks the verdict, and the review is posted with that verdict in a single call. Use when the user wants to review a PR, names a PR number or URL to review, or asks for a quick or a deep review. Args: <PR number or URL> [quick|deep].
 ---
 
 # /hi-review:review
@@ -28,12 +28,16 @@ this skill" printed above, two levels up. Every call runs from a checkout of the
    `run /hi-review:review from a checkout of <owner/repo>` and stop. `<o>/<r>` below is that value.
 3. `gh pr view <n> --json number,title,body,author,headRefName,baseRefName,headRefOid,state,closingIssuesReferences`
    and `ME=$(gh api user --jq .login)`. Merged or closed → say so and stop.
-4. **The mode.** Quick is the only mode this version serves, and the default.
+4. **The mode.** Quick (this session, no workspace) and deep serve; quick is the default.
    - The author is `ME`, or `own` is in the args → say `own mode (checking your own PR) is not
      built yet` and stop. GitHub refuses an approve or a request for changes on one's own PR, and
      own mode posts nothing; a quick review would end in a post that cannot be made.
-   - `deep` or `delta` in the args → say `<mode> is not built yet; quick reviews in this session`
-     and ask once whether to run quick instead (Run quick / Stop).
+   - `deep` in the args → read `${CLAUDE_PLUGIN_ROOT}/reference/deep.md` in full with the Read
+     tool and follow its coordinator part instead of the steps below: the review runs as a
+     hi-crew worker in its own review workspace, its diff cut into slices for several reviewer
+     subagents, and its verdict question comes back to this session.
+   - `delta` in the args → say `delta is not built yet; quick reviews in this session` and ask
+     once whether to run quick instead (Run quick / Stop).
 5. Read in full, with the Read tool, one call per file: `${CLAUDE_PLUGIN_ROOT}/reference/voice.md`
    and `${CLAUDE_PLUGIN_ROOT}/reference/cards.md`. Then the person's own voice:
    `V=$(bash "$CFG" get --user .review.voice)` — set → Read that file too (a leading `~/` is the
@@ -49,7 +53,9 @@ BASE=$(printf '%s' "$H" | cut -f1); HEAD=$(printf '%s' "$H" | cut -f2)
 `HEAD` is the PR head under the private ref `refs/hi-review/<n>`; `BASE` its merge-base with the
 base branch, so the diff is the one GitHub shows. Both come from the remote that names `<o>/<r>`
 (a fork checkout's `upstream`), else `origin`. Nothing is checked out. Say the size in one line
-(`git diff --shortstat "$BASE" "$HEAD"`).
+(`git diff --shortstat "$BASE" "$HEAD"`). A large diff (over about 1500 changed lines or 40
+files) with `deep` not asked for and deep mode available (`reference/deep.md`, its step 1) →
+ask once: **Deep** (a worker reads it in slices; the verdict comes back here) / **Quick here**.
 
 ## 3. Intent
 
@@ -170,3 +176,5 @@ verified. No findings → no verify pass.
 - **Local, no confirmation:** the ref `refs/hi-review/<n>`, the payload files under the git
   directory.
 - **Shown first, then on the answer:** the post.
+- **Deep mode** (`reference/deep.md`) adds the review workspace (hi's `wt.sh`), the worker's
+  hi-crew facts and its prepared actions; the post is the one action the person said yes to.

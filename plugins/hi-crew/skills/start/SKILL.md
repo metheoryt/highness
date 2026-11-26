@@ -177,6 +177,11 @@ fit; one command does the whole start:
 
 `$O orchestration check --run "$(bash "$C" run)"` and handle the whole batch.
 
+A message from the dispatch of facts with a `kind` and a `guide` (a worker `crew.sh dispatch`
+started for another plugin, such as a deep review): read that guide file and handle the message
+as it says. Its answers still go through `relay`, below; it has no ticket and no PR of its own,
+so no retro.
+
 - **A question** (`ask`) or a **decision gate**: the worker stops for a person's decision. Never answer it yourself, even
   when the answer looks obvious: show it to the user in plain words, point by point, with your own
   read, and ask for their decision. Then relay it with one command, and only this one: it sends

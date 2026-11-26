@@ -26,7 +26,21 @@
 #                                              one POST that creates AND submits the review;
 #                                              prints {id, state, html_url}
 #
+# Deep mode (reference/deep.md):
+#   review.sh slices <base> <head> [--max-lines N] [--max-files M]
+#                                              the diff cut into slices for reviewer subagents,
+#                                              TSV: slice, changed lines, path (git's path order;
+#                                              a file is never split)
+#   review.sh key <owner/repo> <n>             the hi-crew key of the review: review-<owner>-<repo>-<n>
+#   review.sh task --pr-url U --key K --base SHA --head SHA --workspace P [--voice F]
+#                                              the review worker's task (reference/deep-task.md)
+#   review.sh submit <owner/repo> <n> <payload> --head SHA --login L [--seen-pending F]
+#                                              post, as the action the person said yes to, only
+#                                              what they saw: exit 4 when the PR's head moved or
+#                                              their pending review is not the one the cards showed
+#
 # Exit: 0 ok · 1 no (not in the diff, no pending review) · 2 usage or bad input · 3 git/gh failed
+#       · 4 changed since the cards (submit)
 set -uo pipefail
 export LC_ALL=C
 
@@ -267,6 +281,130 @@ cmd_post() {
     say "post: the review was not posted; the payload is still in $f"; return 3; }
 }
 
+# slices: a deep review's diff cut into parts one reviewer subagent can hold. Files stay in git's
+# path order, so a directory's files sit together; a slice closes when the next file would take
+# it past --max-lines changed lines (default 600) or --max-files files (default 20). A file larger
+# than the limit is a slice of its own: a file is never split, since an anchor and its context
+# must be in one review. A binary file counts 0 lines. A rename is listed by its new path.
+cmd_slices() {
+  local base="${1:-}" head="${2:-}" maxl=600 maxf=20 d rec a r p n=1 lines=0 files=0 l
+  [ -n "$base" ] && [ -n "$head" ] || { say 'usage: slices <base> <head> [--max-lines N] [--max-files M]'; return 2; }
+  shift 2
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --max-lines) maxl="${2:-}"; shift 2 ;;
+      --max-files) maxf="${2:-}"; shift 2 ;;
+      *) say "slices: unknown flag $1"; return 2 ;;
+    esac
+  done
+  case "$maxl$maxf" in *[!0-9]*) say 'slices: --max-lines and --max-files take whole numbers'; return 2 ;; esac
+  [ "$maxl" -gt 0 ] && [ "$maxf" -gt 0 ] || { say 'slices: the limits must be above 0'; return 2; }
+  d="$(mktemp "${TMPDIR:-/tmp}/hi-review-slices.XXXXXX")" || { say 'slices: no temp file'; return 3; }
+  git diff --no-ext-diff -z --numstat -M "$base" "$head" >"$d" 2>/dev/null || {
+    rm -f "$d"; say "slices: git diff $base $head failed"; return 3; }
+  # -z numstat: "<added>\t<deleted>\t<path>\0", or for a rename "<added>\t<deleted>\t\0<old>\0<new>\0".
+  while IFS= read -r -d '' rec; do
+    a=${rec%%"	"*}; r=${rec#*"	"}; p=${r#*"	"}; r=${r%%"	"*}
+    if [ -z "$p" ]; then
+      IFS= read -r -d '' p || break   # the old path
+      IFS= read -r -d '' p || break   # the new path
+    fi
+    case "$a$r" in *[!0-9]*) l=0 ;; *) l=$((a + r)) ;; esac
+    if [ "$files" -gt 0 ] && { [ $((lines + l)) -gt "$maxl" ] || [ "$files" -ge "$maxf" ]; }; then
+      n=$((n + 1)); lines=0; files=0
+    fi
+    lines=$((lines + l)); files=$((files + 1))
+    printf '%s\t%s\t%s\n' "$n" "$l" "$p"
+  done <"$d"
+  rm -f "$d"
+}
+
+# key: the hi-crew key of a deep review of <owner/repo>#<n>: review-<owner>-<repo>-<n>, lowercase,
+# every byte outside [a-z0-9._-] a dash, so it is a file name crew.sh accepts.
+cmd_key() {
+  local or="${1:-}" n="${2:-}"
+  case "$or" in */*) ;; *) say 'usage: key <owner/repo> <n>'; return 2 ;; esac
+  case "$n" in ''|*[!0-9]*) say 'usage: key <owner/repo> <n>'; return 2 ;; esac
+  printf 'review-%s-%s\n' "$(printf '%s' "$or" | tr '[:upper:]' '[:lower:]' | sed 's#/#-#; s/[^a-z0-9._-]/-/g')" "$n"
+}
+
+# task: the deep review worker's task (crew.sh dispatch --task-file), from reference/deep-task.md
+# with its placeholders filled. Every path is absolute: the worker runs in the review workspace,
+# where this plugin may not be loaded.
+cmd_task() {
+  local pr='' key='' base='' head='' ws='' voice='' n or
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --pr-url) pr="${2:-}"; shift 2 ;;
+      --key) key="${2:-}"; shift 2 ;;
+      --base) base="${2:-}"; shift 2 ;;
+      --head) head="${2:-}"; shift 2 ;;
+      --workspace) ws="${2:-}"; shift 2 ;;
+      --voice) voice="${2:-}"; shift 2 ;;
+      *) say "task: unknown flag $1"; return 2 ;;
+    esac
+  done
+  [ -n "$pr" ] && [ -n "$key" ] && [ -n "$base" ] && [ -n "$head" ] && [ -n "$ws" ] || {
+    say 'usage: task --pr-url U --key K --base SHA --head SHA --workspace P [--voice F]'; return 2; }
+  case "$pr" in https://github.com/*/*/pull/[0-9]*) ;; *) say "task: --pr-url must be a github.com pull request url (got [$pr])"; return 2 ;; esac
+  n=${pr##*/pull/}; n=${n%%[!0-9]*}
+  or=$(printf '%s\n' "$pr" | sed -n 's#^https://github\.com/\([^/]*\)/\([^/]*\)/pull/.*#\1/\2#p')
+  [ -f "$HERE/../reference/deep-task.md" ] || { say "task: missing $HERE/../reference/deep-task.md"; return 3; }
+  PLUGIN="$(cd "$HERE/.." && pwd -P)" PR=$pr N=$n REPO=$or KEY=$key BASE=$base HEAD=$head WS=$ws \
+  VOICE=${voice:-none} awk '
+    function rep(s, ph, val,   out, i) {
+      out = ""
+      while ((i = index(s, ph)) > 0) { out = out substr(s, 1, i - 1) val; s = substr(s, i + length(ph)) }
+      return out s
+    }
+    { s = $0
+      s = rep(s, "{{PLUGIN}}", ENVIRON["PLUGIN"]); s = rep(s, "{{PR}}", ENVIRON["PR"])
+      s = rep(s, "{{N}}", ENVIRON["N"]); s = rep(s, "{{REPO}}", ENVIRON["REPO"])
+      s = rep(s, "{{KEY}}", ENVIRON["KEY"]); s = rep(s, "{{BASE}}", ENVIRON["BASE"])
+      s = rep(s, "{{HEAD}}", ENVIRON["HEAD"]); s = rep(s, "{{WS}}", ENVIRON["WS"])
+      s = rep(s, "{{VOICE}}", ENVIRON["VOICE"])
+      print s }' "$HERE/../reference/deep-task.md"
+}
+
+# submit: the post of a deep review, as the action the person says yes to. It posts only what the
+# person saw: exit 4, posting nothing, when the PR's head is no longer --head, or the person's own
+# pending review is not the one --seen-pending holds (one appeared, changed or went; with no
+# --seen-pending, any pending review). A pending review that matches is kept beside the payload,
+# deleted (GitHub holds one per person per PR), and put back when the post fails.
+cmd_submit() {
+  local or="${1:-}" n="${2:-}" f="${3:-}" head='' login='' seen='' now cur pend id
+  case "$or" in */*) ;; *) say 'usage: submit <owner/repo> <n> <payload> --head SHA --login L [--seen-pending F]'; return 2 ;; esac
+  case "$n" in ''|*[!0-9]*) say 'usage: submit <owner/repo> <n> <payload> --head SHA --login L [--seen-pending F]'; return 2 ;; esac
+  shift 3 2>/dev/null || { say 'usage: submit <owner/repo> <n> <payload> --head SHA --login L [--seen-pending F]'; return 2; }
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --head) head="${2:-}"; shift 2 ;;
+      --login) login="${2:-}"; shift 2 ;;
+      --seen-pending) seen="${2:-}"; shift 2 ;;
+      *) say "submit: unknown flag $1"; return 2 ;;
+    esac
+  done
+  [ -n "$head" ] && [ -n "$login" ] || { say 'submit: --head and --login are required'; return 2; }
+  [ -f "$f" ] || { say "submit: no payload file $f"; return 2; }
+  [ -z "$seen" ] || [ -f "$seen" ] || { say "submit: no file $seen"; return 2; }
+  now=$("$GH" api "repos/$or/pulls/$n" --jq .head.sha) || { say "submit: cannot read the head of $or#$n"; return 3; }
+  [ "$now" = "$head" ] || { say "submit: $or#$n moved to $now since the review of $head: nothing posted; review the new head"; return 4; }
+  pend="$f.pending.json"
+  if cur=$(cmd_pending "$or" "$n" "$login"); then
+    [ -n "$seen" ] && [ "$(printf '%s' "$cur" | jq -S -c .)" = "$(jq -S -c . "$seen")" ] || {
+      say "submit: your pending review on $or#$n is not the one the cards showed: nothing posted; show the cards again"; return 4; }
+    printf '%s\n' "$cur" >"$pend" || { say "submit: cannot keep your pending review in $pend"; return 3; }
+    id=$(printf '%s' "$cur" | jq -r .id)
+    cmd_delete_pending "$or" "$n" "$id" || return 3
+  else
+    case $? in 1) ;; *) return 3 ;; esac
+    [ -z "$seen" ] || { say "submit: the pending review the cards showed on $or#$n is gone: nothing posted; show the cards again"; return 4; }
+  fi
+  cmd_post "$or" "$n" "$f" && return 0
+  [ ! -f "$pend" ] || cmd_restore_pending "$or" "$n" "$pend" >/dev/null || say "submit: your pending review was not put back; it is in $pend"
+  return 3
+}
+
 sub="${1:-}"; [ $# -gt 0 ] && shift
 case "$sub" in
   head)           cmd_head "$@" ;;
@@ -277,5 +415,9 @@ case "$sub" in
   delete-pending) cmd_delete_pending "$@" ;;
   restore-pending) cmd_restore_pending "$@" ;;
   post)           cmd_post "$@" ;;
+  slices)         cmd_slices "$@" ;;
+  key)            cmd_key "$@" ;;
+  task)           cmd_task "$@" ;;
+  submit)         cmd_submit "$@" ;;
   *) awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0" >&2; exit 2 ;;
 esac

@@ -22,6 +22,9 @@ this skill" printed above, two levels up.
 ## 1. Gather
 
 1. `bash "$C" list`: one line per open ticket (facts: key, title, repo, workspace, dispatch, pr…).
+   Facts with a `kind` (not a ticket: a worker `crew.sh dispatch` started, such as a deep review)
+   have no PR of their own and no ticket: show them by their title and what they wait on, skip
+   step 6 for them, and read their asks and reports as the file their `guide` names says.
    **The team's sections**: `bash "$C" sections` — what the team set under `agenda.sections` in
    `.claude/highness.json` (its tracker and forge: the person's tickets, PRs, reviews waiting),
    one JSON object per line: `section`, `group` (`you` waits on the person, `others` waits on

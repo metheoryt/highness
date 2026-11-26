@@ -14,6 +14,7 @@ ok() { echo "  ok   $1"; }
 no() { echo "  FAIL $1"; fail=1; }
 check() { if [ "$2" = "$3" ]; then ok "$1"; else no "$1: got [$2] want [$3]"; fi; }
 has() { case "$2" in *"$3"*) ok "$1" ;; *) no "$1: [$3] not in [$2]" ;; esac; }
+hasnt() { case "$2" in *"$3"*) no "$1: [$3] is there" ;; *) ok "$1" ;; esac; }
 
 command -v jq >/dev/null || { echo '  skip: no jq'; exit 0; }
 g() { git -c user.name=t -c user.email=t@example.invalid -c init.defaultBranch=main "$@"; }
@@ -173,5 +174,94 @@ rm -f "$T/post-fails"
 bash "$R" restore-pending o/r 7 "$T/pend.json" >/dev/null; check 'restore-pending: exit 0' "$?" 0
 check 'restore-pending: no event, the outdated comment in the body, nulls dropped' "$(jq -c . "$T/stdin.json")" \
   '{"body":"draft\n\nb.txt: gone","comments":[{"path":"a.txt","line":5,"side":"RIGHT","body":"mine"}]}'
+
+# --- deep mode: slices. Every changed file once, by its new path, with its changed lines; a slice
+# closes before a file would take it past the limits, and a file is never split.
+out=$(bash "$R" slices "$BASE" "$HEAD"); rc=$?
+check 'slices: exit 0' "$rc" 0
+check 'slices: one row per changed file' "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" \
+  "$(git diff --name-only -M "$BASE" "$HEAD" | wc -l | tr -d ' ')"
+check 'slices: a small diff is one slice' "$(printf '%s\n' "$out" | cut -f1 | sort -u | tr '\n' ' ')" '1 '
+has 'slices: a rename by its new path, with its lines' "$out" "$(printf '1\t2\tnew.txt')"
+hasnt 'slices: never the old name' "$out" 'old.txt'
+has 'slices: a name with a space' "$out" "$(printf '\tsp ace.txt')"
+has 'slices: a non-ASCII name as is' "$out" "$(printf '\tcaf\303\251.txt')"
+has 'slices: added plus deleted lines' "$out" "$(printf '\t4\ta.txt')"
+out=$(bash "$R" slices "$BASE" "$HEAD" --max-files 1)
+check 'slices: --max-files 1 is one file per slice' "$(printf '%s\n' "$out" | cut -f1 | sort -u | wc -l | tr -d ' ')" \
+  "$(printf '%s\n' "$out" | wc -l | tr -d ' ')"
+out=$(bash "$R" slices "$BASE" "$HEAD" --max-lines 5)
+check 'slices: no slice over the line limit but a lone file' \
+  "$(printf '%s\n' "$out" | awk -F'\t' '{ s[$1] += $2; c[$1]++ } END { for (k in s) if (s[k] > 5 && c[k] > 1) bad++; print bad + 0 }')" 0
+check 'slices: in order, numbered from 1 without gaps' \
+  "$(printf '%s\n' "$out" | awk -F'\t' 'NR == 1 && $1 != 1 { bad++ } NR > 1 && $1 != p && $1 != p + 1 { bad++ } { p = $1 } END { print bad + 0 }')" 0
+printf 'x\0y' >"$T/bin.dat"; ( cd "$T/src" && cp "$T/bin.dat" bin.dat && g add bin.dat && g commit -qm bin && g push -q "$T/up.git" HEAD:refs/pull/9/head )
+bash "$R" head --pr 9 --base-ref main >/dev/null
+has 'slices: a binary file counts 0 lines' "$(bash "$R" slices "$BASE" refs/hi-review/9)" "$(printf '\t0\tbin.dat')"
+bash "$R" slices "$BASE" "$HEAD" --max-lines 0 2>/dev/null; check 'slices: a zero limit is usage' "$?" 2
+bash "$R" slices "$BASE" 2>/dev/null; check 'slices: no head is usage' "$?" 2
+bash "$R" slices deadbeef "$HEAD" 2>/dev/null; check 'slices: an unresolvable range fails' "$?" 3
+
+# --- key and task.
+check 'key: lowercase, one dash per slash' "$(bash "$R" key Own.er/Re_po 42)" 'review-own.er-re_po-42'
+check 'key: other bytes become dashes' "$(bash "$R" key 'o/r p' 1)" 'review-o-r-p-1'
+bash "$R" key o/r 4x 2>/dev/null; check 'key: a PR that is not a number is usage' "$?" 2
+out=$(bash "$R" task --pr-url https://github.com/o/r/pull/7 --key review-o-r-7 --base "$BASE" --head "$HEAD" --workspace /ws/rv-7); rc=$?
+check 'task: exit 0' "$rc" 0
+has 'task: the PR' "$out" 'https://github.com/o/r/pull/7 (o/r#7)'
+has 'task: the plugin by absolute path' "$out" "PLUGIN=$(cd "$HERE/.." && pwd -P)"
+has 'task: the shas' "$out" "BASE_SHA=$BASE"
+has 'task: the workspace' "$out" '`/ws/rv-7`'
+has 'task: no voice' "$out" 'VOICE=none'
+has 'task: subagents asked for' "$out" 'subagent_type: "hi-review:reviewer"'
+has 'task: the post is the person action' "$out" 'never by you'
+hasnt 'task: every placeholder filled' "$out" '{{'
+has 'task: a voice file' "$(bash "$R" task --pr-url https://github.com/o/r/pull/7 --key k --base b --head h --workspace w --voice /v.md)" 'VOICE=/v.md'
+bash "$R" task --pr-url https://example.com/x --key k --base b --head h --workspace w 2>/dev/null
+check 'task: not a github PR url is usage' "$?" 2
+
+# --- submit: posts only what the cards showed. The stub answers the PR head from $T/headsha.
+cat >"$T/bin/gh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$STUB_LOG"
+case "$*" in
+  'api repos/o/r/pulls/7 --jq .head.sha') cat "$STUB_DIR/headsha" ;;
+  *'reviews/55/comments'*) cat "$STUB_DIR/pending-comments.json" ;;
+  'api --paginate repos/o/r/pulls/7/reviews') cat "$STUB_DIR/reviews.json" ;;
+  *'--input -'*) cat >"$STUB_DIR/stdin.json"; echo '{"id":10,"state":"PENDING"}' ;;
+  'api -X POST repos/o/r/pulls/7/reviews'*) [ -f "$STUB_DIR/post-fails" ] && exit 1; echo '{"id":9,"state":"APPROVED","html_url":"u"}' ;;
+  'api -X DELETE'*) ;;
+  *) exit 1 ;;
+esac
+EOF
+echo abc >"$T/headsha"
+echo '[]' >"$T/reviews.json"
+sb() { bash "$R" submit o/r 7 "$T/p.json" --login me "$@" 2>"$T/err"; echo "rc=$?"; }
+: >"$STUB_LOG"
+check 'submit: the head moved is exit 4' "$(sb --head def)" 'rc=4'
+has 'submit: and says so' "$(cat "$T/err")" 'moved to abc'
+check 'submit: and posts nothing' "$(grep -c 'X POST' "$STUB_LOG")" 0
+check 'submit: no pending review, none seen: posts' "$(sb --head abc)" '{"id":9,"state":"APPROVED","html_url":"u"}
+rc=0'
+echo '[{"id":55,"state":"PENDING","user":{"login":"me"},"body":"draft"}]' >"$T/reviews.json"
+: >"$STUB_LOG"
+check 'submit: a pending review the cards did not show is exit 4' "$(sb --head abc)" 'rc=4'
+check 'submit: and nothing is deleted or posted' "$(grep -c -e 'X POST' -e 'X DELETE' "$STUB_LOG")" 0
+bash "$R" pending o/r 7 me >"$T/seen.json"
+: >"$STUB_LOG"
+check 'submit: the pending review the cards showed: posts' "$(sb --head abc --seen-pending "$T/seen.json" | tail -1)" 'rc=0'
+check 'submit: it was deleted first, then the post' "$(grep -e 'X DELETE' -e 'X POST' "$STUB_LOG" | cut -d' ' -f2 | tr '\n' ' ')" '-X -X '
+has 'submit: the delete is of that review' "$(grep 'X DELETE' "$STUB_LOG")" 'reviews/55'
+check 'submit: the pending review kept beside the payload' "$(jq -c .id "$T/p.json.pending.json")" 55
+echo '[{"path":"a.txt","line":5,"side":"RIGHT","start_line":null,"start_side":null,"body":"edited","id":1}]' >"$T/pending-comments.json"
+check 'submit: a pending review changed since the cards is exit 4' "$(sb --head abc --seen-pending "$T/seen.json")" 'rc=4'
+echo '[]' >"$T/reviews.json"
+check 'submit: a pending review the cards showed that is gone is exit 4' "$(sb --head abc --seen-pending "$T/seen.json")" 'rc=4'
+echo '[{"id":55,"state":"PENDING","user":{"login":"me"},"body":"draft"}]' >"$T/reviews.json"
+bash "$R" pending o/r 7 me >"$T/seen.json"; rm -f "$T/stdin.json"; touch "$T/post-fails"
+check 'submit: a failed post is exit 3' "$(sb --head abc --seen-pending "$T/seen.json")" 'rc=3'
+check 'submit: and the pending review is put back' "$(jq -c '.comments[0].body' "$T/stdin.json")" '"edited"'
+rm -f "$T/post-fails"
+bash "$R" submit o/r 7 "$T/p.json" --head abc 2>/dev/null; check 'submit: no --login is usage' "$?" 2
 
 exit $fail

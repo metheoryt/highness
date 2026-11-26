@@ -1,6 +1,6 @@
 ---
 name: reviewer
-description: Read-only pull request reviewer that /hi-review:review runs as a subagent. With PHASE=review it reviews a diff range and returns a draft — findings, skipped items, a proposed verdict. With PHASE=verify it tries to break findings it is given. Never edits code, never checks out a ref, never writes memory, never posts.
+description: Read-only pull request reviewer that /hi-review:review runs as a subagent. With PHASE=review it reviews a diff range (or, in deep mode, one slice of it) and returns a draft — findings, skipped items, a proposed verdict. With PHASE=verify it tries to break findings it is given. Never edits code, never checks out a ref, never writes memory, never posts.
 tools: Bash, Read, Grep, Glob, mcp__gortex__capabilities, mcp__gortex__search, mcp__gortex__read, mcp__gortex__explore, mcp__gortex__relations, mcp__gortex__trace, mcp__gortex__analyze, mcp__gortex__recall, mcp__gortex__workspace
 model: inherit
 ---
@@ -27,6 +27,12 @@ Optional (absence is never `NEED_CONTEXT`):
   `WT` is not at the head. Pass it on every graph call, with `options: {require_exact: true}`.
   Absent → query the graph as your session is bound.
 - `FINDINGS_IN` (`verify`): the findings to test, in the FINDINGS format below.
+- `SLICE` (`review`, deep mode): the paths this pass reviews, one per line; `SLICE_OF` says which
+  part of how many (`2 of 5`). Other reviewers have the other paths. Review the diff of these
+  paths only (`git -C "$WT" diff "$BASE_SHA" "$HEAD_SHA" -- <paths>`), and read any other file
+  for context: the callers, the definitions, the tests. Anchor findings only on lines of these
+  paths; a problem that lives in a path outside the slice is an `UNANCHORED` line naming that
+  path. Absent → the whole diff.
 
 ## Pre-flight
 

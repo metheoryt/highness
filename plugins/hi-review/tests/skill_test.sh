@@ -38,7 +38,24 @@ grep -qF 'subagent_type: "hi-review:reviewer"' "$PLUGIN/skills/review/SKILL.md" 
 
 has() { if grep -qF -- "$3" "$PLUGIN/$1"; then ok "$1: $2"; else fail "$1: $2 (missing: $3)"; fi; }
 S=skills/review/SKILL.md A=agents/reviewer.md
-has $S 'quick is the only mode, the seams say so' 'Quick is the only mode this version serves'
+has $S 'quick and deep serve, quick by default' 'Quick (this session, no workspace) and deep serve; quick is the default.'
+has $S 'deep follows deep.md' 'follow its coordinator part'
+has $S 'delta still says it is not built' 'delta is not built yet'
+DP=reference/deep.md
+has $DP 'deep reuses hi-crew, not a copy' 'The machinery is hi-crew'"'"'s'
+has $DP 'one worker per PR' 'never a second'
+has $DP 'the workspace from wt.sh' '"$W" create --kind review'
+has $DP 'started through crew.sh dispatch' 'bash "$C" dispatch "$KEY" --kind review'
+has $DP 'answered through relay only' 'the only way a worker is answered'
+has $DP 'the post is an action on the person yes' 'the post runs once, here'
+has $DP 'the coordinator checks each action' 'One that is anything'
+has $DP 'slices fan out in one message' 'launched in one message (at most six at a time'
+has $DP 'deep verify is fresh too' 'the verify subagents fresh, never a drafting'
+has $DP 'submit posts only what the cards showed' 'posts only what the cards showed'
+has $DP 'a taken-over session asks here' 'Taken over.'
+has reference/deep-task.md 'the task asks for subagents' 'This task asks for subagents'
+has reference/deep-task.md 'the worker never posts' 'never by you'
+has $A 'a slice anchors on its own paths' 'Anchor findings only on lines of these'
 has $S 'own PR stops' 'own mode (checking your own PR) is not'
 has $S 'nothing checked out' 'Nothing is checked out.'
 has $S 'intent miss is said' 'findings are'
