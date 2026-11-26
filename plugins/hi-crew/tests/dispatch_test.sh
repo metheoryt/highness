@@ -20,6 +20,8 @@ command -v git >/dev/null || { echo '  skip: no git'; exit 0; }
 S="$T/state/crew"
 mkdir -p "$T/bin" "$T/root" "$T/ws" "$S/handles" "$S/roots"
 git -C "$T/ws" init -q 2>/dev/null
+git -C "$T/ws" -c user.name=t -c user.email=t@t commit -q --allow-empty -m head 2>/dev/null
+WSHEAD=$(git -C "$T/ws" rev-parse HEAD)
 echo '{"crew":{"process":"TEAM PROCESS for {{KEY}}","agent":"claude","model":"opus"}}' >"$T/user.json"
 echo run_aaa111 >"$S/run"
 echo term_coord >"$S/handles/run_aaa111"
@@ -106,6 +108,15 @@ has 'spec copy kept' "$(cat "$S/specs/review-o-r-7.md")" 'REVIEW TASK BODY'
 out=$(bash "$C" dispatch review-o-r-7 --kind review --title t --workspace "$T/ws" --task-file "$T/task.md" 2>&1); rc=$?
 check 'a second dispatch refused' "$rc" 2
 has 'refusal names resume' "$out" 'crew.sh resume review-o-r-7'
+
+# --- a task worker's post is an action: pinned to its workspace's HEAD, with no PR of its own.
+echo 'echo posted' >"$T/post.sh"
+id=$(bash "$C" action review-o-r-7 "$T/post.sh" 2>&1); rc=$?
+check 'action on task facts: exit 0' "$rc" 0
+show=$(bash "$C" action-show review-o-r-7 "$id" 2>&1)
+has 'action: pinned to the workspace HEAD' "$show" "pinned to HEAD $WSHEAD"
+hasnt 'action: no PR line (a task owns none)' "$show" 'PR '
+has 'action: the script verbatim' "$show" 'echo posted'
 
 # --- the watch leaves a task worker's PR alone: no gh call for it.
 rm -f "$T/gh.log"

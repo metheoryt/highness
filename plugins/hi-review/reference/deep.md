@@ -46,7 +46,9 @@ coordinator).
 5. **The workspace.**
    `bash "$W" create --kind review --key <n> --name "review #<n> · <title>" --detach "$HEAD"`;
    its stdout is one TSV row, the path first: `WS`. A review workspace of this PR that already
-   exists is moved to the new head when it is clean. A failure → surface its stderr and stop.
+   exists is moved to the new head when it is clean; close the earlier review worker's pane there
+   first (`$O terminal list`), since two sessions in one workspace confuse each other and the
+   watch. A failure → surface its stderr and stop.
 6. **This session's Run.** `bash "$C" run` prints it; none yet →
    `$O orchestration run-create --objective "hi-crew" --json`, then `bash "$C" run <run_id>`.
 7. **The task** (every path absolute: the worker may not have this plugin loaded):
