@@ -245,6 +245,12 @@
 #                                     title, next, url, since; or section and error. See cmd_sections.
 #                                     Then the built-in forge sections (lib/forge.sh): the person's
 #                                     PRs no worker owns, and the reviews waiting on them
+#   crew.sh orphaned                  open tickets whose workspace an Orca restart left with only
+#                                     orphaned terminals and no live agent (hi's orca.sh orphaned
+#                                     and agents), TSV: key, workspace, dispatch, state (live: Orca
+#                                     still counts the worker running, so nothing else shows it;
+#                                     done | lost: settled). `resume <KEY>` takes it up. No hi
+#                                     plugin or no Orca: nothing
 #   crew.sh orca                      the Orca executable this host should use
 #   crew.sh setup-status              what hi-crew needs on this machine and from this person, one
 #                                     row per item, name<TAB>state<TAB>detail (/hi:setup renders them):
@@ -307,6 +313,7 @@ DIR="${HIGHNESS_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/highness}/crew"
 # hi's wt.sh (the hi plugin beside this one): the board column and a workspace's removal go
 # through it, so its rules hold here too (a hand move on the board wins; nothing unsafe is removed).
 WT_SH="${HI_WT_SH:-$HERE/../../hi/lib/wt.sh}"
+ORCA_SH="${HI_ORCA_SH:-$HERE/../../hi/lib/orca.sh}"
 # The facts' `workspace` as a path (jq). /hi-crew:start records what worker-start answered,
 # Orca's worktree id "<repo id>::<path>"; autostart records the bare path. Both read as the path.
 WS_PATH='.workspace // empty | sub("^[^/]*::"; "")'
@@ -2314,6 +2321,47 @@ EOF
   return 0
 }
 
+# ws_orphaned <workspace> [<orphaned paths>]: whether Orca left that workspace with only orphaned
+# terminals (an Orca restart) and no agent at all: no live agent terminal and no chat (hi's orca.sh
+# orphaned, then agents, which must answer and list none). Unknown is not orphaned: no hi plugin,
+# no Orca or an unreadable answer is exit 1. The paths, when given, spare the terminal list call.
+ws_orphaned() {
+  local ws=$1 paths=${2-} real ag
+  [ -n "$ws" ] && [ -f "$ORCA_SH" ] || return 1
+  [ $# -ge 2 ] || paths=$(bash "$ORCA_SH" orphaned 2>/dev/null </dev/null) || return 1
+  real=$(cd "$ws" 2>/dev/null && pwd -P) || real=$ws
+  printf '%s\n' "$paths" | grep -Fx -e "$ws" -e "$real" >/dev/null || return 1
+  ag=$(bash "$ORCA_SH" agents "$ws" 2>/dev/null </dev/null) || return 1
+  [ -z "$ag" ]
+}
+
+# orphaned: the open tickets whose workspace ws_orphaned calls orphaned, TSV: key, workspace,
+# dispatch, state. `live` is the case nothing else shows: Orca still counts the worker running, so
+# `asks` has no "lost" escalation for it, and it just goes quiet. `lost` (settled without a
+# report) is in `asks` too; `done` (it reported) still has no session to take a follow-up round.
+cmd_orphaned() {
+  need_jq
+  local paths facts key ws d st
+  [ -f "$ORCA_SH" ] || return 0
+  paths=$(bash "$ORCA_SH" orphaned 2>/dev/null </dev/null) || return 0
+  [ -n "$paths" ] || return 0
+  while IFS= read -r facts; do
+    [ -n "$facts" ] || continue
+    key=$(printf '%s' "$facts" | jq -r '.key // empty')
+    ws=$(printf '%s' "$facts" | jq -r "$WS_PATH")
+    [ -n "$key" ] && ws_orphaned "$ws" "$paths" || continue
+    d=$(worker_dispatch "$facts") || d=''
+    if dispatch_live "$d"; then st=live
+    elif "$(orca_cmd)" orchestration worker-show --dispatch "$d" --json 2>/dev/null </dev/null \
+        | jq -e '.result.state == "succeeded"' >/dev/null 2>&1; then st=done
+    else st=lost
+    fi
+    printf '%s\t%s\t%s\t%s\n' "$key" "$ws" "${d:--}" "$st"
+  done <<EOF
+$(cmd_list)
+EOF
+}
+
 # resume <KEY>: get a worker going again on <KEY> after the last one was lost without reporting
 # (a usage limit, an account switch, a closed session). First its own session, keeping its chat:
 # in its own pane, the one it runs in now, or a new terminal of its workspace (resume_in_pane).
@@ -2345,7 +2393,11 @@ cmd_resume() {
     esac
   fi
   if d=$(worker_dispatch "$facts") && dispatch_live "$d"; then
-    die "resume: $key's worker $d is not settled in Orca (orchestration worker-show --dispatch $d); a lost one is"
+    # Orca still counts it running, but an Orca restart left its workspace with only orphaned
+    # terminals and no agent: nothing there can act on that Dispatch, so it is as lost.
+    ws_orphaned "$ws" \
+      || die "resume: $key's worker $d is not settled in Orca (orchestration worker-show --dispatch $d); a lost one is"
+    printf 'crew: resume: %s: Orca still counts %s running, but its workspace has only orphaned terminals and no agent; resuming\n' "$key" "$d" >&2
   fi
   [ -n "$d" ] || d=$(printf '%s' "$facts" | jq -r '.dispatch // empty')
   root=$(facts_root "$facts")
@@ -2583,6 +2635,7 @@ case "$sub" in
   states) cmd_states ;;
   sections) cmd_sections ;;
   orca) orca_cmd ;;
+  orphaned) cmd_orphaned ;;
   setup-status) cmd_setup_status ;;
   *) sed -n '2,/^set -uo/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; [ -z "$sub" ] || exit 2 ;;
 esac

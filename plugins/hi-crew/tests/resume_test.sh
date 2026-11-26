@@ -62,6 +62,9 @@ case "$1 $2" in
     fi
     echo '{"ok":true}' ;;
   "terminal wait") echo '{"ok":true}' ;;
+  "terminal list") # FAKE_TL: the file it answers; none: the call fails
+    if [ -f "${FAKE_TL:-/nonexistent}" ]; then cat "$FAKE_TL"; else echo '{"ok":false}'; exit 1; fi ;;
+  "worktree ps") echo '{"ok":true,"result":{"worktrees":[]}}' ;;
   "terminal create") # a new pane, term_new, only with FAKE_CREATE; FAKE_START: the session runs there
     printf '%s\n' "$*" >>"$FAKE_LOG.create"
     [ -n "${FAKE_CREATE:-}" ] || { echo '{"ok":false,"error":{"code":"no_worktree"}}'; exit 1; }
@@ -180,6 +183,30 @@ echo '{"state":"closed"}' >"$T/prstate"
 refused 'closed PR' 'PR is closed'
 echo '{"state":"open"}' >"$T/prstate"
 refused 'live worker' 'not settled' FAKE_LIVE=ctx_old
+
+# --- orphaned: an Orca restart left the workspace with only orphaned terminals, no agent
+printf '{"ok":true,"result":{"terminals":[
+  {"handle":"t_sh","worktreePath":"%s","connected":true,"writable":true,"agentIdentity":null,"orphaned":true,"preview":"cut \\ud83d"}
+]}}' "$T/ws" >"$T/tl.orphan"
+printf '{"ok":true,"result":{"terminals":[
+  {"handle":"t_sh","worktreePath":"%s","connected":true,"writable":true,"agentIdentity":null,"orphaned":true},
+  {"handle":"t_ag","worktreePath":"%s","connected":true,"writable":true,"agentIdentity":"claude","orphaned":true}
+]}}' "$T/ws" "$T/ws" >"$T/tl.alive"
+fresh
+check 'orphaned: a worker Orca counts running is listed live' \
+  "$(FAKE_TL="$T/tl.orphan" FAKE_LIVE=ctx_old bash "$C" orphaned)" "$(printf 'AB-1\t%s\tctx_old\tlive' "$T/ws")"
+check 'orphaned: a settled one, lost' "$(FAKE_TL="$T/tl.orphan" bash "$C" orphaned | cut -f4)" lost
+check 'orphaned: an orphaned agent terminal still runs its session: not listed' \
+  "$(FAKE_TL="$T/tl.alive" FAKE_LIVE=ctx_old bash "$C" orphaned)" ''
+check 'orphaned: no terminal list, nothing' "$(FAKE_LIVE=ctx_old bash "$C" orphaned; echo "rc=$?")" 'rc=0'
+check 'orphaned: no hi plugin, nothing' "$(HI_ORCA_SH="$T/none" FAKE_TL="$T/tl.orphan" bash "$C" orphaned; echo "rc=$?")" 'rc=0'
+refused 'live worker, an orphaned agent terminal still runs' 'not settled' FAKE_LIVE=ctx_old FAKE_TL="$T/tl.alive"
+fresh
+err=$(FAKE_TL="$T/tl.orphan" FAKE_LIVE=ctx_old bash "$C" resume AB-1 2>&1 >/dev/null); rc=$?
+check 'orphaned live worker: resume goes ahead' "$rc" 0
+has 'orphaned live worker: says why' "$err" 'only orphaned terminals and no agent'
+has 'orphaned live worker: a worker started' "$(cat "$FAKE_LOG" 2>/dev/null)" 'orchestration worker-start'
+rm -f "$FAKE_LOG"
 fresh
 err=$(FAKE_FAIL=1 bash "$C" resume AB-1 2>&1) && no 'failed start: exit 0'
 has 'failed start: says do not rerun' "$err" 'do not rerun it'
