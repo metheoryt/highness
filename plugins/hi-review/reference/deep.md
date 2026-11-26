@@ -88,7 +88,9 @@ coordinator).
      again.
 - **`worker_done`.** Show the review's state and link, or why nothing was posted, and the
   `action for you:` lines. Then `bash "$C" close "$KEY"` (a review has no retro: ignore its note
-  about one) and offer to remove the workspace: `bash "$W" remove-if-safe "$WS"`.
+  about one) and offer to remove the workspace, or keep it for a review of the PR's next head
+  (step 5 moves it there). A review workspace holds nothing of its own, but `remove-if-safe`
+  refuses it while the PR is open: on the person's yes this turn, `bash "$W" remove "$WS"`.
 
 ## Worker
 

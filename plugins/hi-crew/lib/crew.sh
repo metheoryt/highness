@@ -76,7 +76,7 @@
 #                                     worker's asks and reports) and the --facts object, never a
 #                                     `pr`: the watch follows only its dialogs and hung calls.
 #                                     Refuses open facts with a dispatch, and no Run (cmd_dispatch)
-#   crew.sh choices [<KEY>]         the recorded choices, one JSON object per line, each with
+#   crew.sh choices [<KEY>]           the recorded choices, one JSON object per line, each with
 #                                     as_recommended derived (below)
 #   crew.sh choices --gaps            answers to hi-crew asks with no choice line (sent without
 #                                     relay), TSV: key, ask id, answered at, the ask's first line
