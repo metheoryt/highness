@@ -97,7 +97,13 @@ this skill" printed above, two levels up.
    ticket: its worker rebases and carries on), CI failures, review bots'
    findings, people's new comments and approvals, workers left on a dialog, a tool call open too long (a hung command?), since anyone last looked (TSV: time, key, run, pr, what, woken).
    `woken` is `worker` when the watch sent the worker a round itself: nothing waits on the person
-   there unless the worker asks. When it is empty and
+   there unless the worker asks. `could not take the ticket (…)`: a start whose lock failed
+   (`crew.sh take`); its worker was stopped and the ticket left as it was. Say why, and that the
+   kept workspace can be removed; to try again once the cause is fixed, the line names the
+   autostart marker to delete. When it says the stop was not confirmed, the worker may still
+   run without the lock: propose stopping it by the command the line gives. A worker that
+   stopped later without reporting keeps its lock: releasing it (moving the ticket back) is the
+   person's call, offered beside `resume`. When it is empty and
    `$O automations list --json` has no "hi-crew watch", offer `bash "$C" watch-install` once.
 5. **Workers**: `bash "$C" states` first — each worker's state from its own hooks (TSV: key,
    run, state, since, kind, open tool, minutes that tool has run, minutes the turn has run;
@@ -186,9 +192,16 @@ and say in one line that Orca now wakes this session, not the other one, for tha
   bash "${CLAUDE_PLUGIN_ROOT}/lib/threads-read.sh" relay <cwd> <session> <brief file>
   ```
 
-  It goes through hi's `wt.sh dispatch <worktree> --resume <session>`, as the budget hold's
-  resume does: first the live session in the thread's worktree, then a new terminal there. It
-  prints `<outcome><TAB><detail>`:
+  First the thread's own session, by its id, through Claude Code's session inbox, wherever it
+  runs (a main checkout too, or a worktree that holds a second session); where that session is
+  not running, hi's `wt.sh dispatch <worktree> --resume <session>`, as the budget hold's resume
+  does: the live session in the thread's worktree, then a new terminal there. It prints
+  `<outcome><TAB><detail>`:
+  - `queued`: in the session's own inbox (`<name><TAB><status>`): `idle` takes it now, `busy`
+    when its turn ends, `waiting` once the dialog it shows is answered. Tell the user in one
+    line; never send it again. It arrives there as a message from another session, not as the
+    person's own words: a step that needs the person's yes (a merge, a push to main) still needs
+    it typed there.
   - `sent`: typed into the session running in the thread's worktree. Tell the user in one line
     what was sent; a session they started by hand may ask once there to read the brief.
   - `started`: no session ran there; `claude --resume` started in a new terminal of that
@@ -197,7 +210,8 @@ and say in one line that Orca now wakes this session, not the other one, for tha
     again, a resend can submit it twice.
   - `dialog`: resumed, but it opened on a dialog (folder trust, a permission) that the user
     answers in that terminal. Give no `resume` line: a second resume runs the session twice.
-  - `busy`: a turn or a dialog runs there, or a chat is open; nothing was typed. Say so and
+  - `busy`: a turn or a dialog runs there, or a chat is open, and the session has no inbox (not
+    listed: another session in that worktree, or a Claude Code without it); nothing was typed. Say so and
     offer to retry or to paste by hand (the brief's text); do not wait in a loop.
   - `manual`: neither worked (no hi plugin, no Orca or tmux, not a workspace). Only now give the
     `resume` line (`<detail>`) and the decisions as a paste-ready message.

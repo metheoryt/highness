@@ -63,6 +63,16 @@ only, since it runs a command and starts agents:
   reported yet. A merged PR frees the slot even when the ticket stays open.
 - Each ticket is tried once (`autostart/tried/<KEY>` in the state dir). One line per start or skip
   goes to `autostart/log`. `crew.sh autostart --dry-run` shows what it would do.
+- **The lock.** Right after a worker starts, before it reads the ticket, the watch takes the ticket
+  (`crew.sh take`), so another machine's autostart or a session told to take it sees it taken.
+  With a tracker configured, the default moves it to `active` and comments
+  `<crew.marker> hi-crew took this ticket for workspace <name>, dispatch <id>.`, a fixed prefix
+  a team's own take step can check. `take` sets your own command instead (`{{KEY}}`,
+  `{{WORKSPACE}}`, `{{DISPATCH}}`, `{{ROOT}}`, `{{MARKER}}` (the comment's text), `{{TRACKER}}`);
+  `false` turns the take off. A ticket no longer ready by then, or a take that fails, stops the
+  worker and leaves the ticket as it was; the agenda says so. The worker's spec says the ticket
+  is already taken. `/hi-crew:start` takes the ticket the same way. A worker that stops later
+  without reporting keeps the lock: releasing it is your call, from the agenda.
 
 **Usage check.** Before it starts anything, the watch asks `lib/budget.sh` whether the account
 Orca launches agents on may spend. You keep a reserve of each plan window for your own sessions,

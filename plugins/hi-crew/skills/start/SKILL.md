@@ -70,7 +70,9 @@ Below, `$O` stands for that executable.
   their questions. Keys and rules: `bash "$C"` (the `autostart` part of its help);
   `bash "$C" autostart --dry-run` shows the free slots and what would start. A slot frees when
   the worker's PR is merged or closed, or, with no PR, when the worker has reported. Each ticket is
-  tried once. Before a start the watch asks `lib/budget.sh check` whether the account may
+  tried once. Right after a start the watch takes the ticket (`crew.sh take --exclusive`, step 8
+  below) so no other machine or session takes it meanwhile; a take that fails stops the worker.
+  Before a start the watch asks `lib/budget.sh check` whether the account may
   spend: the person keeps a reserve of each plan window (`crew.budget.*`, 50% of a fresh window),
   shrinking toward its reset. Over it, or with no figure, nothing starts, and an autostarted
   worker already running is paused at its next tool call until the account is back under the
@@ -138,10 +140,17 @@ Below, `$O` stands for that executable.
    on merge order, the same migration number taken twice), add `"waits_on":["<PR url>",…]`: the
    watch tells the worker once each one merges or closes, so no one has to ask a person when it
    did. The worker records more itself; a later record replaces the whole list.
-8. Tell the user in one or two lines: the ticket, the workspace, what the worker will do, that its
+8. **Take the ticket** (its lock) right away, before the worker gets to it: `bash "$C" take <KEY>`.
+   With `crew.autostart.take` set, or a tracker configured at the root, it moves the ticket to
+   active and comments it with a lock naming the workspace and dispatch (the spec already told
+   the worker it is taken, so never skip this step then). Exit 1: no take configured, and the
+   worker takes it per the team process. Exit 2: the take failed, the worker was stopped (its
+   facts closed once the stop is confirmed) and the ticket left as it was: tell the user why it
+   printed, and start again only once the cause is fixed.
+9. Tell the user in one or two lines: the ticket, the workspace, what the worker will do, that its
    questions come here. Then **end your turn**. Never poll; Orca wakes you.
 
-Several tickets: run steps 1–7 for each, then end the turn once.
+Several tickets: run steps 1–8 for each, then end the turn once.
 
 ## Hand over an open PR
 

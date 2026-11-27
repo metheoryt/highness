@@ -231,11 +231,79 @@ th_agenda() {
              then "cd \(.last_cwd | @sh) && claude --resume \(.last_session)" else "" end)}'
 }
 
+# _th_session_dirs: the session registries of every Claude config dir on this machine, each once:
+# CLAUDE_CONFIG_DIR's, Claude Code's default (~/.claude) and each Orca Claude profile's
+# (<orca data>/claude-profiles/*/home), so a session run under another account is found too.
+# HI_SESSIONS_DIRS (colon-separated) replaces the list.
+_th_session_dirs() {
+  local o p
+  if [ -n "${HI_SESSIONS_DIRS+set}" ]; then printf '%s\n' "$HI_SESSIONS_DIRS" | tr ':' '\n'; return 0; fi
+  {
+    [ -n "${CLAUDE_CONFIG_DIR:-}" ] && printf '%s\n' "$CLAUDE_CONFIG_DIR/sessions"
+    printf '%s\n' "$HOME/.claude/sessions"
+    for o in "$HOME/Library/Application Support/orca" "$HOME/.config/orca" "$HOME/AppData/Roaming/orca"; do
+      for p in "$o"/claude-profiles/*/home; do [ -d "$p" ] && printf '%s\n' "$p/sessions"; done
+    done
+  } | while IFS= read -r p; do
+    [ -d "$p" ] || continue
+    (cd "$p" && pwd -P)
+  done | awk '!seen[$0]++'
+}
+
+# _th_inbox <session> <brief file>: post the brief into that session's own inbox, so it takes it
+# at its next turn (at once when idle). Measured on Claude Code 2.1.332 (highness#53): each live
+# session lists itself in <config>/sessions/<pid>.json with its sessionId, name, status and
+# messagingSocketPath, and one JSON line written to that socket reaches it as a message from
+# another session — idle it starts a turn, busy it waits for the turn's end, and on a permission
+# dialog it waits too and never answers it; a default-mode session took it with no approval
+# prompt. The socket answers nothing, so a post proves only that it was written. Prints
+# `<name><TAB><status>` and exits 0 when one post was written; 1 when the session is not listed,
+# its socket does not take a connection, or there is no nc (HI_NC) — nothing was sent then.
+_th_inbox() {
+  local sid brief="$2" nc="${HI_NC:-nc}" nflag='' line id d f row sock name status
+  sid=$(printf '%s' "$1" | LC_ALL=C tr '[:upper:]' '[:lower:]')
+  command -v "$nc" >/dev/null 2>&1 || return 1
+  # OpenBSD nc needs -N to close after the line; BSD nc (macOS) has no -N and closes on EOF.
+  # `nc -h` exits non-zero, so its words are read apart from its status (pipefail).
+  # The flags are its first bracket of letters: `[-46CDdFhklNnrStUuvZz]`.
+  case "$("$nc" -h 2>&1 </dev/null | awk 'match($0, /\[-[0-9A-Za-z]+\]/) { print substr($0, RSTART, RLENGTH); exit }')" in
+    *N*) nflag=-N ;;
+  esac
+  id=$( (uuidgen || cat /proc/sys/kernel/random/uuid) 2>/dev/null | LC_ALL=C tr '[:upper:]' '[:lower:]')
+  [ -n "$id" ] || id="$(date +%s)-$$-$RANDOM"
+  line=$(jq -c -n --rawfile b "$brief" --arg id "$id" \
+    '{msgV: 1, msg_id: $id, type: "user", message: {role: "user", content: $b},
+      priority: "next", from: "hi-threads relay"}') || return 1
+  while IFS= read -r d; do
+    [ -n "$d" ] || continue
+    for f in "$d"/*.json; do
+      [ -f "$f" ] || continue
+      row=$(jq -r --arg s "$sid" 'select(((.sessionId // "") | ascii_downcase) == $s)
+        | [(.messagingSocketPath // ""), (.name // ""), (.status // "")] | @tsv' "$f" 2>/dev/null) || continue
+      sock=$(printf '%s' "$row" | cut -f1); name=$(printf '%s' "$row" | cut -f2); status=$(printf '%s' "$row" | cut -f3)
+      [ -n "$sock" ] && [ -e "$sock" ] || continue
+      # The first post written wins: a second one would hand the session the brief twice. A
+      # stale entry (its socket refuses) makes nc fail, and the next one is tried.
+      if printf '%s\n' "$line" | "$nc" -U $nflag -w 3 "$sock" >/dev/null 2>&1; then
+        printf '%s\t%s\n' "$name" "$status"; return 0
+      fi
+    done
+  done <<EOF
+$(_th_session_dirs)
+EOF
+  return 1
+}
+
 # th_relay <cwd> <session> <brief file>: give a thread's own session the brief (the decisions the
-# person settled elsewhere) through hi's `wt.sh dispatch <worktree> --resume <session>`, the path
-# hi-crew's hold.sh takes to resume a paused session: typed into the live idle agent of that
-# worktree, else `claude --resume <session>` in a new terminal there, the brief its first prompt.
-# One call, never a retry or a wait. One line on stdout, <outcome><TAB><detail>:
+# person settled elsewhere). First that session's own inbox (_th_inbox), whatever it is doing and
+# wherever it runs — a main checkout, or a worktree that holds a second session. Where it is not
+# listed (not running, or a Claude Code without the inbox), hi's `wt.sh dispatch <worktree>
+# --resume <session>`, the path hi-crew's hold.sh takes to resume a paused session: typed into the
+# live idle agent of that worktree, else `claude --resume <session>` in a new terminal there, the
+# brief its first prompt. One call, never a retry or a wait. One line on stdout, <outcome><TAB><detail>:
+#   queued <name> <status>  in the session's own inbox: taken at its next turn       exit 0
+#                           (<status> idle: now; busy: when its turn ends; waiting: after
+#                           the dialog it shows is answered). Never resend.
 #   sent <terminal>         typed into the live session                              exit 0
 #   started <terminal>      resumed in a new terminal of the worktree                exit 0
 #   unconfirmed <terminal>  typed, but not seen taken: look there, never resend      exit 0
@@ -244,8 +312,11 @@ th_agenda() {
 #   manual <resume line>    neither worked: the line to run, and the brief to paste  exit 1
 # wt.sh's own words go to stderr. HI_WT_SH: wt.sh (default: the hi plugin beside this one).
 th_relay() {
-  local cwd="${1:-}" sid="${2:-}" brief="${3:-}" wt root out='' rc=0 via handle manual
+  local cwd="${1:-}" sid="${2:-}" brief="${3:-}" wt root out='' rc=0 via handle manual inbox
   [ -n "$cwd" ] && [ -n "$sid" ] && [ -f "$brief" ] || { echo 'relay: <cwd> <session> <brief file>' >&2; return 2; }
+  if inbox=$(_th_inbox "$sid" "$brief"); then
+    printf 'queued\t%s\n' "$inbox"; return 0
+  fi
   manual="cd $(jq -rn --arg c "$cwd" '$c | @sh') && claude --resume $sid"
   wt="${HI_WT_SH:-$TR_HERE/../../hi/lib/wt.sh}"
   if [ ! -f "$wt" ]; then
