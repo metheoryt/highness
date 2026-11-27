@@ -147,6 +147,60 @@ Known gaps:
   It skips the start instead. Switching Orca's selected account would also move your own new
   sessions.
 
+### Recurring background jobs
+
+Jobs that recur (a nightly memory pass, a weekly digest) share one queue, `lib/jobs.sh`, instead
+of a timer each. A job runs once its interval has passed since its last done run, as in anacron,
+and only while the budget line allows it. You declare jobs in your own config file. A repo's file
+cannot add one, because a job runs a command:
+
+```sh
+bash lib/jobs.sh add weekly-digest '{"run": "bash ~/jobs/digest.sh", "every": "weekly", "priority": 1}'
+bash lib/jobs.sh add memory-pass '{"run": "bash ~/jobs/memory.sh", "every": "daily", "size": "long", "priority": 5}'
+```
+
+Each watch pass runs `jobs.sh tick`. On a box without the watch, one timer can run it instead. A
+tick:
+
+1. Lists the due jobs.
+2. Keeps those in their hours. `when` sets the hours (`"1-6"`, `"22-2"`). `"off"` means the hours
+   you usually do not work, and a long job defaults to it. A job overdue by a full interval runs
+   at any hour.
+3. Orders them by `priority`, then by how overdue they are.
+4. Starts the first one that fits, detached. Nothing else starts while it runs.
+
+A job fits when:
+- Both plan windows are under the line, the same check as above. Near a reset the 5-hour line
+  rises, so a short job can use a window's leftover, but only while the 7-day window allows it.
+- For a long job, also: no 5-hour window is running, or at least `crew.queue.long_window_left_min`
+  (240) minutes of it are left. A long run then cannot spill into the fresh window you are about
+  to use.
+
+The off-hours are learned from your own prompts in the Claude Code transcripts of the last 28
+days. An hour with under a tenth of your busiest hour's prompts counts as off.
+`crew.queue.off_hours` overrides what is learned. `bash lib/jobs.sh hours` shows your work hours.
+
+What the queue gives a job:
+- `CLAUDE_CONFIG_DIR`: the account it measured (`config_dir`, else the one autostart checks).
+- `HI_HOLD_HOOK`: the PreToolUse hook line for the job's `claude --settings`, so the budget line
+  also stops it mid-run.
+
+What the job's exit code means:
+- 0: done.
+- 75: not done, try again at the next tick (a lock, a stop at the line, a gate of its own).
+- Any other code: failed, retried after `retry` (default 1h).
+
+`jobs.sh list` shows each job's state. `jobs.sh runs` shows each run with the used % of both
+windows before and after it.
+
+**No daily cap on the agents' weekly share yet.** Stage 1's real spend did not call for one. One
+night of the memory pass took 4–6 points of the 7-day window. The weekly digest cost under a
+tenth of that. Both stay under a seventh of the agents' share, about 7 points a day at the
+default reserve of 50. The 7-day line held starts only in the last hours of a week. By then the
+week had gone to people's own sessions and the workers they ran, and a cap on background agents
+would not have touched those. `jobs.sh runs` now records each job's own spend. Revisit the cap if
+the queue's jobs pass about 7 points of the week in a day.
+
 ### The retro at close
 
 When a ticket is settled, the coordinator runs a short retro in its own session before
