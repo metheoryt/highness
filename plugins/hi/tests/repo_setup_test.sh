@@ -186,7 +186,20 @@ assert_contains "orca: no orca.yaml, a local hook: it runs" "$(detail "$out" orc
 hooks "$ODIR/acc.json" 'wt-setup' ''
 out=$(ost "$ODIR/acc.json")
 assert_eq "orca: another script → CONFLICT" "CONFLICT" "$(row "$out" orca-setup)"
+assert_contains "orca: CONFLICT names the accept key" "$(detail "$out" orca-setup)" "repo_setup.accept.setup"
 assert_eq "orca: empty slot → UNWIRED" "UNWIRED" "$(row "$out" orca-archive)"
+# A profile-state.db python3 cannot read: UNKNOWN with the reason, not ABSENT.
+mkdir -p "$SANDBOX/nosqlite"; printf '#!/bin/sh\nexit 1\n' > "$SANDBOX/nosqlite/python3"; chmod +x "$SANDBOX/nosqlite/python3"
+: > "$ODIR/profile-state.db"
+out=$(PATH="$SANDBOX/nosqlite:$PATH" ost "$ODIR/profile-state.db")
+assert_eq "orca: an unreadable profile-state.db → UNKNOWN" "UNKNOWN" "$(row "$out" orca-setup)"
+assert_contains "orca: … says why" "$(detail "$out" orca-archive)" "no sqlite3 module"
+out=$(PATH="$SANDBOX/nosqlite:$PATH" ost "$ODIR/profile-state.db
+$ODIR/win.json")
+assert_eq "orca: another install that knows the repo outranks UNKNOWN" "WIRED" "$(row "$out" orca-setup)"
+out=$(PATH="$SANDBOX/nosqlite:$PATH" ost "$ODIR/profile-state.db
+$ODIR/wsl.json")
+assert_eq "orca: UNKNOWN outranks ABSENT" "UNKNOWN" "$(row "$out" orca-setup)"
 mkdir -p "$XDG_CONFIG_HOME/highness"
 printf '{"repo_setup":{"mode":"commit","accept":{"setup":["wt-setup"]}}}\n' > "$XDG_CONFIG_HOME/highness/config.json"
 out=$(ost "$ODIR/acc.json")

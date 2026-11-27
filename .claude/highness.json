@@ -1,0 +1,5 @@
+{
+  "land": {
+    "test": "bash tests/run.sh </dev/null"
+  }
+}

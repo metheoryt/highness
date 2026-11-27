@@ -15,8 +15,10 @@ NOW=$(jq -nr '(now - 2 * 86400) | todate')
 DAY=${NOW%%T*}
 OLD='2001-02-03T04:05:06.000Z'
 
-# One transcript line each. Session ids and texts are made up.
-u()  { jq -nc --arg s "$1" --arg t "$2" --arg x "$3" --arg c "$4" --argjson e "${5:-{\}}" \
+# One transcript line each. Session ids and texts are made up. The default goes through a
+# variable: bash 3.2 keeps the backslash of "${5:-{\}}".
+NOEXTRA='{}'
+u()  { jq -nc --arg s "$1" --arg t "$2" --arg x "$3" --arg c "$4" --argjson e "${5:-$NOEXTRA}" \
          '{type: "user", sessionId: $s, timestamp: $t, cwd: $c, entrypoint: "cli", uuid: ($s + ($x | length | tostring) + ($x[0:6])),
            origin: {kind: "human"}, message: {role: "user", content: $x}} + $e'; }
 at() { jq -nc --arg s "$1" --arg t "$2" --arg x "$3" \

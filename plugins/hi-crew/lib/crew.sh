@@ -757,8 +757,9 @@ cmd_asks() {
     | [ .id, .type, .run_id, .dispatch, .created_at, ($p.stopReason // ""), ($p.handle // ""),
         ((.body // .subject // "") | split("\n")[0]) ] | @tsv' \
     | while IFS= read -r line; do
+        # `(pattern)`: bash 3.2 reads a bare `pattern)` inside $(…) as the end of the substitution.
         case "$(printf '%s' "$line" | cut -f2)" in
-          question|decision_gate) dispatch_live "$(printf '%s' "$line" | cut -f4)" || continue ;;
+          (question|decision_gate) dispatch_live "$(printf '%s' "$line" | cut -f4)" || continue ;;
         esac
         printf '%s\n' "$line"
       done)

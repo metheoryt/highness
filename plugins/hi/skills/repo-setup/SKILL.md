@@ -126,7 +126,12 @@ any change re-asks every teammate's trust.
   local field.
 - `UNWIRED`, no orca.yaml in reach (a repo the team will not commit to): the person pastes the
   same two commands into Orca → the repo's settings → **Setup script** / **Archive script**.
-- `CONFLICT <value>`: another script runs; the user decides.
+- `CONFLICT <value>`: another script runs; the user decides. A person's own script that does what
+  highness's worktree setup does is accepted by adding its exact text to
+  `repo_setup.accept.setup` / `.archive` in their config; it then reads `LEGACY`.
+- `UNKNOWN`: Orca's `profile-state.db` exists but cannot be read here (no python3, or one without
+  its `sqlite3` module); the detail says which. Nothing is known about the hooks: install python3
+  with sqlite3 and re-check, never fix on a guess.
 - `ABSENT`: the repo is not listed in Orca yet: open it there once. On Windows, register a repo at
   its WSL path (`\\wsl.localhost\<distro>\home\<user>\…`), never `C:/…`: Orca runs the hook through
   cmd.exe there, where neither `bash` nor `$HOME` resolve.
