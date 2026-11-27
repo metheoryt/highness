@@ -83,9 +83,13 @@ this skill" printed above, two levels up.
    `unanswered` (asked, and the worker is gone), `unheard` (answered, and the worker stopped
    without a word after it), `unsent` (relay kept a reply Orca refused; `body` is it, and with an
    `action` the step already ran). `session` names a live session in the workspace, if any.
-   **Workers on a dialog**: `bash "$C" prompts` (TSV: key, run, since, tool, kind — `permission`, `input` for an MCP server's input dialog, or `question` for a question form). Such a
-   worker waits for someone to click in its terminal and sends no question, so nothing else shows
-   it; the person answers it there (`$O terminal list`, or the worker's workspace in Orca).
+   **Workers on a dialog**: `bash "$C" prompts` (TSV: key, run, since, tool, kind, workspace,
+   terminal — kind `permission`, `input` for an MCP server's input dialog, `question` for a
+   question form, `dialog` for an MCP tool's dialog Orca cannot tell apart, or Orca's own reason
+   such as `agent-trust-workspace`). Rows with a key are ticket workers; rows without one are any
+   other agent Orca knows on this box, in any repo: name it by its workspace. Such an agent waits
+   for someone to click in its terminal and sends no question, so nothing else shows it; the
+   person answers it there (the workspace in Orca, or `$O terminal list`).
    **Workers an Orca restart orphaned**: `bash "$C" orphaned` (TSV: key, workspace, dispatch,
    state). Orca left the worker's workspace with only orphaned terminals and no agent, so nothing
    there can act. `live` (Orca still counts it running) shows nowhere else: the worker just went

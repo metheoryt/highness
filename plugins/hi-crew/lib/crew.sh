@@ -246,14 +246,23 @@
 #   crew.sh events [--ack]            watch events no one has seen, TSV: time, key, run, pr, what,
 #                                     woken (worker | coordinator; empty on older lines);
 #                                     --ack marks them seen
-#   crew.sh prompts                   the open tickets whose worker sits on a permission dialog, an
-#                                     MCP server's input dialog or a question form, TSV: key, run,
-#                                     since, tool, kind (permission | input | question). The plugin's
-#                                     Notification hook marks a session on a dialog (prompt-mark.sh);
-#                                     its other hooks keep each session's state (session-state.sh),
-#                                     which adds the question forms (AskUserQuestion, ExitPlanMode).
-#                                     A worker's session is the one whose cwd is in the ticket's
-#                                     `workspace`. The watch wakes the coordinator once per dialog
+#   crew.sh prompts                   the agents waiting on a person at a dialog: a permission
+#                                     dialog, an MCP server's input dialog or a question form, TSV:
+#                                     key, run, since, tool, kind, workspace, terminal. First the
+#                                     open tickets' workers (kind permission | input | question),
+#                                     from their hooks: the plugin's Notification hook marks a session
+#                                     on a dialog (prompt-mark.sh); its other hooks keep each
+#                                     session's state (session-state.sh), which adds the question
+#                                     forms (AskUserQuestion, ExitPlanMode). A worker's session is the
+#                                     one whose cwd is in the ticket's `workspace`; its terminal is
+#                                     empty. Then every other agent Orca knows on this box, in any
+#                                     repo, from `orca worktree ps --agent-wait` (see orca_prompts):
+#                                     key and run empty, kind also `dialog` (an MCP tool) or Orca's
+#                                     reason (agent-trust-workspace). The watch wakes the coordinator
+#                                     once per dialog of a ticket's worker; the other agents have no
+#                                     Run to wake and show in the agenda only. Not covered: agents
+#                                     on a paired Orca server (worktree ps leaves those hosts out)
+#                                     and Orca's chat agents (no programStatus; not measured)
 #   crew.sh states                    what each open ticket's worker is doing, from its own hooks,
 #                                     TSV: key, run, state (working | blocked | idle | unknown),
 #                                     since, kind, open tool, minutes that tool call has run, minutes
@@ -1701,13 +1710,53 @@ cmd_states() {
   return 0
 }
 
+# The agents Orca knows that sit on a dialog, outside every workspace given (the tickets' own):
+# since<TAB>tool<TAB>kind<TAB>workspace<TAB>terminal, from one `worktree ps --agent-wait` for
+# the whole box. That covers an agent in any repo Orca has, whatever started it and whether or
+# not its profile loads hi-crew's hooks; and a dialog no hook sees (the folder trust dialog).
+# A row counts only while its programStatus is `blocked`: after Esc on a dialog Orca keeps
+# agentWait and state `waiting` until the next hook, and only programStatus drops to idle
+# (measured on Orca 1.4.278, highness#15). kind is `question` for a question form, Orca's own
+# reason for a dialog it read on the screen (agent-trust-workspace), `dialog` for an MCP tool
+# (Orca does not tell its permission dialog from its input dialog), else `permission`.
+# This session's own terminal is left out. Nothing (exit 0) when Orca does not answer.
+orca_prompts() { # <workspaces, one per line>
+  local psf
+  psf=$(mktemp "${TMPDIR:-/tmp}/hi-crew-ps.XXXXXX") || return 0
+  # Through a file, never an argument: a box with many workspaces passes the kernel's limit.
+  "$(orca_cmd)" worktree ps --agent-wait --limit 10000 --json 2>/dev/null </dev/null | unsurrogate >"$psf"
+  jq -r --arg ws "$1" --arg self "${ORCA_TERMINAL_HANDLE:-}" '
+    def mine($p): any(($ws | split("\n"))[] | select(. != ""); . as $w | $p == $w or ($p | startswith($w + "/")));
+    def iso: if type == "number" then (. / 1000 | floor | todate) else "" end;
+    (.result.worktrees // [])[] | (.path // "") as $p | select($p != "" and (mine($p) | not))
+    | (.agents // [])[] | select(type == "object" and (.programStatus.state // "") == "blocked")
+    | select((.address // "") != $self or $self == "")
+    | (.agentWait.reason // "") as $r | (if $r != "" then "" else (.toolName // "") end) as $tool
+    | [ ((.agentWait.since // .stateStartedAt) | iso), $tool,
+        (if $tool == "AskUserQuestion" or $tool == "ExitPlanMode" then "question"
+         elif $r != "" then $r elif ($tool | startswith("mcp__")) then "dialog" else "permission" end),
+        $p, (.address // "") ]
+    | map(tostring | gsub("[\t\n]"; " ")) | @tsv' "$psf" 2>/dev/null
+  rm -f "$psf"
+  return 0
+}
+
 cmd_prompts() {
   need_jq
-  local t hit
-  cmd_list | while IFS= read -r t; do
+  local t hit ws all=''
+  # The tickets' workers first, from their own hooks; then every other agent Orca knows.
+  while IFS= read -r t; do
+    [ -n "$t" ] || continue
+    ws=$(printf '%s' "$t" | jq -r "$WS_PATH")
+    [ -n "$ws" ] && all="$all$ws
+$( (cd "$ws" 2>/dev/null && pwd -P) )
+"
     hit=$(on_prompt "$t") || continue
-    printf '%s\t%s\t%s\n' "$(printf '%s' "$t" | jq -r .key)" "$(printf '%s' "$t" | jq -r '.run // ""')" "$hit"
-  done
+    printf '%s\t%s\t%s\t%s\t\n' "$(printf '%s' "$t" | jq -r .key)" "$(printf '%s' "$t" | jq -r '.run // ""')" "$hit" "$ws"
+  done <<EOF
+$(cmd_list)
+EOF
+  orca_prompts "$all" | while IFS= read -r hit; do printf '\t\t%s\n' "$hit"; done
   return 0
 }
 

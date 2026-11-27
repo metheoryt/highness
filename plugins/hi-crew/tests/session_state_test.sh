@@ -56,6 +56,8 @@ ev PreToolUse s-1 '"tool_name":"AskUserQuestion","tool_input":{"questions":[]}'
 check 'PreToolUse AskUserQuestion: blocked, kind question' "$(field s-1 1)|$(field s-1 11)|$(field s-1 5)" 'blocked|question|AskUserQuestion'
 ev PreToolUse s-1 '"tool_name":"ExitPlanMode"'
 check 'PreToolUse ExitPlanMode: blocked, kind question' "$(field s-1 1)|$(field s-1 11)" 'blocked|question'
+ev Notification s-1 '"notification_type":"permission_prompt"'
+check 'its permission_prompt (Claude Code 2.1.332): still a question' "$(field s-1 1)|$(field s-1 11)|$(field s-1 5)" 'blocked|question|ExitPlanMode'
 ev PostToolUse s-1 '"tool_name":"ExitPlanMode"'
 check 'the answer (PostToolUse): working again, no kind' "$(field s-1 1)|$(field s-1 11)" 'working|'
 
