@@ -75,25 +75,35 @@ one_of() { # <value> <list>
 # --- source -----------------------------------------------------------------------------------
 
 # A GitHub PR through gh, in the adapter's shape. Bots: a Bot account, or a login under review.bots.
+# The diff and the API answers reach jq through files: a large PR is past one argument's limit.
 gh_source() { # <pr>
-  local view diff api n repo bots reviews inline comments
-  view=$("$GH" pr view "$1" --json number,title,body,author,url,state,isDraft,headRefOid,baseRefName) || return 3
-  diff=$("$GH" pr diff "$1") || return 3
-  repo=$(printf '%s' "$view" | jq -r '.url' | sed -n 's#^https://[^/]*/\([^/]*/[^/]*\)/pull/.*#\1#p')
-  n=$(printf '%s' "$view" | jq -r .number)
+  local d rc
+  d=$(mktemp -d) || return 3
+  gh_source_in "$1" "$d"; rc=$?
+  rm -rf "$d"
+  return "$rc"
+}
+
+gh_source_in() { # <pr> <dir>
+  local d="$2" n repo api bots
+  "$GH" pr view "$1" --json number,title,body,author,url,state,isDraft,headRefOid,baseRefName >"$d/view" || return 3
+  "$GH" pr diff "$1" >"$d/diff" || return 3
+  repo=$(jq -r '.url' "$d/view" | sed -n 's#^https://[^/]*/\([^/]*/[^/]*\)/pull/.*#\1#p')
+  n=$(jq -r .number "$d/view")
   [ -n "$repo" ] || { say "source: no owner/repo in the PR url"; return 3; }
   api="repos/$repo"
   bots=$(bash "$CONFIG" list .review.bots 2>/dev/null | jq -R . | jq -sc .) || bots='[]'
-  reviews=$("$GH" api --paginate "$api/pulls/$n/reviews" | jq -s 'add // []') || return 3
-  inline=$("$GH" api --paginate "$api/pulls/$n/comments" | jq -s 'add // []') || return 3
-  comments=$("$GH" api --paginate "$api/issues/$n/comments" | jq -s 'add // []') || return 3
-  jq -n --argjson v "$view" --arg diff "$diff" --arg repo "$repo" --argjson bots "$bots" \
-    --argjson reviews "$reviews" --argjson inline "$inline" --argjson comments "$comments" '
+  "$GH" api --paginate "$api/pulls/$n/reviews" | jq -s 'add // []' >"$d/reviews" || return 3
+  "$GH" api --paginate "$api/pulls/$n/comments" | jq -s 'add // []' >"$d/inline" || return 3
+  "$GH" api --paginate "$api/issues/$n/comments" | jq -s 'add // []' >"$d/comments" || return 3
+  jq -n --slurpfile v "$d/view" --rawfile diff "$d/diff" --arg repo "$repo" --argjson bots "$bots" \
+    --slurpfile reviews "$d/reviews" --slurpfile inline "$d/inline" --slurpfile comments "$d/comments" '
     def who: (.user.login // "");
     def bot: (.user.type == "Bot") or (who | endswith("[bot]")) or (who as $w | $bots | index($w) != null);
+    $v[0] as $v | $reviews[0] as $reviews | $inline[0] as $inline | $comments[0] as $comments |
     {repo: $repo, number: $v.number, url: $v.url, title: $v.title, body: ($v.body // ""),
      author: $v.author.login, state: ($v.state | ascii_downcase), draft: $v.isDraft,
-     head: $v.headRefOid, base: $v.baseRefName, diff: $diff,
+     head: $v.headRefOid, base: $v.baseRefName, diff: ($diff | sub("\n+\\z"; "")),
      reviews: [$reviews[] | select(.state != "PENDING")
                | {author: who, bot: bot, state, body: (.body // ""), at: .submitted_at}],
      threads: ($inline | group_by(.in_reply_to_id // .id)

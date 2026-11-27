@@ -49,7 +49,8 @@ cat >"$T/gh" <<'EOF'
 #!/usr/bin/env bash
 case "$1 $2" in
   "pr view") echo '{"number":3,"title":"G","body":null,"author":{"login":"ann"},"url":"https://github.com/acme/web/pull/3","state":"OPEN","isDraft":true,"headRefOid":"abc","baseRefName":"main"}' ;;
-  "pr diff") printf -- '--- a/y\n+++ b/y\n' ;;
+  "pr diff") printf -- '--- a/y\n+++ b/y\n'
+             [ -z "${BIG:-}" ] || awk 'BEGIN { for (i = 0; i < 20000; i++) print "+line " i " of a large diff" }' ;;
   "api --paginate")
     case "$3" in
       */reviews) echo '[{"user":{"login":"bob","type":"User"},"state":"COMMENTED","body":"b","submitted_at":"t"},{"user":{"login":"me","type":"User"},"state":"PENDING","body":"draft"}]' ;;
@@ -70,6 +71,10 @@ check 'gh: a pending review is left out' "$(jq '.reviews | length' "$json")" 1
 check 'gh: a reply joins its thread across pages' "$(jq -c '[.threads[] | .comments | length]' "$json")" '[2]'
 check 'gh: a review.bots login is a bot' "$(jq '.threads[0].comments[0].bot' "$json")" true
 check 'gh: a Bot account is a bot' "$(jq '.comments[0].bot' "$json")" true
+# A diff past one argument's limit (Linux: 128 KiB) still reads: jq gets it from a file, not argv.
+out=$(BIG=1 HI_REVIEW_GH="$T/gh" bash "$B" source 3 2>"$T/err"); rc=$?
+check 'gh: a large diff exits 0' "$rc" 0
+check 'gh: a large diff is kept whole' "$(wc -l <"$(printf '%s' "$out" | cut -f2)" | tr -d ' ')" 20002
 
 # --- lens
 echo '{}' >.claude/highness.json
