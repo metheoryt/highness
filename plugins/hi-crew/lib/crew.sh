@@ -222,6 +222,15 @@
 #                                     slots, under a coordinator's Run (the watch runs it last; off
 #                                     unless crew.autostart.enabled, see "autostart" below).
 #                                     --dry-run writes nothing: the slots, then would-start lines
+#   crew.sh take <KEY> [--exclusive]  take the ticket (its lock) for the worker just started and
+#                                     recorded: crew.autostart.take, else with a tracker the move
+#                                     to active plus a lock comment naming workspace and dispatch.
+#                                     Exit 0 taken (or already), 1 no take configured, 2 failed:
+#                                     the worker is stopped, its facts closed once the stop is
+#                                     confirmed, and the coordinator told (see "take" below).
+#                                     Autostart runs it with --exclusive; /hi-crew:start after
+#                                     its record step. `take --configured [<root>]`: exit 0 when
+#                                     a take would run, which is when the spec says "taken"
 #   crew.sh usage [<config dir>]      the plan usage autostart checks, TSV: window, used percent;
 #                                     nothing when unknown
 #   crew.sh account                   the config dir autostart checks the budget of: Orca's active
@@ -794,7 +803,7 @@ cmd_reports() {
 }
 
 cmd_spec() {
-  local key='' title='' brief_file='' brief='' process marker merge crew root='' prefs copy no_profile=''
+  local key='' title='' brief_file='' brief='' process marker merge crew root='' prefs copy no_profile='' take
   local handover='' pr='' ws='' bg='' view='' stands='' branch='' base='' mode=FRESH task_file='' task=''
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -854,6 +863,19 @@ $bg"
     process='(none configured: use the tracker and forge tools you have, and say in the PR how you checked the work)'
   fi
   marker=$(cd "$root" && bash "$CONFIG" get '.crew.marker') || marker='(agent)'
+  # The take step: the worker's own, unless the coordinator takes the ticket at its start (take).
+  # Its last line runs on into the template's next one ("the person or the coordinator binds…").
+  if take_how "$root" >/dev/null; then
+    take='- Read the ticket in full, comments included, then check it is not already done (below) before
+  you plan, branch or change anything. The ticket is already taken: the coordinator took it
+  for this workspace as you were started (a "'"$TAKE_PREFIX"'" comment names your
+  dispatch), so never take it again and skip the team process'"'"'s step that takes it. It stays
+  taken while you hold it: when you find it already done or stop without finishing it, say in
+  your worker_done that the ticket is still taken, for a person to release. A comment from'
+  else
+    take='- Read the ticket in full, comments included, then check it is not already done (below) before
+  you take it, plan, branch or change anything. Then take it per the team process. A comment from'
+  fi
   merge=$(cd "$root" && bash "$CONFIG" get '.crew.merge') || merge=never
   case "$merge" in
     never) merge="Never merge. That is a person's call." ;;
@@ -877,7 +899,7 @@ $bg"
   # {{#FRESH}}…{{/FRESH}}, {{#HANDOVER}}…{{/HANDOVER}} and {{#TASK}}…{{/TASK}} (each on a line of
   # its own, never nested) keep only the mode's own blocks: a handover replaces the fresh-ticket
   # steps, never contradicts them. {{#TICKET}} blocks are FRESH and HANDOVER's shared ones.
-  MODE=$mode PR=$pr BRANCH=$branch BASE=$base STANDS=$stands BACKGROUND=$bg TASK=$task \
+  MODE=$mode PR=$pr BRANCH=$branch BASE=$base STANDS=$stands BACKGROUND=$bg TASK=$task TAKE=$take \
   PREFS=$prefs KEY=$key TITLE=$title BRIEF=$brief PROCESS=$process MARKER=$marker MERGE=$merge CREW=$crew ROOT=$root TRACKER=$(tracker_cmd "$root") awk '
     function rep(s, ph, val,   out, i) {
       out = ""
@@ -891,6 +913,7 @@ $bg"
     skip { next }
     { line = $0
       if (line == "{{TASK}}") { print ENVIRON["TASK"]; next }
+      if (line == "{{TAKE}}") { print ENVIRON["TAKE"]; next }
       if (line == "{{STANDS}}") { print ENVIRON["STANDS"]; next }
       if (line == "{{BACKGROUND}}") { if (ENVIRON["BACKGROUND"] != "") printf "%s", ENVIRON["BACKGROUND"]; next }
       line = rep(line, "{{PR}}", ENVIRON["PR"])
@@ -2118,8 +2141,139 @@ as_start() { # <candidate json> <root> <run> <handle> <dry>
       {title: $t, repo: $r, workspace: $p, branch: $b, dispatch: .result.dispatchId, task: .result.taskId,
        run: .result.runId, agent: $a, model: $m, root: $root, url: $u, spec: $s, autostart: true}')" \
     || as_log failed "$key" "started, but its facts were not recorded"
+  # The lock, before the worker gets to the ticket (highness#40). A subshell: take dies on bad facts.
+  err=$( (cmd_take "$key" --exclusive) 2>&1 >/dev/null )
+  case $? in
+    0|1) ;;
+    *) as_log failed "$key" "$(printf '%s\n' "$err" | tail -1 | sed "s/^crew: $key: //")"; return 1 ;;
+  esac
   event "$key" "$run" "${url:-$path}" "started by autostart in $path"
   as_log started "$key" "$path"
+}
+
+# ---- take: the coordinator takes the ticket (its lock) as its worker starts (highness#40) ----
+#
+# A ticket stops looking ready only once it is taken. Left to the worker, that is minutes after
+# its start (it reads the ticket and checks the work is not done first), and in that window the
+# ticket still looks free to another machine's autostart or a session told to take it. So the
+# coordinator takes it right after a successful worker-start, before the worker reads anything:
+# autostart does it itself, /hi-crew:start runs `take` after recording the facts.
+#   crew.autostart.take    the person's own file only (it runs shell): a command run at the root,
+#                          with {{KEY}}, {{WORKSPACE}} (the path), {{DISPATCH}}, {{ROOT}} and
+#                          {{MARKER}} (the lock comment's text) shell-quoted, {{TRACKER}} the
+#                          tracker adapter. It applies to crew.autostart.root's tickets only;
+#                          any other root, or unset: with tracker.kind at the root, the default
+#                          below; else no take, and the worker takes the ticket per the team
+#                          process as before. false or "off": no take, tracker or not
+# The default: the tracker adapter moves the ticket to role active and comments it with the lock
+# comment, "<crew.marker> hi-crew took this ticket for workspace <name>, dispatch <id>." — a
+# fixed prefix a team's own "take a ticket" step can check as the lock. The workspace is named by
+# its directory's name, never its path (a comment may be public). With --exclusive (autostart),
+# a ticket no longer in role todo fails the take: someone else took it after the candidates were
+# read. A comment that fails after the move moves the ticket back to the role it had.
+# A failed take stops the worker (worker-stop); once the stop is confirmed its facts are closed,
+# so its slot frees and it is not resumed without its lock; an unconfirmed stop keeps the facts.
+# Either way the coordinator hears of it as a watch event, which the agenda shows. A worker that
+# stops later without worker_done keeps the lock: the person releases it from the agenda, since
+# `resume` may continue the worker under it.
+TAKE_PREFIX='hi-crew took this ticket'
+
+take_how() { # <root> → "default", or "custom" and the command on the next line; exit 1: no take
+  local cmd ar
+  cmd=$(bash "$CONFIG" get --user '.crew.autostart.take' 2>/dev/null) || cmd=''
+  # The person's command is written for autostart's root: another root's tickets get its default.
+  case "$cmd" in (''|false|off) ;; (*)
+    ar=$(as_get root 2>/dev/null) || ar=''
+    case "$ar" in ("~"|"~/"*) ar="$HOME${ar#\~}" ;; esac
+    [ -n "$ar" ] && [ "$(cd "$ar" 2>/dev/null && pwd -P)" = "$(cd "$1" 2>/dev/null && pwd -P)" ] || cmd='' ;;
+  esac
+  case "$cmd" in
+    false|off) return 1 ;;
+    '') (cd "$1" 2>/dev/null && bash "$CONFIG" get '.tracker.kind' >/dev/null 2>&1) || return 1
+      echo default ;;
+    *) printf 'custom\n%s\n' "$cmd" ;;
+  esac
+}
+
+# take <KEY> [--exclusive]: exit 0 taken (or taken before: its facts' `taken`), 1 no take is
+# configured (nothing done), 2 the take failed (the worker stopped, see above).
+# take --configured [<root>]: exit 0 when a take would run for tickets of that root.
+cmd_take() {
+  need_jq
+  local key='' excl='' facts root ws d run url how cmd marker text tr role cur err='' rc ran
+  if [ "${1:-}" = --configured ]; then take_how "${2:-$(cmd_root)}" >/dev/null; return; fi
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --exclusive) excl=1; shift ;;
+      -*) die "take: unknown argument '$1'" ;;
+      *) [ -z "$key" ] || die 'usage: take <KEY> [--exclusive] | take --configured [<root>]'; key=$1; shift ;;
+    esac
+  done
+  [ -n "$key" ] || die 'usage: take <KEY> [--exclusive] | take --configured [<root>]'
+  facts=$(cmd_get "$key") || die "take: no open facts for $key: record them first"
+  ran=$(printf '%s' "$facts" | jq -r '.taken // empty')
+  [ -z "$ran" ] || { printf 'crew: %s was taken at %s\n' "$key" "$ran"; return 0; }
+  root=$(printf '%s' "$facts" | jq -r '.root // empty'); [ -n "$root" ] || root=$(cmd_root)
+  ws=$(printf '%s' "$facts" | jq -r "$WS_PATH"); d=$(printf '%s' "$facts" | jq -r '.dispatch // empty')
+  run=$(printf '%s' "$facts" | jq -r '.run // empty'); url=$(printf '%s' "$facts" | jq -r '.url // empty')
+  how=$(take_how "$root") || { echo "crew: no take configured for $key (crew.autostart.take, tracker.kind)" >&2; return 1; }
+  marker=$(cd "$root" 2>/dev/null && bash "$CONFIG" get '.crew.marker') || marker='(agent)'
+  text="$marker $TAKE_PREFIX for workspace ${ws##*/}, dispatch ${d:-none}."
+  tr=$(tracker_cmd "$root")
+  if [ "$how" = default ]; then
+    if ! cur=$(sh -c "$tr read $(q "$key")" 2>&1); then
+      err="the tracker did not read it: $(printf '%s\n' "$cur" | tail -1 | sed 's/^tracker: //')"
+    else
+      role=$(printf '%s' "$cur" | jq -r '.role // empty' 2>/dev/null)
+      if [ -n "$excl" ] && [ "$role" != todo ]; then
+        err="it is no longer ready (role ${role:-unknown}): someone may have taken it"
+      elif ! cur=$(sh -c "$tr move $(q "$key") active" 2>&1); then
+        err="the move to active failed: $(printf '%s\n' "$cur" | tail -1 | sed 's/^tracker: //')"
+      elif ! cur=$(printf '%s\n' "$text" | sh -c "$tr comment $(q "$key")" 2>&1); then
+        err="the lock comment failed: $(printf '%s\n' "$cur" | tail -1 | sed 's/^tracker: //')"
+        if [ -n "$role" ] && [ "$role" != active ]; then
+          sh -c "$tr move $(q "$key") $(q "$role")" >/dev/null 2>&1 \
+            && err="$err; moved back to $role" || err="$err; moving it back to $role failed too"
+        fi
+      fi
+    fi
+  else
+    cmd=$(printf '%s\n' "$how" | sed 1d)
+    cmd=$(KEY=$(q "$key") WORKSPACE=$(q "$ws") DISPATCH=$(q "$d") ROOT=$(q "$root") MARKER=$(q "$text") TRACKER=$tr awk '
+      function rep(s, ph, val,   out, i) {
+        out = ""
+        while ((i = index(s, ph)) > 0) { out = out substr(s, 1, i - 1) val; s = substr(s, i + length(ph)) }
+        return out s
+      }
+      { s = $0; n = split("KEY WORKSPACE DISPATCH ROOT MARKER TRACKER", ph, " ")
+        for (i = 1; i <= n; i++) s = rep(s, "{{" ph[i] "}}", ENVIRON[ph[i]])
+        print s }' <<<"$cmd")
+    cur=$(cd "$root" && sh -c "$cmd" 2>&1); rc=$?
+    [ "$rc" -eq 0 ] || err="crew.autostart.take exited $rc${cur:+: $(printf '%s\n' "$cur" | tail -1)}"
+  fi
+  if [ -z "$err" ]; then
+    how=$(printf '%s\n' "$how" | head -1)
+    cmd_record "$key" "$(jq -cn --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg h "$how" '{taken: $t, taken_by: $h}')"
+    printf 'crew: took %s (%s)\n' "$key" "$how"
+    return 0
+  fi
+  take_failed "$key" "$d" "$run" "${url:-$ws}" "$ws" "$err"
+  return 2
+}
+
+take_failed() { # <key> <dispatch> <run> <url or workspace> <workspace> <reason>
+  local out what again=''
+  [ ! -f "$AS_DIR/tried/$1" ] || again=" (rm $AS_DIR/tried/$1 to let autostart try it again)"
+  out=''
+  [ -z "$2" ] || out=$("$(orca_cmd)" orchestration worker-stop --dispatch "$2" --json 2>&1)
+  if [ -n "$2" ] && [ "$(printf '%s' "$out" | jq -r '.ok // false' 2>/dev/null)" = true ]; then
+    cmd_close "$1" 2>/dev/null
+    what="could not take the ticket ($6): its worker was stopped and its facts closed; the ticket was left as it was, the workspace $5 is kept$again"
+  else
+    what="could not take the ticket ($6), and stopping its worker was not confirmed: its facts stay open; stop it by hand (orca orchestration worker-stop --dispatch ${2:-<its dispatch>}), then crew.sh close $1"
+  fi
+  event "$1" "$3" "$4" "$what"
+  printf 'crew: %s: %s\n' "$1" "$what" >&2
 }
 
 cmd_autostart() {
@@ -2774,6 +2928,7 @@ case "$sub" in
   watch) cmd_watch ;;
   watch-install) cmd_watch_install "$@" ;;
   autostart) cmd_autostart "$@" ;;
+  take) cmd_take "$@" ;;
   usage) cmd_usage "$@" ;;
   account) need_jq; as_account ;;
   held) cmd_held ;;

@@ -97,7 +97,13 @@ this skill" printed above, two levels up.
    ticket: its worker rebases and carries on), CI failures, review bots'
    findings, people's new comments and approvals, workers left on a dialog, a tool call open too long (a hung command?), since anyone last looked (TSV: time, key, run, pr, what, woken).
    `woken` is `worker` when the watch sent the worker a round itself: nothing waits on the person
-   there unless the worker asks. When it is empty and
+   there unless the worker asks. `could not take the ticket (…)`: a start whose lock failed
+   (`crew.sh take`); its worker was stopped and the ticket left as it was. Say why, and that the
+   kept workspace can be removed; to try again once the cause is fixed, the line names the
+   autostart marker to delete. When it says the stop was not confirmed, the worker may still
+   run without the lock: propose stopping it by the command the line gives. A worker that
+   stopped later without reporting keeps its lock: releasing it (moving the ticket back) is the
+   person's call, offered beside `resume`. When it is empty and
    `$O automations list --json` has no "hi-crew watch", offer `bash "$C" watch-install` once.
 5. **Workers**: `bash "$C" states` first — each worker's state from its own hooks (TSV: key,
    run, state, since, kind, open tool, minutes that tool has run, minutes the turn has run;
