@@ -62,6 +62,9 @@ the team process below moves them at merge.
   what you assume) where the team process says plans go, or else in the draft pull request's
   description, and start without waiting. It lets a person stop a wrong direction while that is
   still cheap.
+- Before you build on or around a third-party tool (Orca, Claude Code, gh), compare its installed
+  version with its latest release and read the release notes in between, so you do not build
+  what upstream already shipped; say in your direction what the tool already does.
 {{/FRESH}}
 - Change files with the Edit/Write tools, never with a python/sed/perl heredoc in Bash. A heredoc
   whose body is shell source trips Claude Code's dangerous-command dialog, even under bypass
