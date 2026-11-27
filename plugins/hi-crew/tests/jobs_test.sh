@@ -127,7 +127,7 @@ check 'same priority: the more overdue first' "$(ran q)/$(ran p)" yes/no
 # --- one at a time
 reset
 add r '{"run": "touch '"$T"'/out/r"}'
-mkdir -p "$T/state/jobs"; echo '{"pid": '$$'}' >"$T/state/jobs/busy.json"
+mkdir -p "$T/state/jobs"; echo '{"pid": '$$', "started": 2000000000}' >"$T/state/jobs/busy.json"
 add busy '{"run": "true", "every": "weekly"}'
 out=$(tick)
 check 'while one runs nothing else starts' "$(ran r)" no
@@ -173,21 +173,41 @@ check '--dry-run says what would start' "$(line "$(tick --dry-run)" d)" 'would s
 check '... and starts nothing' "$(ran d)" no
 
 # --- detached: the tick returns at once, the job outlives the tick's process group
+for ss in 1 0; do
+  reset
+  add bg '{"run": "sleep 2; touch '"$T"'/out/bg"}'
+  s=$(date +%s)
+  if command -v setsid >/dev/null 2>&1; then
+    # The tick in a group of its own, killed when it returns: how a precheck's timeout ends it.
+    HI_JOBS_SETSID=$ss setsid bash -c 'echo $$ >"$1/tick.pgid"; HI_JOBS_FOREGROUND= bash "$2" tick >/dev/null' _ "$T" "$JS"
+    kill -TERM -- "-$(cat "$T/tick.pgid")" 2>/dev/null || :
+  else
+    HI_JOBS_FOREGROUND= bash "$JS" tick >/dev/null
+  fi
+  check "setsid=$ss: a detached start returns at once" "$([ $(( $(date +%s) - s )) -lt 2 ] && echo yes)" yes
+  check '... and list says it runs' "$(bash "$JS" list | cut -f2)" running
+  i=0; while ! jq -e .last_ok "$T/state/jobs/bg.json" >/dev/null 2>&1 && [ $i -lt 50 ]; do sleep 0.2; i=$((i + 1)); done
+  check '... it finished after the tick'"'"'s group was killed' "$(ran bg)" yes
+  check '... and is recorded done' "$(jq -r '.last_ok // "none"' "$T/state/jobs/bg.json")" 2000000000
+done
+
+# --- a stale pid does not block the queue
 reset
-add bg '{"run": "sleep 2; touch '"$T"'/out/bg"}'
-s=$(date +%s)
-if command -v setsid >/dev/null 2>&1; then
-  # The tick in a group of its own, killed when it returns: how a precheck's timeout ends it.
-  setsid bash -c 'echo $$ >"$1/tick.pgid"; HI_JOBS_FOREGROUND= bash "$2" tick >/dev/null' _ "$T" "$JS"
-  kill -TERM -- "-$(cat "$T/tick.pgid")" 2>/dev/null || :
-else
-  HI_JOBS_FOREGROUND= bash "$JS" tick >/dev/null
-fi
-check 'a detached start returns at once' "$([ $(( $(date +%s) - s )) -lt 2 ] && echo yes)" yes
-check '... and list says it runs' "$(bash "$JS" list | cut -f2)" running
-i=0; while ! jq -e .last_ok "$T/state/jobs/bg.json" >/dev/null 2>&1 && [ $i -lt 50 ]; do sleep 0.2; i=$((i + 1)); done
-check '... it finished after the tick'"'"'s group was killed' "$(ran bg)" yes
-check '... and is recorded done' "$(jq -r '.last_ok // "none"' "$T/state/jobs/bg.json")" 2000000000
+add r '{"run": "touch '"$T"'/out/r"}'
+add busy '{"run": "true", "every": "weekly"}'
+mkdir -p "$T/state/jobs"; echo '{"pid": '$$', "started": '$((2000000000 - 7 * 3600))', "last_ok": 1999990000}' >"$T/state/jobs/busy.json"
+tick >/dev/null
+check 'a live pid started 7 h ago is taken as gone' "$(ran r)" yes
+
+# --- a job held at the line: its marker is the job's, never resumed, and cleared after the run
+reset
+live 10 18000 10 604800
+# The tick's check passes; the job then writes the flag itself and calls the hook, as its claude
+# would on a tool call once the watch flagged the account mid-run.
+echo '{"crew": {"jobs": {"h": {"run": "printf over >\"$CLAUDE_CONFIG_DIR/highness-hold\"; printf %s \"{}\" | bash '"$HERE"'/../lib/hold.sh hook --worker >/dev/null; jq -r .via '"$T"'/state/held/*.json >'"$T"'/out/h; printf \"[%s]\" \"$(HI_WT_SH=/nonexistent bash '"$HERE"'/../lib/hold.sh resume)\" >>'"$T"'/out/h; exit 75"}}}}' >"$HIGHNESS_CONFIG"
+tick >/dev/null
+check 'a held job'"'"'s marker says job, and resume leaves it' "$(tr '\n' ' ' <"$T/out/h")" 'job []'
+check '... the queue clears it after the run' "$(ls "$T/state/held" 2>/dev/null)" ''
 
 # --- the learned hours
 reset

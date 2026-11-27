@@ -193,13 +193,15 @@ What the job's exit code means:
 `jobs.sh list` shows each job's state. `jobs.sh runs` shows each run with the used % of both
 windows before and after it.
 
-**No daily cap on the agents' weekly share yet.** Stage 1's real spend did not call for one. One
-night of the memory pass took 4–6 points of the 7-day window. The weekly digest cost under a
-tenth of that. Both stay under a seventh of the agents' share, about 7 points a day at the
-default reserve of 50. The 7-day line held starts only in the last hours of a week. By then the
-week had gone to people's own sessions and the workers they ran, and a cap on background agents
-would not have touched those. `jobs.sh runs` now records each job's own spend. Revisit the cap if
-the queue's jobs pass about 7 points of the week in a day.
+A held job's marker (`via: job`) is never typed into by the resume. The job reads the marker to
+learn it was stopped, and the queue clears it after the run. A job that ran longer than
+`crew.queue.max_run_hours` (6) no longer blocks the queue, because its pid may belong to another
+process by then.
+
+**No daily cap on the agents' weekly share.** The stage-1 spend that led to this call is in
+highness#37. `jobs.sh runs` records each job's own spend. Revisit the cap if the queue's jobs pass
+about a seventh of the agents' weekly share in a day, which is about 7 points at the default
+reserve of 50.
 
 ### The retro at close
 

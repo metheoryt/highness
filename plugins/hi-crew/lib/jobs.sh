@@ -62,8 +62,9 @@
 # done, last failure, running pid), <name>.log (the job's output), jobs.log (each start and end),
 # hours.tsv (the learned hours, with the day they were learned).
 # Fixtures: HI_NOW (epoch), HI_ACCOUNT (the default account), HI_JOBS_PROJECTS (the transcript
-# dirs to learn from, colon-separated), HI_JOBS_FOREGROUND=1 (run the job inline, for tests), and
-# budget.sh's. bash 3.2, BSD tools.
+# dirs to learn from, colon-separated), HI_JOBS_FOREGROUND=1 (run the job inline, for tests),
+# HI_JOBS_SETSID=0 (start it the way a box without setsid does), and budget.sh's. bash 3.2, BSD
+# tools.
 set -u
 export LC_ALL=C
 
@@ -163,7 +164,15 @@ st_set() { # <name> <jq update>
   jq -c "$2" "$f" >"$tmp" 2>/dev/null && mv "$tmp" "$f" || rm -f "$tmp"
 }
 # running <name>: its recorded pid is alive.
-running() { local p; p=$(st "$1" .pid); [ -n "$p" ] && kill -0 "$p" 2>/dev/null; }
+# A pid started longer ago than crew.queue.max_run_hours (default 6) is taken as gone: after a
+# reboot or a kill the number can belong to another process, and the queue would wait on it forever.
+running() {
+  local p s m
+  p=$(st "$1" .pid); [ -n "$p" ] && kill -0 "$p" 2>/dev/null || return 1
+  s=$(st "$1" .started); case "$s" in ''|*[!0-9]*) s=0 ;; esac
+  m=$(cfg '.crew.queue.max_run_hours'); case "$m" in ''|*[!0-9]*) m=6 ;; esac
+  [ $(( $(now) - s )) -lt $((m * 3600)) ]
+}
 
 # load <name>: the job's fields into JEVERY (seconds) JSIZE JWHEN JPRIO JACCT JRETRY (seconds) JRUN
 # JDIR; exit 1 when no such job. One jq per field: an empty field must not shift the others.
@@ -202,7 +211,7 @@ usage() {
 # ── the run (the detached part) ──────────────────────────────────────────────
 
 cmd_exec() { # <name> <config dir>
-  local name=$1 d=$2 rc start end b a b5 r5 b7 r7 a5 ar5 a7 ar7 T
+  local name=$1 d=$2 rc start end b a b5 r5 b7 r7 a5 ar5 a7 ar7 T m
   T=$(printf '\t')
   load "$name" || return 2
   start=$(now); b=$(usage "$d")
@@ -216,6 +225,11 @@ EOF
     CLAUDE_CONFIG_DIR="$d" HI_HOLD_HOOK="bash $(printf '%q' "$HERE/hold.sh") hook --worker" HI_JOB="$name" \
       exec bash -c "$JRUN" </dev/null
   ) >>"$J/$name.log" 2>&1 || rc=$?
+  # The hold markers the hook left for this job (via "job"): the job has read them by now.
+  for m in "$STATE/held"/*.json; do
+    [ -f "$m" ] || continue
+    [ "$(jq -r 'select(.via == "job") | .key' "$m" 2>/dev/null)" = "$name" ] && rm -f "$m"
+  done
   end=$(now); a=$(usage "$d")
   IFS=$T read -r a5 ar5 a7 ar7 <<EOF
 $a
@@ -239,10 +253,13 @@ start() { # <name> <config dir>
   fi
   # Detached, in its own session where setsid exists: the watch runs inside a precheck with a
   # timeout, and a long job outlives it.
-  if command -v setsid >/dev/null 2>&1; then
+  if [ "${HI_JOBS_SETSID:-1}" != 0 ] && command -v setsid >/dev/null 2>&1; then
     setsid nohup bash "$HERE/jobs.sh" exec "$1" "$2" </dev/null >/dev/null 2>&1 &
   else
+    # No setsid (macOS): job control puts the job in a process group of its own.
+    set -m 2>/dev/null
     nohup bash "$HERE/jobs.sh" exec "$1" "$2" </dev/null >/dev/null 2>&1 &
+    set +m 2>/dev/null
   fi
   st_set "$1" ".started = $(now) | .pid = $!"
 }

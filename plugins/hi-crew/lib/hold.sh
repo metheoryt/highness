@@ -74,7 +74,7 @@ key_for() {
 }
 
 cmd_hook() {
-  local worker='' d pd in sid key=''
+  local worker='' d pd in sid key='' via
   [ "${1:-}" = --worker ] && worker=1
   d=$(dir_of)
   # A worker names its account for the passes to check (accounts/, the last hour's count).
@@ -88,10 +88,14 @@ cmd_hook() {
   [ -n "$pd" ] || pd=$PWD
   pd=$(cd "$pd" 2>/dev/null && pwd -P) || return 0
   if [ -z "$worker" ]; then key=$(key_for "$pd") || return 0; fi
+  # A queued job (lib/jobs.sh sets HI_JOB): its marker tells the job it was held, and the queue
+  # starts it again; resume never types into it (a headless run has no session to continue).
+  via=wt; [ -n "$worker" ] || via=crew
+  if [ -n "$worker" ] && [ -n "${HI_JOB:-}" ]; then via=job; key=$HI_JOB; fi
   sid=$(printf '%s' "$in" | jq -r '.session_id // empty' 2>/dev/null) || sid=''
   mkdir -p "$HELD" 2>/dev/null || return 0
   jq -cn --arg w "$pd" --arg s "$sid" --arg d "$d" --arg k "$key" --arg r "$(head -1 "$d/highness-hold" 2>/dev/null)" \
-    --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg via "$([ -n "$worker" ] && echo wt || echo crew)" \
+    --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg via "$via" \
     '{workspace: $w, session: $s, config_dir: $d, key: $k, via: $via, since: $t, reason: $r}' \
     >"$HELD/$(printf '%s' "$pd" | cksum | cut -d' ' -f1).json" 2>/dev/null || return 0
   log "stopped	$pd	${sid:-no session id}"
@@ -141,6 +145,7 @@ cmd_resume() {
     [ -n "$d" ] || { rm -f "$m"; continue; }
     held "$d" && continue
     via=$(printf '%s' "$j" | jq -r '.via // "wt"')
+    [ "$via" = job ] && continue  # the queue's job clears it; the queue restarts the job
     rc=0
     if [ "$via" = crew ]; then resume_crew "$j" || rc=$?; else resume_wt "$j" || rc=$?; fi
     case "$rc" in
