@@ -1746,6 +1746,24 @@ orca_prompts() { # <workspaces, one per line>
   return 0
 }
 
+# pane_unblocked <terminal>: whether `worktree ps` shows that terminal's agent with a
+# programStatus other than `blocked` — a stale agentWait left by Esc on a dialog (see orca_prompts).
+# Exit 1 (count it as a dialog) when Orca does not answer, does not list the terminal, or gives
+# it no programStatus: only a measured non-blocked state clears an agentWait.
+pane_unblocked() { # <terminal>
+  local psf rc
+  [ -n "$1" ] || return 1
+  psf=$(mktemp "${TMPDIR:-/tmp}/hi-crew-ps.XXXXXX") || return 1
+  "$(orca_cmd)" worktree ps --agent-wait --limit 10000 --json 2>/dev/null </dev/null | unsurrogate >"$psf"
+  jq -e --arg t "$1" '
+    [(.result.worktrees // [])[] | (.agents // [])[] | select(type == "object" and (.address // "") == $t)
+     | (.programStatus.state // "")] as $s
+    | ($s | length) > 0 and all($s[]; . != "" and . != "blocked")' "$psf" >/dev/null 2>&1
+  rc=$?
+  rm -f "$psf"
+  return $rc
+}
+
 cmd_prompts() {
   need_jq
   local t hit ws all=''
@@ -2570,8 +2588,11 @@ EOF
     done
     "$(orca_cmd)" terminal wait --terminal "$pane" --for tui-idle --timeout-ms 30000 --json >/dev/null 2>&1 </dev/null
   fi
-  # A dialog open in the pane would take the new Dispatch's text as its answer.
-  if orca_terminal show --terminal "$pane" | jq -e '(.result.terminal.agentWait // null) != null' >/dev/null 2>&1; then
+  # A dialog open in the pane would take the new Dispatch's text as its answer. Its agentWait
+  # outlives Esc on the dialog until the next hook (highness#171): it counts only while the
+  # pane's programStatus is not measured as something other than blocked.
+  if orca_terminal show --terminal "$pane" | jq -e '(.result.terminal.agentWait // null) != null' >/dev/null 2>&1 \
+      && ! pane_unblocked "$pane"; then
     die "resume: $key's session in its pane $pane waits on a dialog: answer it there, then run resume again"
   fi
   title=$(printf '%s' "$facts" | jq -r '.title // empty'); [ -n "$title" ] || title=$key

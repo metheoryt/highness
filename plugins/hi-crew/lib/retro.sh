@@ -24,6 +24,11 @@
 #                                         note. Records retro_at in the facts; `crew.sh close` warns
 #                                         when it is missing
 #
+# Where the comment goes: the config command crew.retro_comment, read at the ticket's root, with
+# {{TICKET}} {{BODY_FILE}} {{ROOT}} replaced by shell-quoted values (a tracker no built-in kind
+# covers, through the team's own script); exit 0 means posted. Else tracker.sh when tracker.kind
+# is set; else the ticket's GitHub issue (<repo>-<number>) through gh.
+#
 # Where findings go: the config command crew.retro_sink, read at the ticket's root, with
 # {{KIND}} {{TITLE}} {{BODY_FILE}} {{TICKET}} {{ROOT}} replaced by shell-quoted values. It prints
 # the created key or URL, or `dup <key>` when an open item already says it (its last output line
@@ -287,7 +292,7 @@ cmd_file() {
 
 cmd_comment() {
   [ $# -ge 1 ] && [ $# -le 2 ] || die 'usage: comment <KEY> [<note file>]'
-  local key=$1 f root marker list repo n msg rc
+  local key=$1 f root marker list repo n msg rc cmd body line out
   f=$(facts "$key") || die "no facts for $key"
   root=$(fact "$f" root); [ -n "$root" ] && [ -d "$root" ] || root=$(pwd -P)
   marker=$(cd "$root" && bash "$CONFIG" get '.crew.marker' 2>/dev/null) || marker='(agent)'
@@ -298,12 +303,20 @@ cmd_comment() {
     else printf '%s Retro of %s: no findings.\n' "$marker" "$key"; fi
     if [ $# -eq 2 ] && [ -s "$2" ]; then echo; cat "$2"; fi
   )
-  if (cd "$root" && bash "$CONFIG" get '.tracker.kind' >/dev/null 2>&1); then
+  cmd=$(cd "$root" && bash "$CONFIG" get '.crew.retro_comment' 2>/dev/null) || cmd=''
+  if [ -n "$cmd" ]; then
+    body=$(mktemp "${TMPDIR:-/tmp}/hi-retro.XXXXXX") || die 'no temp file'
+    BODY_TMP=$body; trap 'rm -f "$BODY_TMP"' EXIT
+    printf '%s\n' "$msg" >"$body"
+    line=$(printf '%s\n' "$cmd" | KIND='' TITLE='' BODY_FILE=$(q "$body") TICKET=$(q "$key") ROOT=$(q "$root") fill)
+    out=$(cd "$root" && sh -c "$line" </dev/null 2>&1); rc=$?
+    [ "$rc" -eq 0 ] || die "comment: crew.retro_comment exit $rc${out:+: $(printf '%s\n' "$out" | grep . | tail -1)}"
+  elif (cd "$root" && bash "$CONFIG" get '.tracker.kind' >/dev/null 2>&1); then
     printf '%s\n' "$msg" | bash "$HERE/tracker.sh" --root "$root" comment "$key"; rc=$?
   else
     n=${key##*-}
     repo=$(repo_slug "$(fact "$f" repo)") \
-      || die "comment: no tracker configured at $root and the facts' repo '$(fact "$f" repo)' names no GitHub owner/repo"
+      || die "comment: no crew.retro_comment or tracker configured at $root, and the facts' repo '$(fact "$f" repo)' names no GitHub owner/repo"
     case "$n" in ''|*[!0-9]*) die "comment: '$key' is not <repo>-<number>" ;; esac
     printf '%s\n' "$msg" | gh issue comment "$n" -R "$repo" --body-file -; rc=$?
   fi
