@@ -498,7 +498,7 @@ for s in start agenda; do
   if grep -q '`already done:`' "$HERE/../skills/$s/SKILL.md"; then ok "$s skill reads the already-done subject"; else no "$s skill reads the already-done subject"; fi
 done
 # A thread's decisions go to its own session first; the resume line only when that failed.
-case "$(cat "$HERE/../skills/agenda/SKILL.md")" in *'threads-read.sh" relay'*'`sent`'*'`started`'*'`manual`'*) ok 'agenda: relay to the thread, then a new terminal, then the resume line' ;; *) no 'agenda: relay to the thread, then a new terminal, then the resume line' ;; esac
+case "$(cat "$HERE/../skills/agenda/SKILL.md")" in *'threads-read.sh" relay'*'`queued`'*'never send it again'*'`sent`'*'`started`'*'`manual`'*) ok 'agenda: relay to the thread, then a new terminal, then the resume line' ;; *) no 'agenda: relay to the thread, then a new terminal, then the resume line' ;; esac
 case "$(cat "$HERE/../skills/agenda/SKILL.md")" in *'`busy`'*'do not wait'*) ok 'agenda: a busy thread session is said, not waited out' ;; *) no 'agenda: a busy thread session is said, not waited out' ;; esac
 # A held autostart is read in step 1, before the "nothing on the person" stop: a hold starts no
 # ticket, so the agenda of a box whose autostart is stuck has none (highness#59).

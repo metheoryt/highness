@@ -194,6 +194,7 @@ printf '#!/bin/sh\nprintf "%%s\\n" "$*" >>"%s/wt.log"\nprintf "%%b" "$FAKE_WT_OU
 printf 'Decided: keep the old API.\n' >"$T/decisions.md"
 mkdir -p "$T/wt/svc-1/sub"
 SID=0d1f2e3c-aaaa-bbbb-cccc-000000000001
+export HI_SESSIONS_DIRS=''   # no session inbox: the dispatch path below
 relay() { # <rc> <dispatch stdout> → "<stdout>|<exit>|<calls>"
   local o r=0; rm -f "$T/wt.log"
   o=$(HI_WT_SH="$T/wt.sh" WT_RC=$1 FAKE_WT_OUT=$2 bash "$TH" relay "$T/wt/svc-1/sub" "$SID" "$T/decisions.md" 2>/dev/null) || r=$?
@@ -216,6 +217,61 @@ o=$(HI_WT_SH="$T/wt.sh" bash "$TH" relay "$T/plain" "$SID" "$T/decisions.md" 2>/
 check 'relay: not a git work tree — the resume line, nothing run' "$o|$r|$([ -f "$T/wt.log" ] && echo ran || echo none)" "manual${TAB}cd '$T/plain' && claude --resume $SID|1|none"
 HI_WT_SH="$T/wt.sh" bash "$TH" relay "$T/wt/svc-1" "$SID" "$T/missing.md" 2>/dev/null; r=$?
 check 'relay: no brief file is a usage error' "$r|$([ -f "$T/wt.log" ] && echo ran || echo none)" '2|none'
+
+# relay through the session's own inbox (highness#53): a session listed in a config dir's
+# sessions/<pid>.json gets one JSON line on its socket and no dispatch. A fake nc records its
+# argv and stdin; a socket path with "dead" in it refuses, as a stale entry's does. NC_HELP is
+# what `nc -h` prints: OpenBSD's lists -N, BSD's (macOS) does not.
+cat >"$T/nc" <<'EOF'
+#!/bin/sh
+[ "$1" = -h ] && { printf '%s\n' "${NC_HELP:-usage: nc [-46CDdFhklNnrStUuvZz] [-I length]}" >&2; exit 1; }
+for a; do last=$a; done
+case "$last" in *dead*) cat >/dev/null; exit 1 ;; esac
+{ printf '%s\n' "$*"; cat; } >>"$NC_LOG"
+EOF
+chmod +x "$T/nc"
+S1="$T/cfg1/sessions"; S2="$T/cfg2/sessions"; mkdir -p "$S1" "$S2"
+sess() { # <dir> <pid> <session id> <cwd> <status> <socket>
+  : >"$6"
+  jq -n -c --argjson p "$2" --arg s "$3" --arg c "$4" --arg st "$5" --arg k "$6" \
+    '{pid: $p, sessionId: $s, cwd: $c, name: "n\($p)", status: $st, messagingSocketPath: $k}' >"$1/$2.json"
+}
+inbox() { # <cwd> <session> [env…] → "<stdout>|<exit>|<dispatches>|<posts>"
+  local o r=0 c=$1 s=$2; shift 2; rm -f "$T/wt.log" "$T/nc.log"
+  o=$(env HI_WT_SH="$T/wt.sh" HI_NC="$T/nc" NC_LOG="$T/nc.log" HI_SESSIONS_DIRS="$S1:$S2" "$@" \
+      bash "$TH" relay "$c" "$s" "$T/decisions.md" 2>/dev/null) || r=$?
+  printf '%s|%s|%s|%s' "$o" "$r" "$([ -f "$T/wt.log" ] && wc -l <"$T/wt.log" | tr -d ' ' || echo 0)" \
+    "$([ -f "$T/nc.log" ] && grep -c '^-U' "$T/nc.log" || echo 0)"
+}
+SID2=0d1f2e3c-aaaa-bbbb-cccc-000000000002
+sess "$S1" 101 "$SID2" "$T/wt/svc-1" busy "$T/s101.sock"
+sess "$S2" 102 "$SID" "$T/wt/svc-1" busy "$T/s102.sock"
+check 'relay inbox: a busy session gets the brief queued — one post, no dispatch' \
+  "$(inbox "$T/wt/svc-1/sub" "$SID")" "queued${TAB}n102${TAB}busy|0|0|1"
+check 'relay inbox: two sessions in one worktree — the thread'"'"'s own socket, with -N' \
+  "$(head -1 "$T/nc.log")" "-U -N -w 3 $T/s102.sock"
+check 'relay inbox: the line carries the brief'"'"'s text as a user message, priority next' \
+  "$(sed -n 2p "$T/nc.log" | jq -r '"\(.msgV) \(.type) \(.priority) \(.message.role) \(.message.content)"')" \
+  "1 user next user Decided: keep the old API."
+check 'relay inbox: the session id matches in any case' \
+  "$(inbox "$T/wt/svc-1" "$(printf '%s' "$SID" | tr a-f A-F)" | cut -d'|' -f1)" "queued${TAB}n102${TAB}busy"
+check 'relay inbox: BSD nc (no -N) — no -N' \
+  "$(inbox "$T/wt/svc-1" "$SID" NC_HELP='usage: nc [-46AcDCdhklnrtUuvz]' >/dev/null; head -1 "$T/nc.log")" "-U -w 3 $T/s102.sock"
+check 'relay inbox: a main checkout or plain directory is reached too — no dispatch' \
+  "$(inbox "$T/plain" "$SID")" "queued${TAB}n102${TAB}busy|0|0|1"
+check 'relay inbox: the same registry listed twice — one post' \
+  "$(rm -f "$T/nc.log"; HI_WT_SH="$T/wt.sh" HI_NC="$T/nc" NC_LOG="$T/nc.log" HI_SESSIONS_DIRS="$S2:$S2" bash "$TH" relay "$T/wt/svc-1" "$SID" "$T/decisions.md" >/dev/null 2>&1; grep -c '^-U' "$T/nc.log")" '1'
+sess "$S1" 103 "$SID" "$T/wt/svc-1" idle "$T/dead103.sock"
+check 'relay inbox: a stale entry refuses — the next live one gets it' \
+  "$(inbox "$T/wt/svc-1" "$SID")" "queued${TAB}n102${TAB}busy|0|0|1"
+rm -f "$S2/102.json"
+check 'relay inbox: only a stale entry — today'"'"'s dispatch' \
+  "$(inbox "$T/wt/svc-1" "$SID" WT_RC=3 FAKE_WT_OUT="$SID\tbusy\t\n")" "busy${TAB}busy|3|1|0"
+rm -f "$S1/103.json"
+check 'relay inbox: not listed — today'"'"'s dispatch' \
+  "$(inbox "$T/wt/svc-1" "$SID" FAKE_WT_OUT="$SID\tsend\tterm_1\n")" "sent${TAB}term_1|0|1|0"
+check 'relay inbox: no nc — today'"'"'s dispatch' \
+  "$(sess "$S2" 102 "$SID" "$T/wt/svc-1" busy "$T/s102.sock"; inbox "$T/wt/svc-1" "$SID" HI_NC="$T/no-nc" FAKE_WT_OUT="$SID\tsend\tterm_1\n")" "sent${TAB}term_1|0|1|0"
 
 # The live check: the team's commands say what became of the PRs and tickets a thread names.
 CK="$T/ck"; mkdir -p "$CK/proj/.claude" "$CK/other/.claude" "$CK/state"
@@ -371,7 +427,7 @@ check 'log: earlier messages are still there' "$(grep -c 'model said: You.ve hit
 
 # The skill relays first and gives the resume line last: sent, then started, then manual.
 SK="$HERE/../skills/where/SKILL.md"
-case "$(cat "$SK")" in *'"$TH" relay'*'`sent`'*'`started`'*'`manual`'*) ok 'where: relay, then new terminal, then the resume line' ;; *) no 'where: relay, then new terminal, then the resume line' ;; esac
+case "$(cat "$SK")" in *'"$TH" relay'*'`queued`'*'never send it again'*'`sent`'*'`started`'*'`manual`'*) ok 'where: relay, then new terminal, then the resume line' ;; *) no 'where: relay, then new terminal, then the resume line' ;; esac
 case "$(cat "$SK")" in *'`busy`'*'do not wait'*) ok 'where: busy is said, not waited out' ;; *) no 'where: busy is said, not waited out' ;; esac
 
 exit $fail
