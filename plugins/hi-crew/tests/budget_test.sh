@@ -167,4 +167,43 @@ out=$(PATH="$T/bin:$PATH" ORCA_CLI_COMMAND="$T/bin/orca-stub" HI_BUDGET_RESPONSE
 check 'room: a past-due account with a fresh cache is not offered' "$rc/$out" '1/'
 has 'room: stderr names it dead' "$(cat "$T/room.err")" 'no room on free@x (free): account dead on'
 
+# --- starts: what a manual start shows (highness#174). Never a hold: exit 1 only warns.
+export HI_BUDGET_RESPONSE="$T/live.json" HI_BUDGET_REFRESH=0
+echo '{}' >"$HIGHNESS_CONFIG"
+st() { bash "$B" starts "$1" "$T/acct"; }
+live 37 9660 34 371820
+out=$(st 1); rc=$?
+check 'starts: one fits, exit 0' "$rc" 0
+check '…each window, its remainder and the fit, then the verdict' "$out" "5h 37% used, agents up to 73% (resets in 2h41m): 36 points left, room for 1 start at ~20 each
+7d 34% used, agents up to 69% (resets in 4d7h): 35 points left, room for 17 starts at ~2 each
+1 start on $T/acct [live] fit under your reserve."
+out=$(st 3); rc=$?
+check 'starts: three where one fits, exit 1' "$rc" 1
+has '…says how many the remainder fits' "$out" "3 starts on $T/acct [live] would pass your reserve: the remainder fits 1. Starting anyway is your call."
+live 10 18000 10 604800
+check 'starts: a fresh window (50 points left) fits two of five' "$(st 5 | tail -1)" \
+  "5 starts on $T/acct [live] would pass your reserve: the remainder fits 2. Starting anyway is your call."
+live 60 18000 10 604800
+out=$(st 1); rc=$?
+check 'starts: already over the line, exit 1' "$rc" 1
+has '…0 points left' "$out" '5h 60% used, agents up to 50% (resets in 5h00m): 0 points left, room for 0 starts'
+has '…fits none' "$out" 'the remainder fits none'
+live 95 -60 10 604800
+has 'starts: a window already reset starts from zero' "$(st 1)" '5h 0% used, agents up to 50%: 50 points left'
+live 10 18000 97 3600
+has 'starts: the week binds when it is the tighter window' "$(st 2 | tail -1)" 'the remainder fits 1'
+echo '{"crew": {"budget": {"five_hour_per_start": 10, "seven_day_per_start": 0}}}' >"$HIGHNESS_CONFIG"
+live 10 18000 97 3600
+out=$(st 4); rc=$?
+check 'starts: per-start costs configurable; 0 counts nothing against the week' "$rc" 0
+has '…5h at ~10' "$out" 'room for 4 starts at ~10 each'
+case "$out" in *'7d'*'room for'*) no '…7d has no fit at cost 0' ;; *) ok '…7d has no fit at cost 0' ;; esac
+echo '{"crew": {"budget": {"on_unknown": "go"}}}' >"$HIGHNESS_CONFIG"
+HI_BUDGET_RESPONSE=fail
+out=$(st 1); rc=$?
+check 'starts: unknown usage warns, exit 1, whatever on_unknown says' "$rc" 1
+has '…and says unknown' "$out" "usage unknown on $T/acct: cannot say what is left of the plan. Starting anyway is your call."
+echo '{}' >"$HIGHNESS_CONFIG"
+bash "$B" starts x "$T/acct" >/dev/null 2>&1; check 'starts: a count that is not a number is a usage error' "$?" 2
+
 exit $fail

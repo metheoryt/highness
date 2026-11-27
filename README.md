@@ -86,6 +86,13 @@ The figures come live from the plan's usage endpoint (no tokens spent, every mac
 counted); a figure that cannot be read holds the start (`crew.budget.on_unknown: "go"` to change
 that).
 
+A manual `/hi-crew:start` (one ticket or several) never holds, but first shows the same figures:
+`budget.sh starts <n>` prints each window's remainder above your reserve, how many starts it
+fits, and warns when the n starts would pass the reserve. A worker is counted as
+`crew.budget.five_hour_per_start` points of the 5-hour window (20 by default: five workers
+started at once spent a whole window) and `crew.budget.seven_day_per_start` of the 7-day one (2);
+both are estimates, so tune them to what your workers take.
+
 **Account health.** `lib/account-health.sh` (in hi and hi-crew) tells whether an account can run
 at all: `ok`, `limited` (a window spent), `dead` (payment past due, disabled, logged out) or
 `unknown`. It reads the usage endpoint first. With no figures — a 401, and also a 429, which the
