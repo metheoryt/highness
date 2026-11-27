@@ -91,6 +91,9 @@ ss_hook() {
     Notification) tool=$otool; tep=$otep ;;
     *) turn='' ;;
   esac
+  # A question form fires a permission_prompt Notification after its PreToolUse (measured on
+  # Claude Code 2.1.332 for AskUserQuestion and ExitPlanMode): it stays a question.
+  [ "$ev" = Notification ] && case "$tool" in AskUserQuestion|ExitPlanMode) kind=question ;; esac
   [ -d "$SS_DIR" ] || mkdir -p "$SS_DIR" 2>/dev/null || return 0
   x=${HI_AGENT_PID:-}
   case "$x" in *[!0-9]*) x='' ;; esac

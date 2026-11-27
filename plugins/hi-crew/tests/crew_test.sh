@@ -498,7 +498,7 @@ for s in start agenda; do
   if grep -q '`already done:`' "$HERE/../skills/$s/SKILL.md"; then ok "$s skill reads the already-done subject"; else no "$s skill reads the already-done subject"; fi
 done
 # A thread's decisions go to its own session first; the resume line only when that failed.
-case "$(cat "$HERE/../skills/agenda/SKILL.md")" in *'threads-read.sh" relay'*'`sent`'*'`started`'*'`manual`'*) ok 'agenda: relay to the thread, then a new terminal, then the resume line' ;; *) no 'agenda: relay to the thread, then a new terminal, then the resume line' ;; esac
+case "$(cat "$HERE/../skills/agenda/SKILL.md")" in *'threads-read.sh" relay'*'`queued`'*'never send it again'*'`sent`'*'`started`'*'`manual`'*) ok 'agenda: relay to the thread, then a new terminal, then the resume line' ;; *) no 'agenda: relay to the thread, then a new terminal, then the resume line' ;; esac
 case "$(cat "$HERE/../skills/agenda/SKILL.md")" in *'`busy`'*'do not wait'*) ok 'agenda: a busy thread session is said, not waited out' ;; *) no 'agenda: a busy thread session is said, not waited out' ;; esac
 # A held autostart is read in step 1, before the "nothing on the person" stop: a hold starts no
 # ticket, so the agenda of a box whose autostart is stuck has none (highness#59).
@@ -584,6 +584,10 @@ fi
 if [ "$2" = run-current ]; then printf '{"ok":true,"result":{"runId":"run_w1"}}\n'; exit 0; fi
 if [ "$2" = worker-list ]; then
   if [ -n "${FAKE_WORKERS:-}" ]; then printf '%s\n' "$FAKE_WORKERS"; else echo '{"ok":true,"result":{"workers":[]}}'; fi
+  exit 0
+fi
+if [ "$1 $2" = "worktree ps" ]; then
+  if [ -n "${FAKE_PS:-}" ]; then cat "$FAKE_PS"; else echo '{"ok":true,"result":{"worktrees":[]}}'; fi
   exit 0
 fi
 printf '%s\n' "$*" >>"$SENT"
@@ -841,6 +845,26 @@ check 'prompts: a working worker is not listed' "$(bash "$C" prompts)" ''
 sev PreToolUse '"tool_name":"AskUserQuestion"'
 check 'prompts: a question form, kind question' "$(bash "$C" prompts | cut -f1,4,5)" "$(printf 'W-2\tAskUserQuestion\tquestion')"
 check 'prompts: since is UTC' "$(bash "$C" prompts | cut -f3 | grep -cE '^[0-9-]{10}T[0-9:]{8}Z$')" 1
+# Claude Code 2.1.332 fires permission_prompt for a question form too: it stays a question.
+sev Notification '"notification_type":"permission_prompt"'
+check 'prompts: a question form after its permission_prompt is still a question' "$(bash "$C" prompts | cut -f1,4,5)" "$(printf 'W-2\tAskUserQuestion\tquestion')"
+check 'prompts: a ticket row names its workspace' "$(bash "$C" prompts | cut -f6)" "$WS2"
+# Every other agent Orca knows: `worktree ps --agent-wait`, counted only while programStatus is blocked.
+mkdir -p "$W/other"; OTHER=$(cd "$W/other" && pwd -P)
+jq -n -c --arg ws2 "$WS2" --arg o "$OTHER" '{ok: true, result: {hostScope: {hostIds: ["local"], omittedHostIds: []}, worktrees: [
+  {path: $ws2, agents: [{address: "term_w2", programStatus: {state: "blocked"}, toolName: "AskUserQuestion", agentWait: {source: "hook", since: 1795766873133}}]},
+  {path: $o, agents: [
+    {address: "term_a", programStatus: {state: "blocked"}, toolName: "Bash", agentWait: {source: "hook", since: 1795766823808}, preview: "x\ty"},
+    {address: "term_b", programStatus: {state: "idle"}, state: "waiting", toolName: "Bash", agentWait: {source: "hook", since: 1795766823808}},
+    {address: "term_c", programStatus: {state: "blocked"}, toolName: "Write", agentWait: {source: "prompt-text", reason: "agent-trust-workspace"}},
+    {address: "term_d", programStatus: {state: "blocked"}, toolName: "mcp__probe__ask_name", stateStartedAt: 1795767042149},
+    {address: "term_e", programStatus: {state: "blocked"}, toolName: "ExitPlanMode", agentWait: {source: "hook", since: 1795766976131}},
+    {address: "term_self", programStatus: {state: "blocked"}, toolName: "Bash"}]}]}}' >"$W/ps.json"
+P=$(FAKE_PS="$W/ps.json" ORCA_TERMINAL_HANDLE=term_self bash "$C" prompts)
+check 'prompts: a ticket workspace is listed once, from its hooks' "$(printf '%s\n' "$P" | grep -c "$WS2")" 1
+check 'prompts: other agents, blocked only, this session left out' "$(printf '%s\n' "$P" | grep -v '^W-2' | cut -f1,2,4-7)" "$(printf '\t\tBash\tpermission\t%s\tterm_a\n\t\t\tagent-trust-workspace\t%s\tterm_c\n\t\tmcp__probe__ask_name\tdialog\t%s\tterm_d\n\t\tExitPlanMode\tquestion\t%s\tterm_e' "$OTHER" "$OTHER" "$OTHER" "$OTHER")"
+check 'prompts: an Orca row since is UTC' "$(printf '%s\n' "$P" | grep term_a | cut -f3)" '2026-11-27T08:07:03Z'
+check 'prompts: no Orca answer, only the tickets' "$(FAKE_PS=/nonexistent bash "$C" prompts | grep -vc '^W-2')" 0
 check 'states: blocked, kind question' "$(bash "$C" states | grep '^W-2' | cut -f3,5)" "$(printf 'blocked\tquestion')"
 bash "$C" watch
 check 'watch: a question form is said as one' "$(bash "$C" events | cut -f5)" 'waits on a question form for AskUserQuestion'

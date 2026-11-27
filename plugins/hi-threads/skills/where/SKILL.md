@@ -71,8 +71,15 @@ Do not show ids, paths or session ids unless asked. When the user picks a thread
   bash "$TH" relay <last_cwd> <last_session> <brief file>
   ```
 
-  It goes through hi's `wt.sh dispatch <worktree> --resume <session>`: first the live session in
-  the thread's worktree, then a new terminal there. It prints `<outcome><TAB><detail>`:
+  First the thread's own session, by its id, through Claude Code's session inbox, wherever it
+  runs (a main checkout too, or a worktree that holds a second session); where that session is
+  not running, hi's `wt.sh dispatch <worktree> --resume <session>`: the live session in the
+  thread's worktree, then a new terminal there. It prints `<outcome><TAB><detail>`:
+  - `queued`: in the session's own inbox (`<name><TAB><status>`): `idle` takes it now, `busy`
+    when its turn ends, `waiting` once the dialog it shows is answered. Tell the user in one
+    line; never send it again. It arrives there as a message from another session, not as the
+    person's own words: a step that needs the person's yes (a merge, a push to main) still needs
+    it typed there.
   - `sent`: typed into the session running in the thread's worktree. Tell the user in one line
     what was sent; a session they started by hand may ask once there to read the brief.
   - `started`: no session ran there; `claude --resume` started in a new terminal of that
@@ -81,7 +88,8 @@ Do not show ids, paths or session ids unless asked. When the user picks a thread
     again, a resend can submit it twice.
   - `dialog`: resumed, but it opened on a dialog (folder trust, a permission) that the user
     answers in that terminal. Give no resume line: a second resume runs the session twice.
-  - `busy`: a turn or a dialog runs there, or a chat is open; nothing was typed. Say so and
+  - `busy`: a turn or a dialog runs there, or a chat is open, and the session has no inbox (not
+    listed: another session in that worktree, or a Claude Code without it); nothing was typed. Say so and
     offer to retry or to paste by hand (the brief's text); do not wait in a loop.
   - `manual`: neither worked (no hi plugin, no Orca or tmux, not a workspace). Only now give the
     resume line (`<detail>`) and the decisions as a paste-ready message.

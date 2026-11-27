@@ -5,11 +5,13 @@
 # the person: Orca shows the worker as busy and the worker sends no question. The Notification
 # hook (matchers permission_prompt and elicitation_dialog) writes one marker per session in
 # ${HIGHNESS_STATE:-${XDG_STATE_HOME:-~/.local/state}/highness}/prompts/<session_id>.json: since
-# (UTC), the session's cwd, the transcript, the pending tool call and the kind: `permission`, or
-# `input` for an MCP server's input dialog (elicitation), which also holds a tool call open.
-# elicitation_dialog is a notification type the Claude Code 2.1.319 CLI carries; its payload is
-# not measured. Without a transcript the marker is never believed, so a payload unlike
-# permission_prompt's stays silent (herdr's screen manifest has the same dialog, highness#24).
+# (UTC), the session's cwd, the transcript, the pending tool call and the kind: `permission`,
+# `input` for an MCP server's input dialog (elicitation), which also holds a tool call open, or
+# `question` when the pending tool is a question form (AskUserQuestion, ExitPlanMode), which
+# fires permission_prompt too. Measured live on Claude Code 2.1.332 (highness#15): a Bash
+# permission, AskUserQuestion, ExitPlanMode and an MCP server's elicitation each fire this hook
+# with the transcript, and the pending tool is the one on the dialog. Without a transcript the
+# marker is never believed, so an unexpected payload stays silent.
 #
 # Measured on Claude Code 2.1.316 in default mode: the payload carries session_id,
 # transcript_path, cwd, message and notification_type ("permission_prompt"), and no tool name;
@@ -83,6 +85,8 @@ hook() {
   [ -n "$cwd" ] || return 0
   cwd=$(cd "$cwd" 2>/dev/null && pwd -P) || return 0
   pt=''; [ -z "$tr" ] || pt=$(pending_tool "$tr")
+  # A question form fires permission_prompt too (Claude Code 2.1.332): it stays a question.
+  case "$(printf '%s' "$pt" | cut -f2)" in AskUserQuestion|ExitPlanMode) kind=question ;; esac
   mkdir -p "$dir" 2>/dev/null || return 0
   jq -n -c --arg since "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" --arg cwd "$cwd" --arg sid "$sid" --arg tr "$tr" \
      --arg id "$(printf '%s' "$pt" | cut -f1)" --arg tool "$(printf '%s' "$pt" | cut -f2)" --arg kind "$kind" \

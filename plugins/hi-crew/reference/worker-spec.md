@@ -54,8 +54,7 @@ the team process below moves them at merge.
     you when something changes; never poll.
 {{/HANDOVER}}
 {{#FRESH}}
-- Read the ticket in full, comments included, then check it is not already done (below) before
-  you take it, plan, branch or change anything. Then take it per the team process. A comment from
+{{TAKE}}
   the person or the coordinator binds like the description: a scope note there ("leave the ticket
   open for what you cannot reproduce") is part of the task, not background.
 - If the ticket leaves open something that changes what you build, ask before building (see
