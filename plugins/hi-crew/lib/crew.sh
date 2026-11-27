@@ -215,6 +215,8 @@
 #                                     progress, a ready one → In review. A PR closed unmerged, a
 #                                     tracker that did not answer, moves nothing; with no PR yet
 #                                     only the tracker moves it. No workspace, or no hi plugin: nothing
+#                                     Last it runs the queue of recurring background jobs
+#                                     (lib/jobs.sh tick; nothing when crew.jobs is unset).
 #                                     Run by the Orca automation below, from its precheck, which then
 #                                     exits 1 so no agent ever starts
 #   crew.sh watch-install [<cron>]    create or update that automation (default every 10 minutes)
@@ -1669,6 +1671,8 @@ cmd_watch() {
   fi
   # Last, with the PR states just read: start labelled tickets into free slots (off by default).
   cmd_autostart >/dev/null 2>&1 || :
+  # The recurring background jobs (lib/jobs.sh): one due job that fits the budget starts, detached.
+  bash "$HERE/jobs.sh" tick >/dev/null 2>&1 </dev/null || :
 }
 
 PROMPT_MARK="$HERE/prompt-mark.sh"
