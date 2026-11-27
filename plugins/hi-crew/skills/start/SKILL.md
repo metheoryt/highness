@@ -86,6 +86,15 @@ Below, `$O` stands for that executable.
    not a second attempt: `bash "$C" resume <KEY>` continues it in its own pane and chat when they
    are still there, else in its own workspace. A ticket that already has an open PR, driven by a
    session outside hi-crew: hand it over (below) instead.
+   **Then the budget, once for the whole request** (all the tickets that passed step 1; a resume
+   is no new start and is not counted):
+   `bash "${CLAUDE_PLUGIN_ROOT}/lib/budget.sh" starts <N> "$(bash "$C" account)"`. It prints each
+   plan window's remainder above the person's reserve (the line Autostart above describes), how
+   many starts it fits (`crew.budget.five_hour_per_start`, `seven_day_per_start`: points one
+   worker takes, 20 and 2 by default), and a verdict. Show those lines to the user as they are,
+   before the starts. Exit 1 is a warning (the starts would pass the reserve, the account is dead
+   or limited, or the usage is unknown): put it first in what you say, then start all N anyway.
+   It never stops a start and never becomes a question: the person's "start" wins.
 2. **Read the ticket** with the team's tracker tool (the process text names it) or what the session
    has: its title, and a brief of three to six lines (what, why, constraints, links). Do not paste
    the whole ticket: the worker reads it itself.
@@ -150,7 +159,8 @@ Below, `$O` stands for that executable.
 9. Tell the user in one or two lines: the ticket, the workspace, what the worker will do, that its
    questions come here. Then **end your turn**. Never poll; Orca wakes you.
 
-Several tickets: run steps 1–8 for each, then end the turn once.
+Several tickets: step 1 for each, the budget once for all of them, then steps 2–8 for each, then
+end the turn once.
 
 ## Hand over an open PR
 
@@ -162,7 +172,8 @@ fit; one command does the whole start:
 1. `bash "$C" get <KEY>`: open facts mean hi-crew already has a worker on it (a lost one is
    `resume`, step 1 above). Close the old session first if it still runs in the PR's workspace: two
    sessions in one workspace confuse each other and the watch.
-2. This session's Run, as step 4 above.
+2. This session's Run, as step 4 above. The budget as after step 1 above (`budget.sh starts`,
+   counting this hand-over with any other starts of the request): show it, warn, never refuse.
 3. A brief, only when there is something to add: the team's per-ticket notes (which base the PR
    targets, the merge path, what QA waits for) and the agenda's next step for it. The PR and the
    ticket the worker reads itself.
