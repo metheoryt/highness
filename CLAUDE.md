@@ -13,7 +13,9 @@ Public Claude Code plugin marketplace: `hi` (workspaces), `hi-guard` (Bash guard
   use it unchanged? Then it belongs here; if it names a team, its tracker or its rules, it does not.
 - Each plugin is self-contained (installed on its own); `lib/config.sh` in each is a copy of
   `shared/config.sh` — edit the shared one and copy it (`tests/config_copies_test.sh`).
-- bash 3.2 is the floor; BSD awk/sed (macOS) must work.
+- bash 3.2 is the floor; BSD awk/sed (macOS) must work. On Linux, check the floor with
+  `bash tests/build-bash32.sh <dir>` (a static bash 3.2.57; needs docker) and
+  `bash tests/run.sh --bash <dir>/bash </dev/null`.
 - Run `bash tests/run.sh </dev/null` before landing on `main`. Land by fast-forward.
 - Bump `version` in `plugins/hi/.claude-plugin/plugin.json` with every change to `hi`: `main` reaches installs as soon as it moves (teams follow it unpinned), and `claude plugin update` skips a plugin whose version did not change. `hi-docs`, `hi-guard`, `hi-crew`, `hi-threads` and `hi-review` declare no version, so they update by commit.
 - No `Co-Authored-By` trailer on commits. English everywhere.
