@@ -41,6 +41,9 @@ case "$1 $2" in
   "orchestration inbox")
     echo '{"ok":true,"result":{"messages":[{"id":"m1","run_id":"run_aaa111","type":"worker_done","created_at":"2026-01-01T00:00:00Z","subject":"done","payload":"{\"dispatchId\":\"ctx_done\",\"outcome\":\"succeeded\"}"}]}}' ;;
   "orchestration send") printf 'send %s\n' "$*" >>"$FAKE_LOG.send" ;;
+  "orchestration worker-stop") printf '%s\n' "$*" >>"$FAKE_LOG.stop"
+    [ -z "${FAKE_STOP_FAIL:-}" ] || { echo '{"ok":false,"error":{"message":"stop_unknown"}}'; exit 1; }
+    echo '{"ok":true,"result":{"processAction":"closed_agent_terminal"}}' ;;
   "account list") if [ -n "${FAKE_ACCOUNTS:-}" ]; then cat "$FAKE_ACCOUNTS"
     else echo '{"ok":true,"result":{"activeAccountId":null,"accounts":[]}}'; fi ;;
   *) echo '{"ok":false}'; exit 1 ;;
@@ -260,10 +263,106 @@ printf '%s\n' "$*" >"$GH_LOG"
 echo '[{"number":8,"title":"Eight","url":"https://github.com/acme/widgets/issues/8","state":"OPEN","labels":[{"name":"auto"}],"createdAt":"2026-01-01T00:00:00Z"},
        {"number":9,"title":"Nine","url":"https://github.com/acme/widgets/issues/9","state":"OPEN","labels":[{"name":"auto"},{"name":"in-progress"}],"createdAt":"2026-01-01T00:00:00Z"}]'
 EOF
-jq -n --arg root "$T/root" '{crew: {autostart: {enabled: true, root: $root}}}' >"$HIGHNESS_CONFIG"
+# No take here (its own section below): this fake gh answers the list to every call.
+jq -n --arg root "$T/root" '{crew: {autostart: {enabled: true, root: $root, take: false}}}' >"$HIGHNESS_CONFIG"
 PATH="$T/bin:$PATH" GH_LOG="$T/ghlog" bash "$C" autostart >/dev/null
 check 'tracker candidates: only the ready ones' "$(started_keys)" 'widgets-8 '
 has 'tracker candidates: the adapter asked for the label' "$(cat "$T/ghlog")" 'issue list -R acme/widgets --label auto --state open'
+
+# --- the take (highness#40): the ticket is locked right after worker-start, before the worker reads it
+# Fake gh for one issue, #8: list answers it with its labels, view with the labels in $GH_LABELS,
+# edit keeps the labels it leaves (role labels only: in-progress), comment logs its body.
+cat >"$T/bin/gh" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >>"$GH_LOG"
+labels=$(cat "$GH_LABELS")
+case "$1 $2" in
+  "issue list") printf '[{"number":8,"title":"Eight","url":"https://github.com/acme/widgets/issues/8","state":"OPEN","labels":%s,"createdAt":"2026-01-01T00:00:00Z"}]\n' "$labels" ;;
+  "issue view") printf '{"number":8,"title":"Eight","url":"https://github.com/acme/widgets/issues/8","state":"OPEN","labels":%s}\n' "$labels" ;;
+  "issue edit") case "$*" in
+      *"--add-label in-progress"*) echo '[{"name":"auto"},{"name":"in-progress"}]' >"$GH_LABELS" ;;
+      *"--remove-label in-progress"*) echo '[{"name":"auto"}]' >"$GH_LABELS" ;;
+    esac ;;
+  "issue comment") [ -z "${GH_COMMENT_FAIL:-}" ] || { echo 'HTTP 502' >&2; exit 1; }
+    cat >>"$GH_LOG.comment" ;;
+esac
+EOF
+chmod +x "$T/bin/gh"
+echo '{"crew": {"process": "Team process."}, "tracker": {"kind": "github", "statuses": {"in-progress": "active"}}}' >"$T/root/.claude/highness.json"
+treset() { reset; rm -f "$T/ghlog" "$T/ghlog.comment" "$T/starts.stop" "$T/took"; echo '[{"name":"auto"}]' >"$T/labels"; }
+tcfg() { jq -n --arg root "$T/root" --argjson x "$1" '{crew: {autostart: ({enabled: true, root: $root, max_active: 1} + $x)}}' >"$HIGHNESS_CONFIG"; }
+trun() { PATH="$T/bin:$PATH" GH_LOG="$T/ghlog" GH_LABELS="$T/labels" bash "$C" "$@"; }
+
+treset; tcfg '{}'
+out=$(trun autostart)
+has 'take: the ticket moves to active' "$(cat "$T/ghlog")" 'issue edit 8 -R acme/widgets --add-label in-progress'
+check 'take: the lock comment names the workspace by its name and the dispatch' "$(cat "$T/ghlog.comment")" \
+  '(agent) hi-crew took this ticket for workspace w1, dispatch ctx_new1.'
+check 'take: recorded in the facts' "$(bash "$C" get widgets-8 | jq -r '.taken_by')" default
+has 'take: then logged as started' "$out" 'started	widgets-8'
+has 'take: the spec says the ticket is already taken' "$(cat "$S/specs/widgets-8.md")" 'The ticket is already taken'
+check 'take: the spec drops the take step' "$(grep -c 'Then take it per the team process' "$S/specs/widgets-8.md")" 0
+check 'take: the ticket is no longer a candidate anywhere' \
+  "$(PATH="$T/bin:$PATH" GH_LOG="$T/ghlog" GH_LABELS="$T/labels" bash "$HERE/../lib/tracker.sh" --root "$T/root" candidates auto)" ''
+check 'take: the worker is not stopped' "$([ -f "$T/starts.stop" ] && echo stopped || echo running)" running
+out=$(trun take widgets-8)
+has 'take again: nothing done' "$out" 'widgets-8 was taken at'
+check 'take again: no second lock comment' "$(grep -o 'hi-crew took this ticket' "$T/ghlog.comment" | wc -l | tr -d ' ')" 1
+
+# a failed lock comment: the move is undone, the worker stopped, its facts closed, the coordinator told
+treset; tcfg '{}'
+out=$(GH_COMMENT_FAIL=1 trun autostart 2>&1)
+has 'comment fails: logged as failed' "$out" 'failed	widgets-8	could not take the ticket (the lock comment failed'
+has 'comment fails: moved back to the role it had' "$out" 'moved back to todo'
+has 'comment fails: the move is undone' "$(tail -1 "$T/ghlog")" 'issue edit 8 -R acme/widgets --remove-label in-progress'
+has 'comment fails: its worker is stopped' "$(cat "$T/starts.stop")" 'worker-stop --dispatch ctx_new1'
+check 'comment fails: its facts are closed' "$(bash "$C" get widgets-8 >/dev/null 2>&1 && echo open || echo closed)" closed
+has 'comment fails: a watch event for the agenda' "$(cut -f2,5 "$S/watch/events")" 'widgets-8	could not take the ticket'
+has 'comment fails: the coordinator hears of it' "$(cat "$T/starts.send")" 'could not take the ticket'
+trun autostart >/dev/null 2>&1
+check 'comment fails: not retried' "$(starts)" 1
+
+# taken by someone else after the candidates were read: --exclusive refuses it, nothing is moved
+treset; tcfg '{}'
+bash "$C" record widgets-8 '{"dispatch":"ctx_x","run":"run_aaa111","root":"'"$T/root"'","workspace":"'"$T/ws/w9"'"}'
+echo '[{"name":"auto"},{"name":"in-progress"}]' >"$T/labels"
+out=$(trun take widgets-8 --exclusive 2>&1); rc=$?
+check 'taken elsewhere: exit 2' "$rc" 2
+has 'taken elsewhere: says why' "$out" 'no longer ready (role active)'
+check 'taken elsewhere: nothing moved or commented' "$(grep -c 'issue edit\|issue comment' "$T/ghlog")" 0
+
+# a stop Orca cannot confirm keeps the facts open
+treset; tcfg '{}'
+out=$(GH_COMMENT_FAIL=1 FAKE_STOP_FAIL=1 trun autostart 2>&1)
+check 'stop unconfirmed: the facts stay open' "$(bash "$C" get widgets-8 >/dev/null 2>&1 && echo open || echo closed)" open
+has 'stop unconfirmed: the event says so' "$(cat "$S/watch/events")" 'stopping its worker was not confirmed'
+
+# the person's own take command, its placeholders shell-quoted; a failing one fails the take
+treset; tcfg '{"take": "printf \"%s|%s|%s|%s\\n\" {{KEY}} {{DISPATCH}} {{WORKSPACE}} {{MARKER}} >'"$T"'/took"}'
+trun autostart >/dev/null
+check 'custom take: run with the placeholders' "$(cat "$T/took")" \
+  "widgets-8|ctx_new1|$T/ws/w1|(agent) hi-crew took this ticket for workspace w1, dispatch ctx_new1."
+check 'custom take: the tracker is not moved' "$(grep -c 'issue edit' "$T/ghlog")" 0
+check 'custom take: recorded' "$(bash "$C" get widgets-8 | jq -r '.taken_by')" custom
+treset; tcfg '{"take": "exit 4"}'
+has 'custom take fails: logged' "$(trun autostart 2>&1)" 'crew.autostart.take exited 4'
+has 'custom take fails: its worker is stopped' "$(cat "$T/starts.stop")" 'worker-stop --dispatch ctx_new1'
+
+# a repo file cannot set the take command (it runs shell); false turns the default off
+treset; tcfg '{}'
+echo '{"crew": {"process": "Team process.", "autostart": {"take": "touch '"$T"'/took"}}, "tracker": {"kind": "github", "statuses": {"in-progress": "active"}}}' >"$T/root/.claude/highness.json"
+trun autostart >/dev/null
+check 'a repo file: its take command is not run' "$([ -f "$T/took" ] && echo ran || echo no)" no
+has 'a repo file: the default take runs' "$(cat "$T/ghlog")" 'issue edit 8'
+treset; tcfg '{"take": false}'
+trun autostart >/dev/null
+check 'take false: no move' "$(grep -c 'issue edit\|issue comment' "$T/ghlog")" 0
+check 'take false: not recorded' "$(bash "$C" get widgets-8 | jq -r '.taken // "none"')" none
+grep -q 'Then take it per the team process' "$S/specs/widgets-8.md" && ok 'take false: the worker takes it' || no 'take false: the worker takes it'
+check 'take --configured: off' "$(trun take --configured "$T/root" && echo yes || echo no)" no
+tcfg '{}'
+check 'take --configured: the default' "$(trun take --configured "$T/root" && echo yes || echo no)" yes
+check 'take --configured: no tracker, no take' "$(trun take --configured "$T/clone" && echo yes || echo no)" no
 rm -f "$T/root/.claude/highness.json"
 
 # --- a root with no team profile starts nothing, and the log says why (highness#108)
