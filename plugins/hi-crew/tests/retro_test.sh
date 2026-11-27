@@ -226,6 +226,32 @@ check 'gh not used when a sink is set' "$(grep -c . "$GH_LOG")" 0
 printf '%s\n' '{"crew":{"retro_sink":"false"}}' >"$ROOT/.claude/highness.json"
 if bash "$R" file proj-8 "$T/d.json" >/dev/null; then no 'failing sink exits 1'; else ok 'failing sink exits 1'; fi
 
+# --- the configured comment command (highness#122: a tracker no built-in kind covers): it wins
+# over tracker.kind and gh, gets the body as a file, and its failure is the comment's failure
+cat >"$T/poster" <<'EOF'
+#!/bin/sh
+printf '%s|%s|%s\n' "$1" "$3" "$(pwd -P)" >>"$POST_LOG"
+cat "$2" >>"$POST_LOG"
+echo "posted"
+EOF
+chmod +x "$T/poster"
+printf '%s\n' "{\"crew\":{\"retro_comment\":\"$T/poster {{TICKET}} {{BODY_FILE}} {{ROOT}}\"},\"tracker\":{\"kind\":\"youtrack\"}}" >"$ROOT/.claude/highness.json"
+export POST_LOG="$T/post.log"; : >"$POST_LOG"; : >"$GH_LOG"
+bash "$C" record proj-8 '{"retro_at": null}'
+bash "$R" comment proj-8 || no 'comment command posts'
+check 'comment command got the ticket and root, ran at the root' "$(sed -n 1p "$POST_LOG")" "proj-8|$ROOT|$(cd "$ROOT" && pwd -P)"
+check 'comment command body starts with the retro mark' "$(sed -n 2p "$POST_LOG")" '<!-- hi:retro -->'
+has 'comment command body lists what was filed' "$(cat "$POST_LOG")" '(agent) Retro of proj-8: what was filed.'
+check 'gh not used when a comment command is set' "$(grep -c . "$GH_LOG")" 0
+check 'retro_at recorded after the command' "$(bash "$C" get proj-8 | jq -r '.retro_at | test("^[0-9]{4}-")')" 'true'
+printf '%s\n' '{"crew":{"retro_comment":"echo down >&2; exit 3"}}' >"$ROOT/.claude/highness.json"
+bash "$C" record proj-8 '{"retro_at": null}'
+out=$(bash "$R" comment proj-8 2>&1); rc=$?
+check 'failing comment command exits 2' "$rc" 2
+has 'failing comment command is named' "$out" 'crew.retro_comment exit 3: down'
+check 'no retro_at when the command failed' "$(bash "$C" get proj-8 | jq -r '.retro_at')" 'null'
+printf '%s\n' '{"crew":{"retro_sink":"false"}}' >"$ROOT/.claude/highness.json"
+
 # --- close without a retro warns
 bash "$C" record proj-9 '{"title":"Nine"}'
 has 'close without a retro warns' "$(bash "$C" close proj-9 2>&1)" 'closed without a retro'

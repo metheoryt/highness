@@ -101,7 +101,9 @@ be public.
 `bash "$RT" comment <KEY> [<note file>]` posts the retro comment on the ticket: its first line is
 `<!-- hi:retro -->` (so a later readout can count retros), then the marker and what was filed, or
 "no findings". The note, one to three lines, says what went well or badly in a sentence when that
-is worth keeping; leave it out otherwise. Then `bash "$C" close <KEY>`; it warns when a ticket is
+is worth keeping; leave it out otherwise. It goes through `crew.retro_comment` when the team sets
+it (a command that posts the comment file on the ticket, see `lib/retro.sh`), else the tracker
+`tracker.kind` names, else the ticket's GitHub issue. Then `bash "$C" close <KEY>`; it warns when a ticket is
 closed without a retro.
 
 Tell the person in one or two lines: the ticket, the findings and where they went, or that there
