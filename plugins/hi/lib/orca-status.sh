@@ -8,7 +8,7 @@
 #   archive<TAB><TOKEN>
 #   policy<TAB><hookSettings.commandSourcePolicy, empty when unset or the repo is absent>
 # where TOKEN is WIRED | LEGACY<TAB><current-value> | UNWIRED | ABSENT |
-# CONFLICT<TAB><current-value>. Exit 0. The slots are the person's own hook fields in Orca;
+# CONFLICT<TAB><current-value> | UNKNOWN<TAB><why> (a profile-state.db python3 cannot read). Exit 0. The slots are the person's own hook fields in Orca;
 # a committed orca.yaml is read by repo-setup.sh, which also applies the policy.
 #
 # <expected-setup> / <expected-teardown> may list SEVERAL acceptable values, one per
@@ -58,12 +58,22 @@ pid="$(project_id "$ORIGIN")"
 JSON=""
 case "$DATA" in
   *.db)
+    # Unreadable (no python3, or one without its sqlite3 module, or a broken file): UNKNOWN with
+    # the reason, never an empty document that reads as ABSENT.
     doc() { python3 -I -c '
 import sqlite3, sys
 con = sqlite3.connect("file:" + sys.argv[1] + "?mode=ro", uri=True)
 row = con.execute("select payload from profile_state_documents where domain = ?", (sys.argv[2],)).fetchone()
 print(row[0] if row else "")' "$DATA" "$1" 2>/dev/null; }
-    r="$(doc repos)"; p="$(doc projectHostSetups)"
+    why=''
+    if ! command -v python3 >/dev/null 2>&1; then why='no python3 to read it'
+    elif ! python3 -I -c 'import sqlite3' >/dev/null 2>&1; then why="python3 has no sqlite3 module"
+    elif ! r="$(doc repos)" || ! p="$(doc projectHostSetups)"; then why='python3 could not read it'
+    fi
+    if [ -n "$why" ]; then
+      printf 'setup\tUNKNOWN\t%s: %s\narchive\tUNKNOWN\t%s: %s\npolicy\t\n' "$DATA" "$why" "$DATA" "$why"
+      exit 0
+    fi
     JSON="$(jq -n --argjson r "${r:-[]}" --argjson p "${p:-[]}" '{repos: $r, projectHostSetups: $p}' 2>/dev/null)" \
       || JSON='{}'
     ;;

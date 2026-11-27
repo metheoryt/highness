@@ -11,6 +11,8 @@ sets() { grep -c -- '--workspace-status' "$WT_TEST_LOG"; }
 
 # --- board.sh: the set from a profile-state.db, the newest columns from its WAL ----------------
 DB="$SANDBOX/orca/profile-state.db"; mkdir -p "$SANDBOX/orca"
+SNAP="$SANDBOX/orca/snap/profile-state.db"
+if ! py_sqlite; then skip 'board.sh set/id from a database: no python3 with its sqlite3 module'; else
 python3 -I - "$DB" <<'PY'
 import json, sqlite3, sys
 con = sqlite3.connect(sys.argv[1]); con.execute("pragma journal_mode=wal")
@@ -24,13 +26,13 @@ import shutil, os
 d = os.path.dirname(sys.argv[1]) + "/snap"; os.makedirs(d)
 shutil.copy(sys.argv[1], d); shutil.copy(sys.argv[1] + "-wal", d)
 PY
-SNAP="$SANDBOX/orca/snap/profile-state.db"
 out=$(HI_ORCA_BOARD= HI_ORCA_STATE_DB="$SNAP" bash "$BOARD" set)
 assert_contains "set: a column from the WAL is read" "$out" "$(printf 'status-7\tNeeds me\tneeds_me')"
 assert_contains "set: a known label names its column" "$out" "$(printf 'status-6\tQA\tqa')"
 assert_eq "id: by label" status-7 "$(HI_ORCA_BOARD= HI_ORCA_STATE_DB="$SNAP" bash "$BOARD" id needs_me)"
 HI_ORCA_BOARD= HI_ORCA_STATE_DB="$SNAP" bash "$BOARD" id done >/dev/null 2>&1
 assert_status "id: a label the set lacks fails" 1 "$?"
+fi
 HI_ORCA_BOARD= HI_ORCA_STATE_DB="$SANDBOX/none.db" bash "$BOARD" set >/dev/null 2>&1
 assert_status "set: no database fails" 1 "$?"
 
@@ -44,8 +46,10 @@ assert_eq "missing: named columns, for a plugin that moves to others" \
   "$(printf 'Mains\nQA\nWaiting author\nNeeds me')" "$out"
 HI_ORCA_BOARD="$SANDBOX/defaults.tsv" bash "$BOARD" missing nope >/dev/null 2>&1
 assert_status "missing: an unknown column is a usage error" 2 "$?"
-out=$(HI_ORCA_BOARD= HI_ORCA_STATE_DB="$SNAP" bash "$BOARD" missing)
-assert_eq "missing: from the database" "$(printf 'In progress\nReview queue')" "$out"
+if py_sqlite; then
+  out=$(HI_ORCA_BOARD= HI_ORCA_STATE_DB="$SNAP" bash "$BOARD" missing)
+  assert_eq "missing: from the database" "$(printf 'In progress\nReview queue')" "$out"
+else skip 'missing: from the database: no python3 with its sqlite3 module'; fi
 out=$(HI_ORCA_BOARD= HI_ORCA_STATE_DB="$SANDBOX/none.db" bash "$BOARD" missing 2>/dev/null); rc=$?
 assert_status "missing: an unreadable set fails" 1 "$rc"
 assert_eq "missing: an unreadable set lists nothing" "" "$out"

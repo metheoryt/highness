@@ -7,6 +7,11 @@
 _assert_ok()  { ASSERT_PASS=$((ASSERT_PASS + 1)); printf '  ok   %s\n' "$1"; }
 _assert_bad() { ASSERT_FAIL=$((ASSERT_FAIL + 1)); printf '  FAIL %s\n' "$1"; }
 
+# py_sqlite: python3 with its sqlite3 module — what every profile-state.db fixture is built with
+# and what hi reads Orca's database through. A box without one skips those cases, saying so.
+py_sqlite() { python3 -I -c 'import sqlite3' >/dev/null 2>&1; }
+skip() { printf '  skip %s\n' "$1"; }
+
 # assert_eq <desc> <expected> <actual>
 assert_eq() {
   if [ "$2" = "$3" ]; then _assert_ok "$1"; else _assert_bad "$1 — expected [$2] got [$3]"; fi

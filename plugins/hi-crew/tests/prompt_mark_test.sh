@@ -86,6 +86,13 @@ check 'elicitation: check gives the kind' "$(bash "$PM" check "$WS" | cut -f2,3)
 stop s-6; notify s-7
 check 'permission: kind permission' "$(bash "$PM" check "$WS" | cut -f3)" permission
 stop s-7
+# A question form fires permission_prompt too (Claude Code 2.1.332): kind question.
+for q in AskUserQuestion ExitPlanMode; do
+  put "$prompt" "{\"type\":\"assistant\",\"timestamp\":\"2020-01-01T00:00:03.000Z\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"tu_q\",\"name\":\"$q\"}]}}"
+  notify s-8
+  check "$q: kind question" "$(bash "$PM" check "$WS" | cut -f2,3)" "$q${TAB}question"
+  stop s-8
+done
 
 # A transcript that is gone: the marker is dropped.
 put "$prompt" "$use2"; notify s-5; rm -f "$TR"

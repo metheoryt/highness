@@ -184,6 +184,7 @@ con.commit()
 PY
 }
 DB="$SANDBOX/state.db"
+if ! py_sqlite; then skip 'restart-mode and select: no python3 with its sqlite3 module'; else
 settings_db "$DB" '{"claudeAccountSwitchRunningSessions":"restart"}'
 assert_eq 'restart-mode: Always restart' restart "$(HI_ORCA_STATE_DB="$DB" bash "$ACC" restart-mode)"
 settings_db "$DB" '{"language":"en"}'
@@ -202,6 +203,7 @@ assert_status 'select: unreadable setting selects nothing' 1 \
   "$(HI_ORCA_STATE_DB="$SANDBOX/none.db" bash "$ACC" select ida >/dev/null 2>&1; echo $?)"
 assert_eq 'select: still nothing selected' 0 "$(grep -c 'account select' "$LOG")"
 settings_db "$DB" '{"claudeAccountSwitchRunningSessions":"keep"}'
+fi
 # The health check (highness#115): the usage endpoint gives no figures here, so the stub claude's
 # probe decides. $SANDBOX/probe: ok, or the measured past-due line.
 export HI_BUDGET_RESPONSE=fail
@@ -214,6 +216,7 @@ case "$(cat "$SANDBOX/probe")" in
 esac
 S
 chmod +x "$SHIM/claude"
+if py_sqlite; then
 echo pastdue >"$SANDBOX/probe"; : >"$LOG"
 err=$(HI_ORCA_STATE_DB="$DB" bash "$ACC" select ida 2>&1 >/dev/null); rc=$?
 assert_eq 'select a past-due account: refused with exit 5' 5 "$rc"
@@ -229,6 +232,7 @@ out=$(HI_ORCA_STATE_DB="$DB" bash "$ACC" select b@x 2>"$SANDBOX/err"); rc=$?
 assert_eq 'select under keep, an account that runs (no figures: unknown): ok' 0 "$rc"
 assert_contains 'select under keep: Orca was asked to select it' "$(cat "$LOG")" 'account select --agent claude --account b@x'
 assert_contains 'select: no figures is a warning, not a refusal' "$(cat "$SANDBOX/err")" 'cannot tell whether b@x can run'
+fi
 
 echo '== health'
 echo pastdue >"$SANDBOX/probe"
