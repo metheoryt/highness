@@ -251,7 +251,9 @@
 #                                     key and run empty, kind also `dialog` (an MCP tool) or Orca's
 #                                     reason (agent-trust-workspace). The watch wakes the coordinator
 #                                     once per dialog of a ticket's worker; the other agents have no
-#                                     Run to wake and show in the agenda only
+#                                     Run to wake and show in the agenda only. Not covered: agents
+#                                     on a paired Orca server (worktree ps leaves those hosts out)
+#                                     and Orca's chat agents (no programStatus; not measured)
 #   crew.sh states                    what each open ticket's worker is doing, from its own hooks,
 #                                     TSV: key, run, state (working | blocked | idle | unknown),
 #                                     since, kind, open tool, minutes that tool call has run, minutes
