@@ -219,8 +219,9 @@ EOF
 
 # Every Orca data file on this box: one machine can host a Windows Orca and a WSL one.
 # Per profile, profile-state.db wins: since Orca moved state into SQLite the
-# orca-data.json beside it is frozen and reads as ABSENT for any repo added later.
-# Without sqlite3 the frozen JSON is the best there is.
+# orca-data.json beside it is frozen and reads as ABSENT for any repo added later. The .db is
+# listed even where python3 cannot read it: orca-status.sh then says UNKNOWN and why, rather
+# than the frozen JSON answering ABSENT.
 _orca_files() {
   if [ -n "${HI_ORCA_DATA+x}" ]; then printf '%s\n' "$HI_ORCA_DATA"; return; fi
   local d
@@ -228,7 +229,7 @@ _orca_files() {
            "$HOME/Library/Application Support/orca/profiles/local-default" \
            "$HOME/AppData/Roaming/orca/profiles/local-default" \
            /mnt/c/Users/*/AppData/Roaming/orca/profiles/local-default; do
-    if [ -f "$d/profile-state.db" ] && command -v sqlite3 >/dev/null 2>&1; then
+    if [ -f "$d/profile-state.db" ]; then
       printf '%s\n' "$d/profile-state.db"
     elif [ -f "$d/orca-data.json" ]; then
       printf '%s\n' "$d/orca-data.json"
@@ -236,14 +237,16 @@ _orca_files() {
   done
 }
 _rank() {
-  case "$1" in WIRED) echo 7 ;; LEGACY) echo 6 ;; TWICE) echo 5 ;; SHADOWED) echo 4 ;; CONFLICT) echo 3 ;;
-               UNWIRED) echo 2 ;; ABSENT) echo 1 ;; *) echo 0 ;; esac
+  case "$1" in WIRED) echo 8 ;; LEGACY) echo 7 ;; TWICE) echo 6 ;; SHADOWED) echo 5 ;; CONFLICT) echo 4 ;;
+               UNWIRED) echo 3 ;; UNKNOWN) echo 2 ;; ABSENT) echo 1 ;; *) echo 0 ;; esac
 }
 
-# _effective <tok> <local-value> <policy> <yaml: ours|other|none> <yaml-value>: what Orca runs
-# for one slot, as STATE<TAB>detail. tok is orca-status.sh's verdict on the local hook field.
+# _effective <setup|archive> <tok> <local-value> <policy> <yaml: ours|other|none> <yaml-value>:
+# what Orca runs for one slot, as STATE<TAB>detail. tok is orca-status.sh's verdict on the local
+# hook field.
 _effective() {
-  local tok=$1 val=$2 pol=$3 y=$4 yv=$5 has=0 ours=0 eff rl=0 ry=0 n=0 pd st d
+  local slot=$1 tok=$2 val=$3 pol=$4 y=$5 yv=$6 has=0 ours=0 eff rl=0 ry=0 n=0 pd st d w
+  if [ "$tok" = UNKNOWN ]; then printf 'UNKNOWN\tcannot read the Orca data (%s)' "$val"; return; fi
   if [ "$tok" = ABSENT ]; then
     if [ "$y" = ours ]; then printf 'ABSENT\torca.yaml is wired; Orca does not list the repo yet'
     else printf 'ABSENT\tOrca does not list the repo'; fi
@@ -272,7 +275,9 @@ _effective() {
   elif [ "$y" = ours ]; then
     printf 'SHADOWED\torca.yaml is wired, but %s runs only the local hook%s' "$pd" "${val:+ [$val]}"
   elif [ "$rl" = 1 ]; then
-    printf 'CONFLICT\truns the local hook [%s] (%s)' "$val" "$pd"
+    w=setup; [ "$slot" = archive ] && w=teardown
+    printf 'CONFLICT\truns the local hook [%s] (%s); if it does what highness worktree-%s does, accept it in repo_setup.accept.%s' \
+      "$val" "$pd" "$w" "$slot"
   elif [ "$ry" = 1 ]; then
     printf 'CONFLICT\truns orca.yaml'"'"'s [%s] (%s)' "$yv" "$pd"
   else
@@ -292,8 +297,8 @@ rows_orca() {
     while IFS= read -r e; do
       slot=$(printf '%s' "$e" | cut -f1); tok=$(printf '%s' "$e" | cut -f2); val=$(printf '%s' "$e" | cut -f3-)
       case "$slot" in
-        setup)   es=$(_effective "$tok" "$val" "$pol" "$Y_setup" "$Y_setup_v") ;;
-        archive) ea=$(_effective "$tok" "$val" "$pol" "$Y_archive" "$Y_archive_v") ;;
+        setup)   es=$(_effective setup "$tok" "$val" "$pol" "$Y_setup" "$Y_setup_v") ;;
+        archive) ea=$(_effective archive "$tok" "$val" "$pol" "$Y_archive" "$Y_archive_v") ;;
       esac
     done <<EOF
 $out

@@ -66,7 +66,9 @@ assert_eq "account-switch: no Orca database reads unknown" unknown "$(row "$out"
 
 # Orca's account-switch setting: only Never restart keeps workers' Dispatch (highness#106).
 DB="$SANDBOX/state.db"
+py_sqlite || skip 'account-switch from a database: no python3 with its sqlite3 module'
 for pair in keep:ok restart:restarts ask:restarts; do
+  py_sqlite || break
   python3 -I - "$DB" "${pair%%:*}" <<'PY'
 import sqlite3, sys, json
 con = sqlite3.connect(sys.argv[1])

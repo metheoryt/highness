@@ -116,9 +116,24 @@ got="$(bash "$SCRIPT" "$tmp/nofile.json" "git@github.com:me/app.git" "$SETUP" "$
 [ "$(tok "$got" setup)" = "ABSENT" ] && [ "$(tok "$got" archive)" = "ABSENT" ] \
   && pass "missing-file ABSENT both" || die "missing-file -> '$got'"
 
-# profile-state.db (Orca's SQLite store) reads the same as the JSON it replaced.
+# A profile-state.db python3 cannot read is UNKNOWN with the reason, never ABSENT. A python3
+# without its sqlite3 module is faked on PATH, so this runs on every box.
+mkdir -p "$tmp/nosqlite"; printf '#!/bin/sh\nexit 1\n' > "$tmp/nosqlite/python3"; chmod +x "$tmp/nosqlite/python3"
+: > "$tmp/fake.db"
+got="$(PATH="$tmp/nosqlite:$PATH" bash "$SCRIPT" "$tmp/fake.db" "git@github.com:me/app.git" "$SETUP" "$TEARDOWN" "/base/app")"
+[ "$(tok "$got" setup | cut -f1)" = "UNKNOWN" ] && [ "$(tok "$got" archive | cut -f1)" = "UNKNOWN" ] \
+  && pass "no sqlite3 module: UNKNOWN both" || die "no sqlite3 module -> '$got'"
+case "$(tok "$got" setup)" in *"no sqlite3 module"*) pass "UNKNOWN names the reason" ;; *) die "UNKNOWN reason -> '$got'" ;; esac
+[ "$(tok "$got" policy)" = "" ] && pass "UNKNOWN: policy empty" || die "UNKNOWN policy -> '$got'"
+
+# profile-state.db (Orca's SQLite store) reads the same as the JSON it replaced. Built with
+# python3's sqlite3 (as board.sh reads it); a box without one skips these cases.
+if ! python3 -I -c 'import sqlite3' >/dev/null 2>&1; then
+  echo "skip: profile-state.db cases: no python3 with its sqlite3 module"
+else
 DB="$tmp/profile-state.db"
-# Built with python3's sqlite3 (as board.sh reads it): the sqlite3 CLI is not on every box.
+got="$(bash "$SCRIPT" "$tmp/fake.db" "git@github.com:me/app.git" "$SETUP" "$TEARDOWN" "/base/app")"
+[ "$(tok "$got" setup | cut -f1)" = "UNKNOWN" ] && pass "not a database: UNKNOWN" || die "not a database -> '$got'"
 for d in repos projectHostSetups; do jq -c ".$d" "$DATA" > "$tmp/$d.json"; done
 python3 -I - "$DB" "$tmp" <<'PY'
 import sqlite3, sys
@@ -140,6 +155,7 @@ got="$(bash "$SCRIPT" "$DB" "git@github.com:me/nope.git" "$SETUP" "$TEARDOWN" "/
 before="$(cksum "$DB")"
 bash "$SCRIPT" "$DB" "git@github.com:me/app.git" "$SETUP" "$TEARDOWN" "/base/app" >/dev/null
 [ "$before" = "$(cksum "$DB")" ] && pass "read-only (db unchanged)" || die "db mutated!"
+fi
 
 # commandSourcePolicy: a third line, the raw value (empty when unset or the repo is absent).
 [ "$(tok "$got" policy)" = "" ] && pass "policy: unset is empty" || die "policy unset -> '$(tok "$got" policy)'"
