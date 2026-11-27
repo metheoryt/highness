@@ -598,10 +598,11 @@ under() {  # under <label> <awk dir or empty>
   local save=$PATH t
   [ -z "$2" ] || PATH="$2:$PATH"
   { time allows "$1: a ~100 KB quoted --body" "gh pr create --draft --title t --body \"$big\""; } 2> "$SANDBOX/t"
-  t=$(tail -n 1 "$SANDBOX/t")
+  # A locale with a decimal comma prints 0,313: awk would read it as 0 and always pass.
+  t=$(tail -n 1 "$SANDBOX/t" | tr , .)
   assert_eq "$1: a ~100 KB --body takes under 1 s (took ${t}s)" yes "$(awk -v t="$t" 'BEGIN { print (t + 0 < 1) ? "yes" : "no" }')"
   { time allows "$1: a ~250 KB quoted --body" "gh pr create --draft --title t --body \"$big250\""; } 2> "$SANDBOX/t"
-  t=$(tail -n 1 "$SANDBOX/t")
+  t=$(tail -n 1 "$SANDBOX/t" | tr , .)
   assert_eq "$1: a ~250 KB --body takes under 2 s (took ${t}s)" yes "$(awk -v t="$t" 'BEGIN { print (t + 0 < 2) ? "yes" : "no" }')"
   PATH=$save
 }

@@ -516,11 +516,16 @@ END {
 # the kept heredoc bodies to KEPT, the data bodies rules 1b-3 still read to DATA, the text
 # rule 2 reads to TEXT, and (with ALLC=1) every
 # simple command's words to SC. SOK=1 iff the P scan closed.
+# _split <sep> <text> <array>: <array> = the fields of <text> plus a newline, split on <sep> —
+# what `IFS=<sep> read -r -d '' -a <array> <<<"<text>"` gives, without its cost: bash 3.2's read
+# takes ~0.2 s on a 100 KB record set, word splitting a few ms. No globbing of the fields.
+_split() { local IFS=$1; set -f; eval "$3=(\$2\$'\n')"; set +f; }
+
 _scan() {
   local out r recs=()
   SOK=0
   out=$(printf '%s' "$2" | LC_ALL=C awk -v mode="$1" -v exempt="$EXS" -v allc="$ALLC" "$SCAN_AWK" 2>/dev/null) || return 0
-  IFS=$'\036' read -r -d '' -a recs <<<"$out" || true
+  _split $'\036' "$out" recs
   for r in ${recs[@]+"${recs[@]}"}; do
     case "$r" in
       S*) SR+=("${r#S}") ;;
@@ -539,7 +544,7 @@ _setw() {
   local l
   W=()
   [ -n "${SW[$1]}" ] || return 0
-  IFS=$'\037' read -r -d '' -a W <<<"${SW[$1]}" || true
+  _split $'\037' "${SW[$1]}" W
   l=$((${#W[@]} - 1))
   W[l]=${W[l]%$'\n'}
 }
@@ -799,7 +804,7 @@ _feed() {
     # not ${r%$'\n'}: on a long word that does not end in a newline, bash tries every suffix
     r=${SC[i]}; [ "${r: -1}" != $'\n' ] || r=${r%?}
     W=()
-    [ -z "$r" ] || IFS=$'\037' read -r -d '' -a W <<<"$r" || true
+    [ -z "$r" ] || _split $'\037' "$r" W
     [ "${#W[@]}" -eq 0 ] || W[${#W[@]}-1]=${W[${#W[@]}-1]%$'\n'}
     out=$out$moved$'\t'$r$'\036'
     _cmdword
