@@ -64,7 +64,10 @@ case "$1 $2" in
   "terminal wait") echo '{"ok":true}' ;;
   "terminal list") # FAKE_TL: the file it answers; none: the call fails
     if [ -f "${FAKE_TL:-/nonexistent}" ]; then cat "$FAKE_TL"; else echo '{"ok":false}'; exit 1; fi ;;
-  "worktree ps") echo '{"ok":true,"result":{"worktrees":[]}}' ;;
+  "worktree ps") # FAKE_PS_STATE: the pane's agent with that programStatus state
+    if [ -n "${FAKE_PS_STATE:-}" ]; then
+      printf '{"ok":true,"result":{"worktrees":[{"path":"%s","agents":[{"address":"%s","state":"waiting","programStatus":{"state":"%s"},"agentWait":{"source":"hook"}}]}]}}\n' "$FAKE_WS" "$FAKE_PANE" "$FAKE_PS_STATE"
+    else echo '{"ok":true,"result":{"worktrees":[]}}'; fi ;;
   "terminal create") # a new pane, term_new, only with FAKE_CREATE; FAKE_START: the session runs there
     printf '%s\n' "$*" >>"$FAKE_LOG.create"
     [ -n "${FAKE_CREATE:-}" ] || { echo '{"ok":false,"error":{"code":"no_worktree"}}'; exit 1; }
@@ -316,6 +319,17 @@ fresh; transcripts; rm -f "$FAKE_LOG.send"; running 4242 sid1 term_pane
 err=$(FAKE_PANE=term_pane FAKE_DIALOG=1 FAKE_CUT=1 bash "$C" resume AB-1 2>&1) && no 'dialog, cut preview: exit 0'
 has 'dialog, cut preview: still seen' "$err" 'waits on a dialog'
 [ -s "$FAKE_LOG" ] && no 'dialog, cut preview: started nothing' || ok 'dialog, cut preview: started nothing'
+# The dialog still blocked by `worktree ps`: refused as well.
+fresh; transcripts; rm -f "$FAKE_LOG.send"; running 4242 sid1 term_pane
+err=$(FAKE_PANE=term_pane FAKE_DIALOG=1 FAKE_PS_STATE=blocked bash "$C" resume AB-1 2>&1) && no 'dialog, ps blocked: exit 0'
+has 'dialog, ps blocked: says answer it there' "$err" 'waits on a dialog'
+[ -s "$FAKE_LOG" ] && no 'dialog, ps blocked: started nothing' || ok 'dialog, ps blocked: started nothing'
+# A dialog dismissed with Esc (highness#171): Orca keeps agentWait until the next hook, and only
+# programStatus drops to idle. No dialog is on screen: the Dispatch goes in.
+fresh; transcripts; rm -f "$FAKE_LOG.send"; running 4242 sid1 term_pane
+out=$(FAKE_PANE=term_pane FAKE_DIALOG=1 FAKE_PS_STATE=idle bash "$C" resume AB-1 2>&1); rc=$?
+check 'stale agentWait after Esc: exit 0' "$rc" 0
+has 'stale agentWait after Esc: the Dispatch goes into that pane' "$(cat "$FAKE_LOG" 2>/dev/null)" '--terminal term_pane'
 
 # Fallbacks to a new worker: today's behaviour.
 fresh; transcripts; rm -f "$FAKE_LOG.send"; running 4242 sid1 term_other
