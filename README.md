@@ -222,7 +222,10 @@ at most 3 findings (a tool fault, a gap in the worker spec, a process question),
 deduplicated against open items. Then it comments the ticket, first line `<!-- hi:retro -->`.
 Findings go to GitHub issues unless the team sets `crew.retro_sink`, a command with `{{KIND}}`
 (`tool`, `brief` or `decision`), `{{TITLE}}`, `{{BODY_FILE}}`, `{{TICKET}}` and `{{ROOT}}`
-filled in shell-quoted, which prints the created key or URL, or `dup <key>`.
+filled in shell-quoted, which prints the created key or URL, or `dup <key>`. The comment goes
+through `crew.retro_comment` when set, a command with `{{TICKET}}`, `{{BODY_FILE}}` and `{{ROOT}}`
+that posts the file on the ticket and exits 0 (a tracker the built-in kinds do not cover), else
+through `tracker.kind`, else to the ticket's GitHub issue.
 
 ### Your preferences
 
