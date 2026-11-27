@@ -344,6 +344,13 @@ check 'custom take: run with the placeholders' "$(cat "$T/took")" \
   "widgets-8|ctx_new1|$T/ws/w1|(agent) hi-crew took this ticket for workspace w1, dispatch ctx_new1."
 check 'custom take: the tracker is not moved' "$(grep -c 'issue edit' "$T/ghlog")" 0
 check 'custom take: recorded' "$(bash "$C" get widgets-8 | jq -r '.taken_by')" custom
+# Another coordinator root (a manual start there): the command is not its own, and no tracker there.
+mkdir -p "$T/other/.claude"; git -C "$T/other" init -q
+echo '{"crew": {"process": "Other process."}}' >"$T/other/.claude/highness.json"
+check 'custom take: not for another root' "$(trun take --configured "$T/other" && echo yes || echo no)" no
+trun spec --key O-1 --title O --root "$T/other" >/dev/null
+check 'custom take: another root'"'"'s spec keeps the worker'"'"'s take step' \
+  "$(grep -c 'Then take it per the team process' "$S/specs/O-1.md")" 1
 treset; tcfg '{"take": "exit 4"}'
 has 'custom take fails: logged' "$(trun autostart 2>&1)" 'crew.autostart.take exited 4'
 has 'custom take fails: its worker is stopped' "$(cat "$T/starts.stop")" 'worker-stop --dispatch ctx_new1'

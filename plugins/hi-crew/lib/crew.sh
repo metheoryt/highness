@@ -2161,7 +2161,8 @@ as_start() { # <candidate json> <root> <run> <handle> <dry>
 #   crew.autostart.take    the person's own file only (it runs shell): a command run at the root,
 #                          with {{KEY}}, {{WORKSPACE}} (the path), {{DISPATCH}}, {{ROOT}} and
 #                          {{MARKER}} (the lock comment's text) shell-quoted, {{TRACKER}} the
-#                          tracker adapter. Unset: with tracker.kind at the root, the default
+#                          tracker adapter. It applies to crew.autostart.root's tickets only;
+#                          any other root, or unset: with tracker.kind at the root, the default
 #                          below; else no take, and the worker takes the ticket per the team
 #                          process as before. false or "off": no take, tracker or not
 # The default: the tracker adapter moves the ticket to role active and comments it with the lock
@@ -2178,8 +2179,14 @@ as_start() { # <candidate json> <root> <run> <handle> <dry>
 TAKE_PREFIX='hi-crew took this ticket'
 
 take_how() { # <root> → "default", or "custom" and the command on the next line; exit 1: no take
-  local cmd
+  local cmd ar
   cmd=$(bash "$CONFIG" get --user '.crew.autostart.take' 2>/dev/null) || cmd=''
+  # The person's command is written for autostart's root: another root's tickets get its default.
+  case "$cmd" in (''|false|off) ;; (*)
+    ar=$(as_get root 2>/dev/null) || ar=''
+    case "$ar" in ("~"|"~/"*) ar="$HOME${ar#\~}" ;; esac
+    [ -n "$ar" ] && [ "$(cd "$ar" 2>/dev/null && pwd -P)" = "$(cd "$1" 2>/dev/null && pwd -P)" ] || cmd='' ;;
+  esac
   case "$cmd" in
     false|off) return 1 ;;
     '') (cd "$1" 2>/dev/null && bash "$CONFIG" get '.tracker.kind' >/dev/null 2>&1) || return 1
